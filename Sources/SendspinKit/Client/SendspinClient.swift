@@ -11,12 +11,12 @@ public final class SendspinClient {
     // Configuration
     private let clientId: String
     private let name: String
-    private let roles: Set<ClientRole>
+    private let roles: Set<VersionedRole>
     private let playerConfig: PlayerConfiguration?
 
     // State
     public private(set) var connectionState: ConnectionState = .disconnected
-    private var playerState: String = "idle" // "idle", "playing", "paused", "buffering"
+    private var playerState: PlayerStateValue = .synchronized
     private var isAutoStarting = false // Prevent multiple simultaneous auto-starts
     private var currentVolume: Float = 1.0
     private var currentMuted: Bool = false
@@ -41,7 +41,7 @@ public final class SendspinClient {
     public init(
         clientId: String,
         name: String,
-        roles: Set<ClientRole>,
+        roles: Set<VersionedRole>,
         playerConfig: PlayerConfiguration? = nil
     ) {
         self.clientId = clientId
@@ -52,7 +52,7 @@ public final class SendspinClient {
         (events, eventsContinuation) = AsyncStream.makeStream()
 
         // Validate configuration
-        if roles.contains(.player) {
+        if roles.contains(.playerV1) {
             precondition(playerConfig != nil, "Player role requires playerConfig")
         }
     }
@@ -116,7 +116,7 @@ public final class SendspinClient {
         self.audioScheduler = audioScheduler
 
         // Create buffer manager and audio player if player role
-        if roles.contains(.player), let playerConfig = playerConfig {
+        if roles.contains(.playerV1), let playerConfig = playerConfig {
             let bufferManager = BufferManager(capacity: playerConfig.bufferCapacity)
             let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
 
@@ -233,7 +233,7 @@ public final class SendspinClient {
         audioPlayer = nil
 
         // Reset player state
-        playerState = "idle"
+        playerState = .synchronized
         currentVolume = 1.0
         currentMuted = false
 
@@ -247,10 +247,10 @@ public final class SendspinClient {
         }
 
         // Build player support if player role
-        var playerSupport: PlayerSupport?
-        if roles.contains(.player), let playerConfig = playerConfig {
-            playerSupport = PlayerSupport(
-                supportFormats: playerConfig.supportedFormats,
+        var playerV1Support: PlayerSupport?
+        if roles.contains(.playerV1), let playerConfig = playerConfig {
+            playerV1Support = PlayerSupport(
+                supportedFormats: playerConfig.supportedFormats,
                 bufferCapacity: playerConfig.bufferCapacity,
                 supportedCommands: [.volume, .mute]
             )
@@ -262,10 +262,10 @@ public final class SendspinClient {
             deviceInfo: DeviceInfo.current,
             version: 1,
             supportedRoles: Array(roles),
-            playerSupport: playerSupport,
-            metadataSupport: roles.contains(.metadata) ? MetadataSupport() : nil,
-            artworkSupport: roles.contains(.artwork) ? ArtworkSupport() : nil,
-            visualizerSupport: roles.contains(.visualizer) ? VisualizerSupport() : nil
+            playerV1Support: playerV1Support,
+            metadataV1Support: roles.contains(.metadataV1) ? MetadataSupport() : nil,
+            artworkV1Support: roles.contains(.artworkV1) ? ArtworkSupport() : nil,
+            visualizerV1Support: roles.contains(.visualizerV1) ? VisualizerSupport() : nil
         )
 
         let message = ClientHelloMessage(payload: payload)
@@ -278,20 +278,21 @@ public final class SendspinClient {
         }
 
         // Only send if we have player role
-        guard roles.contains(.player) else {
+        guard roles.contains(.playerV1) else {
             return
         }
 
         // Convert volume from 0.0-1.0 to 0-100 (with rounding)
         let volumeInt = Int((currentVolume * 100).rounded())
 
-        let payload = PlayerUpdatePayload(
+        let playerStateObject = PlayerStateObject(
             state: playerState,
             volume: volumeInt,
             muted: currentMuted
         )
 
-        let message = PlayerUpdateMessage(payload: payload)
+        let payload = ClientStatePayload(player: playerStateObject)
+        let message = ClientStateMessage(payload: payload)
 
         try await transport.send(message)
     }
@@ -478,12 +479,13 @@ public final class SendspinClient {
         }
 
         switch message.type {
-        case .audioChunk, .audioChunkAlt:
+        case .audioChunk:
             // Call on MainActor - this will queue but maintain order
             await handleAudioChunkNonisolated(message)
 
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
-            let channel = Int(message.type.rawValue - 4)
+            // Artwork channels are types 8-11, so channel = rawValue - 8
+            let channel = Int(message.type.rawValue - 8)
             eventsContinuation.yield(.artworkReceived(channel: channel, data: message.data))
 
         case .visualizerData:
@@ -553,7 +555,7 @@ public final class SendspinClient {
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
             // print("[CLIENT] ❌ Unsupported codec: \(playerInfo.codec)")
             connectionState = .error("Unsupported codec: \(playerInfo.codec)")
-            playerState = "error"
+            playerState = .error
             try? await sendClientState() // Notify server of error state
             return
         }
@@ -576,7 +578,7 @@ public final class SendspinClient {
 
         do {
             try await audioPlayer.start(format: format, codecHeader: codecHeader)
-            playerState = "playing"
+            playerState = .synchronized
             await audioScheduler?.startScheduling()
 
             // Only yield event if this was a new stream start (not a format re-announcement)
@@ -586,7 +588,7 @@ public final class SendspinClient {
             try? await sendClientState()
         } catch {
             connectionState = .error("Failed to start audio: \(error.localizedDescription)")
-            playerState = "error"
+            playerState = .error
             try? await sendClientState()
         }
     }
@@ -597,7 +599,7 @@ public final class SendspinClient {
         await audioScheduler?.stop()
         await audioScheduler?.clear()
         await audioPlayer.stop()
-        playerState = "idle"
+        playerState = .synchronized
         eventsContinuation.yield(.streamEnded)
     }
 
@@ -677,7 +679,7 @@ public final class SendspinClient {
             // print("[CLIENT] 🎵 Auto-starting with highest priority format: \(defaultFormat.codec.rawValue) \(defaultFormat.sampleRate)Hz \(defaultFormat.channels)ch \(defaultFormat.bitDepth)bit")
             do {
                 try await audioPlayer.start(format: defaultFormat, codecHeader: nil)
-                playerState = "playing"
+                playerState = .synchronized
 
                 // print("[CLIENT] 📅 Starting AudioScheduler...")
                 await audioScheduler.startScheduling()

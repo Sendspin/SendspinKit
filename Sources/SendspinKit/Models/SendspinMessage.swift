@@ -28,32 +28,44 @@ public struct ClientHelloPayload: Codable, Sendable {
     public let name: String
     public let deviceInfo: DeviceInfo?
     public let version: Int
-    public let supportedRoles: [ClientRole]
-    public let playerSupport: PlayerSupport?
-    public let metadataSupport: MetadataSupport?
-    public let artworkSupport: ArtworkSupport?
-    public let visualizerSupport: VisualizerSupport?
+    public let supportedRoles: [VersionedRole]
+    public let playerV1Support: PlayerSupport?
+    public let metadataV1Support: MetadataSupport?
+    public let artworkV1Support: ArtworkSupport?
+    public let visualizerV1Support: VisualizerSupport?
+
+    enum CodingKeys: String, CodingKey {
+        case clientId = "client_id"
+        case name
+        case deviceInfo = "device_info"
+        case version
+        case supportedRoles = "supported_roles"
+        case playerV1Support = "player@v1_support"
+        case metadataV1Support = "metadata@v1_support"
+        case artworkV1Support = "artwork@v1_support"
+        case visualizerV1Support = "visualizer@v1_support"
+    }
 
     public init(
         clientId: String,
         name: String,
         deviceInfo: DeviceInfo?,
         version: Int,
-        supportedRoles: [ClientRole],
-        playerSupport: PlayerSupport?,
-        metadataSupport: MetadataSupport?,
-        artworkSupport: ArtworkSupport?,
-        visualizerSupport: VisualizerSupport?
+        supportedRoles: [VersionedRole],
+        playerV1Support: PlayerSupport?,
+        metadataV1Support: MetadataSupport?,
+        artworkV1Support: ArtworkSupport?,
+        visualizerV1Support: VisualizerSupport?
     ) {
         self.clientId = clientId
         self.name = name
         self.deviceInfo = deviceInfo
         self.version = version
         self.supportedRoles = supportedRoles
-        self.playerSupport = playerSupport
-        self.metadataSupport = metadataSupport
-        self.artworkSupport = artworkSupport
-        self.visualizerSupport = visualizerSupport
+        self.playerV1Support = playerV1Support
+        self.metadataV1Support = metadataV1Support
+        self.artworkV1Support = artworkV1Support
+        self.visualizerV1Support = visualizerV1Support
     }
 }
 
@@ -93,31 +105,32 @@ public enum PlayerCommand: String, Codable, Sendable {
 }
 
 public struct PlayerSupport: Codable, Sendable {
-    public let supportFormats: [AudioFormatSpec]
-    public let supportCodecs: [String]
-    public let supportChannels: [Int]
-    public let supportSampleRates: [Int]
-    public let supportBitDepth: [Int]
+    public let supportedFormats: [AudioFormatSpec]
     public let bufferCapacity: Int
     public let supportedCommands: [PlayerCommand]
 
-    public init(supportFormats: [AudioFormatSpec], bufferCapacity: Int, supportedCommands: [PlayerCommand]) {
-        self.supportFormats = supportFormats
-        // Extract unique values from formats for Music Assistant compatibility
-        supportCodecs = Array(Set(supportFormats.map { $0.codec.rawValue })).sorted()
-        supportChannels = Array(Set(supportFormats.map { $0.channels })).sorted()
-        supportSampleRates = Array(Set(supportFormats.map { $0.sampleRate })).sorted()
-        supportBitDepth = Array(Set(supportFormats.map { $0.bitDepth })).sorted()
+    enum CodingKeys: String, CodingKey {
+        case supportedFormats = "supported_formats"
+        case bufferCapacity = "buffer_capacity"
+        case supportedCommands = "supported_commands"
+    }
+
+    public init(supportedFormats: [AudioFormatSpec], bufferCapacity: Int, supportedCommands: [PlayerCommand]) {
+        self.supportedFormats = supportedFormats
         self.bufferCapacity = bufferCapacity
         self.supportedCommands = supportedCommands
     }
 }
 
 public struct MetadataSupport: Codable, Sendable {
-    public let supportPictureFormats: [String]
+    public let supportedPictureFormats: [String]
 
-    public init(supportPictureFormats: [String] = []) {
-        self.supportPictureFormats = supportPictureFormats
+    enum CodingKeys: String, CodingKey {
+        case supportedPictureFormats = "supported_picture_formats"
+    }
+
+    public init(supportedPictureFormats: [String] = []) {
+        self.supportedPictureFormats = supportedPictureFormats
     }
 }
 
@@ -153,15 +166,35 @@ public struct ServerHelloMessage: SendspinMessage {
     }
 }
 
+/// Connection reason for server/hello
+public enum ConnectionReason: String, Codable, Sendable {
+    /// Server connected for general availability/discovery
+    case discovery
+    /// Server connected for active playback
+    case playback
+}
+
 public struct ServerHelloPayload: Codable, Sendable {
     public let serverId: String
     public let name: String
     public let version: Int
+    public let activeRoles: [VersionedRole]
+    public let connectionReason: ConnectionReason
 
-    public init(serverId: String, name: String, version: Int) {
+    enum CodingKeys: String, CodingKey {
+        case serverId = "server_id"
+        case name
+        case version
+        case activeRoles = "active_roles"
+        case connectionReason = "connection_reason"
+    }
+
+    public init(serverId: String, name: String, version: Int, activeRoles: [VersionedRole], connectionReason: ConnectionReason) {
         self.serverId = serverId
         self.name = name
         self.version = version
+        self.activeRoles = activeRoles
+        self.connectionReason = connectionReason
     }
 }
 
@@ -177,6 +210,10 @@ public struct ClientTimeMessage: SendspinMessage {
 
 public struct ClientTimePayload: Codable, Sendable {
     public let clientTransmitted: Int64
+
+    enum CodingKeys: String, CodingKey {
+        case clientTransmitted = "client_transmitted"
+    }
 
     public init(clientTransmitted: Int64) {
         self.clientTransmitted = clientTransmitted
@@ -198,6 +235,12 @@ public struct ServerTimePayload: Codable, Sendable {
     public let serverReceived: Int64
     public let serverTransmitted: Int64
 
+    enum CodingKeys: String, CodingKey {
+        case clientTransmitted = "client_transmitted"
+        case serverReceived = "server_received"
+        case serverTransmitted = "server_transmitted"
+    }
+
     public init(clientTransmitted: Int64, serverReceived: Int64, serverTransmitted: Int64) {
         self.clientTransmitted = clientTransmitted
         self.serverReceived = serverReceived
@@ -207,59 +250,51 @@ public struct ServerTimePayload: Codable, Sendable {
 
 // MARK: - State Messages
 
-/// Player state update message (sent by clients to report current state)
-/// Matches Go implementation which uses "player/update" message type
-public struct PlayerUpdateMessage: SendspinMessage {
-    public let type = "player/update"
-    public let payload: PlayerUpdatePayload
+/// Player state values per Sendspin protocol
+public enum PlayerStateValue: String, Codable, Sendable {
+    /// Normal operation, player maintains clock sync
+    case synchronized
+    /// Unable to keep up, issues keeping the clock in sync
+    case error
+}
 
-    public init(payload: PlayerUpdatePayload) {
+/// Client state message (sent by clients to report current state)
+public struct ClientStateMessage: SendspinMessage {
+    public let type = "client/state"
+    public let payload: ClientStatePayload
+
+    public init(payload: ClientStatePayload) {
         self.payload = payload
     }
 }
 
-public struct PlayerUpdatePayload: Codable, Sendable {
-    /// Player state: "idle", "playing", "paused", "buffering", or "error"
-    public let state: String
-    /// Volume level (0-100)
-    public let volume: Int
-    /// Mute state
-    public let muted: Bool
+/// Client state payload containing role-specific state objects
+public struct ClientStatePayload: Codable, Sendable {
+    public let player: PlayerStateObject?
 
-    public init(state: String, volume: Int, muted: Bool) {
-        // Valid player states per Sendspin protocol
-        let validStates = ["idle", "playing", "paused", "buffering", "error"]
-        precondition(validStates.contains(state), "State must be one of: \(validStates.joined(separator: ", "))")
-        precondition(volume >= 0 && volume <= 100, "Volume must be between 0 and 100")
+    public init(player: PlayerStateObject?) {
+        self.player = player
+    }
+}
 
+/// Player state object within client/state message
+public struct PlayerStateObject: Codable, Sendable {
+    /// Player state: "synchronized" or "error"
+    public let state: PlayerStateValue
+    /// Volume level (0-100), only if volume command is supported
+    public let volume: Int?
+    /// Mute state, only if mute command is supported
+    public let muted: Bool?
+
+    public init(state: PlayerStateValue, volume: Int? = nil, muted: Bool? = nil) {
+        if let vol = volume {
+            precondition(vol >= 0 && vol <= 100, "Volume must be between 0 and 100")
+        }
         self.state = state
         self.volume = volume
         self.muted = muted
     }
 }
-
-// Legacy type aliases for backward compatibility
-@available(
-    *,
-    deprecated,
-    renamed: "PlayerUpdateMessage",
-    message: "Use PlayerUpdateMessage instead to match protocol spec"
-)
-public typealias ClientStateMessage = PlayerUpdateMessage
-@available(
-    *,
-    deprecated,
-    renamed: "PlayerUpdatePayload",
-    message: "Use PlayerUpdatePayload instead to match protocol spec"
-)
-public typealias ClientStatePayload = PlayerUpdatePayload
-@available(
-    *,
-    deprecated,
-    renamed: "PlayerUpdatePayload",
-    message: "Use PlayerUpdatePayload instead to match protocol spec"
-)
-public typealias PlayerState = PlayerUpdatePayload
 
 // MARK: - Stream Messages
 
@@ -291,6 +326,14 @@ public struct StreamStartPlayer: Codable, Sendable {
     public let channels: Int
     public let bitDepth: Int
     public let codecHeader: String?
+
+    enum CodingKeys: String, CodingKey {
+        case codec
+        case sampleRate = "sample_rate"
+        case channels
+        case bitDepth = "bit_depth"
+        case codecHeader = "codec_header"
+    }
 
     public init(codec: String, sampleRate: Int, channels: Int, bitDepth: Int, codecHeader: String?) {
         self.codec = codec
@@ -343,6 +386,12 @@ public struct GroupUpdatePayload: Codable, Sendable {
     public let groupId: String?
     public let groupName: String?
 
+    enum CodingKeys: String, CodingKey {
+        case playbackState = "playback_state"
+        case groupId = "group_id"
+        case groupName = "group_name"
+    }
+
     public init(playbackState: String?, groupId: String?, groupName: String?) {
         self.playbackState = playbackState
         self.groupId = groupId
@@ -368,6 +417,13 @@ public struct StreamMetadataPayload: Codable, Sendable {
     public let album: String?
     public let artworkUrl: String?
 
+    enum CodingKeys: String, CodingKey {
+        case title
+        case artist
+        case album
+        case artworkUrl = "artwork_url"
+    }
+
     public init(title: String?, artist: String?, album: String?, artworkUrl: String?) {
         self.title = title
         self.artist = artist
@@ -391,6 +447,12 @@ public struct SessionUpdatePayload: Codable, Sendable {
     public let playbackState: String?
     public let metadata: SessionMetadata?
 
+    enum CodingKeys: String, CodingKey {
+        case groupId = "group_id"
+        case playbackState = "playback_state"
+        case metadata
+    }
+
     public init(groupId: String?, playbackState: String?, metadata: SessionMetadata?) {
         self.groupId = groupId
         self.playbackState = playbackState
@@ -411,6 +473,21 @@ public struct SessionMetadata: Codable, Sendable {
     public let shuffle: Bool?
     public let artworkUrl: String?
     public let timestamp: Int64?
+
+    enum CodingKeys: String, CodingKey {
+        case title
+        case artist
+        case album
+        case albumArtist = "album_artist"
+        case track
+        case trackDuration = "track_duration"
+        case year
+        case playbackSpeed = "playback_speed"
+        case `repeat`
+        case shuffle
+        case artworkUrl = "artwork_url"
+        case timestamp
+    }
 
     public init(
         title: String?,
@@ -438,5 +515,108 @@ public struct SessionMetadata: Codable, Sendable {
         self.shuffle = shuffle
         self.artworkUrl = artworkUrl
         self.timestamp = timestamp
+    }
+}
+
+// MARK: - Clear Messages
+
+/// Stream clear message (clears current stream state)
+public struct StreamClearMessage: SendspinMessage {
+    public let type = "stream/clear"
+
+    public init() {}
+}
+
+// MARK: - Command Messages
+
+/// Command sent from client to server
+public struct ClientCommandMessage: SendspinMessage {
+    public let type = "client/command"
+    public let payload: CommandPayload
+
+    public init(payload: CommandPayload) {
+        self.payload = payload
+    }
+}
+
+/// Command sent from server to client
+public struct ServerCommandMessage: SendspinMessage {
+    public let type = "server/command"
+    public let payload: CommandPayload
+
+    public init(payload: CommandPayload) {
+        self.payload = payload
+    }
+}
+
+/// Command payload for client/command and server/command messages
+public struct CommandPayload: Codable, Sendable {
+    public let command: String
+    public let value: CommandValue?
+
+    public init(command: String, value: CommandValue? = nil) {
+        self.command = command
+        self.value = value
+    }
+}
+
+/// Represents a command value that can be various types
+public enum CommandValue: Codable, Sendable {
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case string(String)
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if let intValue = try? container.decode(Int.self) {
+            self = .int(intValue)
+        } else if let doubleValue = try? container.decode(Double.self) {
+            self = .double(doubleValue)
+        } else if let boolValue = try? container.decode(Bool.self) {
+            self = .bool(boolValue)
+        } else if let stringValue = try? container.decode(String.self) {
+            self = .string(stringValue)
+        } else {
+            throw DecodingError.typeMismatch(
+                CommandValue.self,
+                DecodingError.Context(codingPath: decoder.codingPath, debugDescription: "Expected Int, Double, Bool, or String")
+            )
+        }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case let .int(value):
+            try container.encode(value)
+        case let .double(value):
+            try container.encode(value)
+        case let .bool(value):
+            try container.encode(value)
+        case let .string(value):
+            try container.encode(value)
+        }
+    }
+}
+
+// MARK: - Goodbye Messages
+
+/// Client goodbye message (graceful disconnect)
+public struct ClientGoodbyeMessage: SendspinMessage {
+    public let type = "client/goodbye"
+    public let payload: GoodbyePayload?
+
+    public init(payload: GoodbyePayload? = nil) {
+        self.payload = payload
+    }
+}
+
+/// Goodbye payload with optional reason
+public struct GoodbyePayload: Codable, Sendable {
+    public let reason: String?
+
+    public init(reason: String? = nil) {
+        self.reason = reason
     }
 }

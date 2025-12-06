@@ -32,7 +32,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create binary message
         var messageData = Data()
-        messageData.append(1) // Audio chunk type (server uses type 1)
+        messageData.append(4) // Audio chunk type (per spec, player role uses type 4)
 
         let timestamp: Int64 = 1_000_000 // 1 second in microseconds
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -55,7 +55,7 @@ struct BinaryMessageIntegrationTests {
         // Create 10 sequential chunks
         for chunkIndex in 0 ..< 10 {
             var data = Data()
-            data.append(0) // Audio chunk type
+            data.append(4) // Audio chunk type (per spec, player role uses type 4)
 
             let timestamp = Int64(chunkIndex) * chunkDuration
             withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -111,7 +111,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create artwork message for channel 0
         var messageData = Data()
-        messageData.append(4) // Artwork channel 0
+        messageData.append(8) // Artwork channel 0 (per spec, artwork role uses types 8-11)
 
         let timestamp: Int64 = 5_000_000 // 5 seconds
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -139,7 +139,7 @@ struct BinaryMessageIntegrationTests {
         // Create messages for all 4 artwork channels
         for channelNum in 0 ..< 4 {
             var data = Data()
-            data.append(UInt8(4 + channelNum)) // Channels 4-7
+            data.append(UInt8(8 + channelNum)) // Channels 8-11 (per spec)
 
             let timestamp: Int64 = 1_000_000
             withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -168,7 +168,7 @@ struct BinaryMessageIntegrationTests {
     func emptyArtworkMessage() throws {
         // Per spec, empty artwork message clears the display
         var data = Data()
-        data.append(4) // Artwork channel 0
+        data.append(8) // Artwork channel 0 (per spec, type 8)
 
         let timestamp: Int64 = 2_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -196,7 +196,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create visualizer message
         var messageData = Data()
-        messageData.append(8) // Visualizer data type
+        messageData.append(16) // Visualizer data type (per spec, type 16)
 
         let timestamp: Int64 = 3_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -218,7 +218,7 @@ struct BinaryMessageIntegrationTests {
         let audioData = Data(repeating: 0xAB, count: chunkSize)
 
         var messageData = Data()
-        messageData.append(1) // Audio chunk (server uses type 1)
+        messageData.append(4) // Audio chunk (per spec, player role uses type 4)
 
         let timestamp: Int64 = 10_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }

@@ -17,7 +17,7 @@ struct SendspinClientTests {
         let client = SendspinClient(
             clientId: "test-client",
             name: "Test Client",
-            roles: [.player],
+            roles: [.playerV1],
             playerConfig: config
         )
 
@@ -37,7 +37,7 @@ struct SendspinClientTests {
         let client = SendspinClient(
             clientId: "test-client",
             name: "Test Client",
-            roles: [.player],
+            roles: [.playerV1],
             playerConfig: config
         )
 
@@ -59,7 +59,7 @@ struct SendspinClientTests {
         let client = SendspinClient(
             clientId: "test-client",
             name: "Test Client",
-            roles: [.player],
+            roles: [.playerV1],
             playerConfig: config
         )
 
@@ -84,7 +84,7 @@ struct SendspinClientTests {
         let client = SendspinClient(
             clientId: "test-client",
             name: "Test Client",
-            roles: [.player],
+            roles: [.playerV1],
             playerConfig: config
         )
 

@@ -3,21 +3,25 @@
 
 import Foundation
 
-/// Binary message types using bit-packed structure
-/// Bits 7-2: role type, Bits 1-0: message slot
+/// Binary message type ID allocation per Sendspin spec:
+/// - 0-3: Reserved
+/// - 4-7: Player role (audio chunks)
+/// - 8-11: Artwork role (channels 0-3)
+/// - 16-23: Visualizer role
+/// - 24-191: Reserved for future roles
+/// - 192-255: Application-specific roles
 public enum BinaryMessageType: UInt8, Sendable {
-    // Player role (000000xx)
-    case audioChunk = 1 // Server uses type 1 for audio chunks
-    case audioChunkAlt = 0 // Legacy slot (not used by server)
+    // Player role (4-7)
+    case audioChunk = 4
 
-    // Artwork role (000001xx)
-    case artworkChannel0 = 4
-    case artworkChannel1 = 5
-    case artworkChannel2 = 6
-    case artworkChannel3 = 7
+    // Artwork role (8-11) - channels 0-3
+    case artworkChannel0 = 8
+    case artworkChannel1 = 9
+    case artworkChannel2 = 10
+    case artworkChannel3 = 11
 
-    // Visualizer role (000010xx)
-    case visualizerData = 8
+    // Visualizer role (16-23)
+    case visualizerData = 16
 }
 
 /// Binary message from server
@@ -34,13 +38,11 @@ public struct BinaryMessage: Sendable {
     /// - Returns: Decoded message or nil if invalid
     public init?(data: Data) {
         guard data.count >= 9 else {
-            // print("[BinaryMessage] Parse failed: too short (\(data.count) bytes, need 9+)")
             return nil
         }
 
         let typeValue = data[0]
         guard let type = BinaryMessageType(rawValue: typeValue) else {
-            // print("[BinaryMessage] Parse failed: unknown type \(typeValue)")
             return nil
         }
 
@@ -53,14 +55,10 @@ public struct BinaryMessage: Sendable {
 
         // Validate timestamp is non-negative (server should never send negative)
         guard extractedTimestamp >= 0 else {
-            // print("[BinaryMessage] Parse failed: negative timestamp \(extractedTimestamp)")
             return nil
         }
 
         timestamp = extractedTimestamp
         self.data = data.subdata(in: 9 ..< data.count)
-
-        // Successfully parsed: type=\(type) timestamp=\(extractedTimestamp)
-        // payloadSize=\(self.data.count)
     }
 }

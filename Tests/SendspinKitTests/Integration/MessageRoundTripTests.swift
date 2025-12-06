@@ -19,9 +19,9 @@ struct MessageRoundTripTests {
                 softwareVersion: "17.0"
             ),
             version: 1,
-            supportedRoles: [.player, .controller, .metadata],
-            playerSupport: PlayerSupport(
-                supportFormats: [
+            supportedRoles: [.playerV1, .controllerV1, .metadataV1],
+            playerV1Support: PlayerSupport(
+                supportedFormats: [
                     AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
                     AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44100, bitDepth: 24),
                     AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
@@ -29,21 +29,19 @@ struct MessageRoundTripTests {
                 bufferCapacity: 1_048_576,
                 supportedCommands: [.volume, .mute]
             ),
-            metadataSupport: MetadataSupport(),
-            artworkSupport: nil,
-            visualizerSupport: nil
+            metadataV1Support: MetadataSupport(),
+            artworkV1Support: nil,
+            visualizerV1Support: nil
         )
 
         let message = ClientHelloMessage(payload: originalPayload)
 
-        // Encode to JSON
+        // Encode to JSON (using custom CodingKeys, not convertToSnakeCase)
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
         let jsonData = try encoder.encode(message)
 
         // Decode back
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let decodedMessage = try decoder.decode(ClientHelloMessage.self, from: jsonData)
 
         // Verify all fields match
@@ -51,7 +49,7 @@ struct MessageRoundTripTests {
         #expect(decodedMessage.payload.clientId == "test-client-123")
         #expect(decodedMessage.payload.name == "Test Speaker")
         #expect(decodedMessage.payload.version == 1)
-        #expect(decodedMessage.payload.supportedRoles == [.player, .controller, .metadata])
+        #expect(decodedMessage.payload.supportedRoles == [.playerV1, .controllerV1, .metadataV1])
 
         // Verify device info
         let deviceInfo = try #require(decodedMessage.payload.deviceInfo)
@@ -60,13 +58,13 @@ struct MessageRoundTripTests {
         #expect(deviceInfo.softwareVersion == "17.0")
 
         // Verify player support
-        let playerSupport = try #require(decodedMessage.payload.playerSupport)
+        let playerSupport = try #require(decodedMessage.payload.playerV1Support)
         #expect(playerSupport.bufferCapacity == 1_048_576)
         #expect(playerSupport.supportedCommands == [.volume, .mute])
-        #expect(playerSupport.supportFormats.count == 3)
+        #expect(playerSupport.supportedFormats.count == 3)
 
         // Verify first format
-        let firstFormat = playerSupport.supportFormats[0]
+        let firstFormat = playerSupport.supportedFormats[0]
         #expect(firstFormat.codec == .opus)
         #expect(firstFormat.channels == 2)
         #expect(firstFormat.sampleRate == 48000)
@@ -92,14 +90,12 @@ struct MessageRoundTripTests {
 
         let message = StreamStartMessage(payload: originalPayload)
 
-        // Encode
+        // Encode (now uses custom CodingKeys, no strategy needed)
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
         let jsonData = try encoder.encode(message)
 
         // Decode
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let decodedMessage = try decoder.decode(StreamStartMessage.self, from: jsonData)
 
         // Verify
@@ -123,17 +119,17 @@ struct MessageRoundTripTests {
                 name: "Client",
                 deviceInfo: nil,
                 version: 1,
-                supportedRoles: [.player],
-                playerSupport: PlayerSupport(
-                    supportFormats: [
+                supportedRoles: [.playerV1],
+                playerV1Support: PlayerSupport(
+                    supportedFormats: [
                         AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
                     ],
                     bufferCapacity: 512_000,
                     supportedCommands: []
                 ),
-                metadataSupport: nil,
-                artworkSupport: nil,
-                visualizerSupport: nil
+                metadataV1Support: nil,
+                artworkV1Support: nil,
+                visualizerV1Support: nil
             )
         )
 
@@ -150,7 +146,9 @@ struct MessageRoundTripTests {
             "payload": {
                 "server_id": "server-1",
                 "name": "Music Server",
-                "version": 1
+                "version": 1,
+                "active_roles": ["player@v1"],
+                "connection_reason": "discovery"
             }
         }
         """.utf8)
@@ -192,11 +190,9 @@ struct MessageRoundTripTests {
 
     @Test("Multiple message types in sequence")
     func messageSequence() throws {
+        // ClientHello now uses custom CodingKeys, no strategy needed
         let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
 
         // Verify each message type in sequence
         try verifyClientHello(encoder: encoder, decoder: decoder)
@@ -221,8 +217,8 @@ struct MessageRoundTripTests {
         }
         """.utf8)
 
+        // Now uses custom CodingKeys, no strategy needed
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
 
         let message = try decoder.decode(GroupUpdateMessage.self, from: jsonWithNulls)
 

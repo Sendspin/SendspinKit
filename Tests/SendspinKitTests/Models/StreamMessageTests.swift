@@ -21,8 +21,8 @@ struct StreamMessageTests {
         }
         """
 
+        // Now uses custom CodingKeys, no strategy needed
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let data = try #require(json.data(using: .utf8))
         let message = try decoder.decode(StreamStartMessage.self, from: data)
 
