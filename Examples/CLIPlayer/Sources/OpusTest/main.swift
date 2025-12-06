@@ -2,7 +2,7 @@
 // ABOUTME: Verifies Opus decoding works with real Opus packets
 
 import Foundation
-import ResonateKit
+import SendspinKit
 
 func testOpusDecoder() {
     print("=== OpusDecoder Test ===\n")

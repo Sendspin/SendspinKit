@@ -2,7 +2,7 @@
 // ABOUTME: Handles command-line arguments and launches the player
 
 import Foundation
-import ResonateKit
+import SendspinKit
 
 // Top-level async entry point (Swift 5.5+)
 let args = CommandLine.arguments
@@ -28,11 +28,11 @@ while argIndex < args.count {
 
 // Discover or use provided server URL
 if serverURL == nil {
-    print("🔍 Discovering Resonate servers...")
-    let servers = await ResonateClient.discoverServers()
+    print("🔍 Discovering Sendspin servers...")
+    let servers = await SendspinClient.discoverServers()
 
     if servers.isEmpty {
-        print("❌ No Resonate servers found on network")
+        print("❌ No Sendspin servers found on network")
         print("💡 Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
         exit(1)
     }

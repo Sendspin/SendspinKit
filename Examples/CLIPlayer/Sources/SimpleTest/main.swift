@@ -1,17 +1,17 @@
-// ABOUTME: Simple non-interactive test client for ResonateKit
+// ABOUTME: Simple non-interactive test client for SendspinKit
 // ABOUTME: Connects and runs for a specified duration without requiring user input
 
 import Foundation
-import ResonateKit
+import SendspinKit
 
 @main
 struct SimpleTest {
     static func main() async {
-        print("🎵 Simple ResonateKit Test")
+        print("🎵 Simple SendspinKit Test")
         print("━━━━━━━━━━━━━━━━━━━━━━━━")
 
         let args = CommandLine.arguments
-        let serverURL = args.count > 1 ? args[1] : "ws://localhost:8927/resonate"
+        let serverURL = args.count > 1 ? args[1] : "ws://localhost:8927/sendspin"
         let duration = args.count > 2 ? Int(args[2]) ?? 30 : 30
 
         guard let url = URL(string: serverURL) else {
@@ -32,7 +32,7 @@ struct SimpleTest {
         )
 
         // Create client
-        let client = ResonateClient(
+        let client = SendspinClient(
             clientId: UUID().uuidString,
             name: "Simple Test Client",
             roles: [.player, .metadata],  // Added .metadata role to test metadata delivery

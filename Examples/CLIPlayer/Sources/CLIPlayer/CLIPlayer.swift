@@ -1,12 +1,12 @@
-// ABOUTME: Example CLI player demonstrating ResonateKit usage
-// ABOUTME: Connects to a Resonate server and plays synchronized audio
+// ABOUTME: Example CLI player demonstrating SendspinKit usage
+// ABOUTME: Connects to a Sendspin server and plays synchronized audio
 
 import Foundation
-import ResonateKit
+import SendspinKit
 
-/// Simple CLI player for Resonate Protocol
+/// Simple CLI player for Sendspin Protocol
 final class CLIPlayer {
-    private var client: ResonateClient?
+    private var client: SendspinClient?
     private var eventTask: Task<Void, Never>?
     private var statsTask: Task<Void, Never>?
     private let display = StatusDisplay()
@@ -14,7 +14,7 @@ final class CLIPlayer {
     @MainActor
     func run(serverURL: String, clientName: String, useTUI: Bool = true) async throws {
         // Simple startup banner before TUI takes over
-        print("🎵 Resonate CLI Player")
+        print("🎵 Sendspin CLI Player")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Initializing...")
 
@@ -45,7 +45,7 @@ final class CLIPlayer {
         )
 
         // Create client
-        let client = ResonateClient(
+        let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.player, .metadata],
@@ -94,7 +94,7 @@ final class CLIPlayer {
     }
 
     @MainActor
-    private func monitorEvents(client: ResonateClient, useTUI: Bool) async {
+    private func monitorEvents(client: SendspinClient, useTUI: Bool) async {
         for await event in client.events {
             switch event {
             case let .serverConnected(info):
@@ -164,7 +164,7 @@ final class CLIPlayer {
     }
 
     @MainActor
-    private func monitorStats(client _: ResonateClient) async {
+    private func monitorStats(client _: SendspinClient) async {
         while !Task.isCancelled {
             // Update volume from client
             // Note: Would need to expose these as observable properties
@@ -174,7 +174,7 @@ final class CLIPlayer {
         }
     }
 
-    private nonisolated static func runCommandLoopStatic(client: ResonateClient, display: StatusDisplay) async {
+    private nonisolated static func runCommandLoopStatic(client: SendspinClient, display: StatusDisplay) async {
         while let line = readLine() {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedLine.isEmpty else {
@@ -345,7 +345,7 @@ actor StatusDisplay {
         // Header
         output += "\(ANSI.bold)\(ANSI.cyan)"
         output += "┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓\n"
-        output += "┃                      🎵 RESONATE CLI PLAYER 🎵                          ┃\n"
+        output += "┃                      🎵 SENDSPIN CLI PLAYER 🎵                          ┃\n"
         output += "┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛\n"
         output += ANSI.reset
         output += "\n"

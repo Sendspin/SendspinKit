@@ -2,7 +2,7 @@
 // ABOUTME: Verifies FLAC decoding works with real FLAC frames and stream data
 
 import Foundation
-import ResonateKit
+import SendspinKit
 
 func testFLACDecoder() {
     print("=== FLACDecoder Test ===\n")

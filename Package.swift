@@ -2,7 +2,7 @@
 import PackageDescription
 
 let package = Package(
-    name: "ResonateKit",
+    name: "SendspinKit",
     platforms: [
         .iOS(.v17),
         .macOS(.v14),
@@ -11,8 +11,8 @@ let package = Package(
     ],
     products: [
         .library(
-            name: "ResonateKit",
-            targets: ["ResonateKit"]
+            name: "SendspinKit",
+            targets: ["SendspinKit"]
         )
     ],
     dependencies: [
@@ -23,7 +23,7 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "ResonateKit",
+            name: "SendspinKit",
             dependencies: [
                 .product(name: "Starscream", package: "Starscream"),
                 .product(name: "Opus", package: "swift-opus"),
@@ -32,8 +32,8 @@ let package = Package(
             ]
         ),
         .testTarget(
-            name: "ResonateKitTests",
-            dependencies: ["ResonateKit"]
+            name: "SendspinKitTests",
+            dependencies: ["SendspinKit"]
         )
     ]
 )

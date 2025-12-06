@@ -1,10 +1,10 @@
-# Resonate CLI Player
+# Sendspin CLI Player
 
-A simple command-line audio player demonstrating how to use ResonateKit to connect to a Resonate Protocol server and play synchronized audio.
+A simple command-line audio player demonstrating how to use SendspinKit to connect to a Sendspin Protocol server and play synchronized audio.
 
 ## Features
 
-- Connects to Resonate server via WebSocket
+- Connects to Sendspin server via WebSocket
 - Supports PCM, Opus, and FLAC audio formats
 - Real-time clock synchronization for multi-room audio
 - Interactive volume and mute controls
@@ -32,7 +32,7 @@ swift run CLIPlayer "Living Room"
 ```
 
 The player will:
-1. Scan the network for Resonate servers via mDNS
+1. Scan the network for Sendspin servers via mDNS
 2. Display all found servers
 3. Automatically connect to the first server
 
@@ -40,11 +40,11 @@ The player will:
 
 ```bash
 # Connect to specific server URL
-# Note: The /resonate path is automatically appended if not provided
+# Note: The /sendspin path is automatically appended if not provided
 swift run CLIPlayer ws://192.168.1.100:8927
 
 # Connect with explicit path
-swift run CLIPlayer ws://192.168.1.100:8927/resonate
+swift run CLIPlayer ws://192.168.1.100:8927/sendspin
 
 # Connect with custom client name
 swift run CLIPlayer ws://192.168.1.100:8927 "Living Room"
@@ -64,12 +64,12 @@ Once connected, you can use these commands:
 ### With Discovery
 
 ```
-🔍 Discovering Resonate servers...
+🔍 Discovering Sendspin servers...
 📡 Found 2 server(s):
   [1] Music Assistant - ws://192.168.1.100:8927
   [2] Living Room Server - ws://192.168.1.105:8927
 ✅ Connecting to: Music Assistant
-🎵 Resonate CLI Player
+🎵 Sendspin CLI Player
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📡 Connecting to ws://192.168.1.100:8927...
 ✅ Connected! Listening for audio streams...
@@ -79,7 +79,7 @@ Commands:
   m          - Toggle mute
   q          - Quit
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🔗 Connected to server: My Resonate Server (v1)
+🔗 Connected to server: My Sendspin Server (v1)
 📻 Group: Living Room [playing]
 ▶️  Stream started:
    Codec: flac
@@ -98,11 +98,11 @@ The example demonstrates:
 4. **Playback control** - Volume and mute commands
 5. **Interactive CLI** - Reading user input while maintaining event stream
 
-## Key ResonateKit APIs Used
+## Key SendspinKit APIs Used
 
 ```swift
 // Discover servers on network
-let servers = await ResonateClient.discoverServers()
+let servers = await SendspinClient.discoverServers()
 // Returns: [DiscoveredServer(name: "Music Assistant", url: ws://..., ...)]
 
 // Create player configuration
@@ -112,7 +112,7 @@ let config = PlayerConfiguration(
 )
 
 // Create client
-let client = ResonateClient(
+let client = SendspinClient(
     clientId: UUID().uuidString,
     name: "My Player",
     roles: [.player],
@@ -140,7 +140,7 @@ await client.setMute(true)
 
 - macOS 14.0 or later
 - Swift 6.0 or later
-- A running Resonate Protocol server
+- A running Sendspin Protocol server
 
 ## Notes
 

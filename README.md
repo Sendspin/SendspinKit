@@ -1,8 +1,8 @@
-> This is a very early proof of concept of the resonate protocol. The protocol will likely change. This does work today (10/26), but may not work tomorrow.
+> This is a very early proof of concept of the Sendspin protocol. The protocol will likely change. This does work today (10/26), but may not work tomorrow.
 
-# ResonateKit
+# SendspinKit
 
-A Swift client library for the [Resonate Protocol](https://github.com/Resonate-Protocol/spec) - enabling synchronized multi-room audio playback on Apple platforms.
+A Swift client library for the [Sendspin Protocol](https://github.com/Sendspin/spec) - enabling synchronized multi-room audio playback on Apple platforms.
 
 ## Features
 
@@ -24,17 +24,17 @@ A Swift client library for the [Resonate Protocol](https://github.com/Resonate-P
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/YOUR_ORG/ResonateKit.git", from: "0.1.0")
+    .package(url: "https://github.com/YOUR_ORG/SendspinKit.git", from: "0.1.0")
 ]
 ```
 
 ## Quick Start
 
 ```swift
-import ResonateKit
+import SendspinKit
 
 // Create client with player role
-let client = ResonateClient(
+let client = SendspinClient(
     clientId: "my-device",
     name: "Living Room Speaker",
     roles: [.player],
@@ -49,7 +49,7 @@ let client = ResonateClient(
 )
 
 // Discover servers
-let discovery = ResonateDiscovery()
+let discovery = SendspinDiscovery()
 await discovery.startDiscovery()
 
 for await server in discovery.discoveredServers {
@@ -68,7 +68,7 @@ for await server in discovery.discoveredServers {
 
 ## Codec Support
 
-ResonateKit supports multiple audio codecs for high-quality streaming:
+SendspinKit supports multiple audio codecs for high-quality streaming:
 
 - **PCM** - Uncompressed audio up to 192kHz 32-bit (zero-copy passthrough)
 - **Opus** - Low-latency lossy compression (8-48kHz, optimized for real-time)
@@ -78,7 +78,7 @@ All codecs output normalized int32 PCM for consistent pipeline processing. See [
 
 ## Audio Synchronization
 
-ResonateKit uses timestamp-based audio scheduling to ensure precise synchronization:
+SendspinKit uses timestamp-based audio scheduling to ensure precise synchronization:
 
 - **AudioScheduler**: Maintains priority queue of audio chunks sorted by playback time
 - **Clock Sync**: Compensates for clock drift using Kalman filter approach
@@ -86,7 +86,7 @@ ResonateKit uses timestamp-based audio scheduling to ensure precise synchronizat
 - **Late Chunk Handling**: Automatically drops chunks >50ms late to maintain sync
 - **AsyncStream Pipeline**: Non-blocking chunk output for smooth playback
 
-The scheduler converts server timestamps to local playback times and ensures chunks play at their intended moment, not when they arrive from the network. This architecture matches the [Go reference implementation](https://github.com/harperreed/resonate-go).
+The scheduler converts server timestamps to local playback times and ensures chunks play at their intended moment, not when they arrive from the network.
 
 ## Testing
 
@@ -96,11 +96,11 @@ The scheduler converts server timestamps to local playback times and ensures chu
 ## TODO
 
 - [ ] Verify hi-res audio (192kHz/24-bit) end-to-end with real hardware
-- [ ] Test compatibility with other Resonate Protocol server implementations
-- [ ] Update implementation as Resonate Protocol spec solidifies
+- [ ] Test compatibility with other Sendspin Protocol server implementations
+- [ ] Update implementation as Sendspin Protocol spec solidifies
 - [ ] Comprehensive audit and bug fixes
 
-See [GitHub Issues](https://github.com/harperreed/ResonateKit/issues) for detailed tracking and discussion.
+See [GitHub Issues](https://github.com/harperreed/SendspinKit/issues) for detailed tracking and discussion.
 
 ## License
 
