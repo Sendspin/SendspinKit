@@ -1,5 +1,0 @@
-framework module ogg {
-	header "ogg.h"
-	header "os_types.h"
-	export *
-}
