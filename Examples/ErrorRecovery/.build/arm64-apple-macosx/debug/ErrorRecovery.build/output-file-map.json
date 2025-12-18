@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/master.swiftdeps"
+  },
+  "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/Sources/ErrorRecovery/main.swift": {
+    "dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/main.d",
+    "object": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/main.swift.o",
+    "swiftmodule": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/main.swiftdeps",
+    "diagnostics": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/arm64-apple-macosx/debug/ErrorRecovery.build/main.dia"
+  }
+}

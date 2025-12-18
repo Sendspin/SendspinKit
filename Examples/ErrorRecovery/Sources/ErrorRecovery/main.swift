@@ -265,7 +265,8 @@ class ReconnectionManager {
     func shutdown() async {
         print("\n🛑 Initiating graceful shutdown...")
         isRunning = false
-        stopEventMonitoring()
+        eventTask?.cancel()
+        _ = await eventTask?.result  // Wait for task cancellation
         await client.disconnect()
         print("✅ Shutdown complete")
     }
@@ -359,17 +360,26 @@ class ReconnectionManager {
 
         let errorDescription = String(describing: error)
 
-        // For this example, treat all connection-related errors as retryable
-        // In production, you'd be more sophisticated
+        // Check for non-retryable errors first (permanent failures)
+        if errorDescription.contains("authentication") ||
+           errorDescription.contains("unauthorized") ||
+           errorDescription.contains("invalid") ||
+           errorDescription.contains("protocol") {
+            print("   ❌ Non-retryable error (permanent failure)")
+            return false
+        }
+
+        // Retryable: network/connection issues
         if errorDescription.contains("connection") ||
            errorDescription.contains("timeout") ||
-           errorDescription.contains("network") {
+           errorDescription.contains("network") ||
+           errorDescription.contains("refused") {
             print("   ✅ Retryable error (network/connection related)")
             return true
         }
 
-        // Default to retrying for this demo
-        print("   ✅ Retryable error (default policy)")
+        // Default to retrying for unknown errors
+        print("   ⚠️ Unknown error type - retrying (default policy)")
         return true
     }
 
