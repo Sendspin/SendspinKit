@@ -1,3 +1,0 @@
-module SendspinKit {
-    header "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/SendspinKit.build/include/SendspinKit-Swift.h"
-}
