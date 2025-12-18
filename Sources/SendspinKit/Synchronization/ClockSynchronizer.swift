@@ -15,6 +15,8 @@ public struct ClockStats: Sendable {
     public let offset: Int64
     public let rtt: Int64
     public let quality: SyncQuality
+    public let drift: Double
+    public let sampleCount: Int
 }
 
 /// Synchronizes local clock with server clock using drift compensation
@@ -52,7 +54,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
 
     /// Get sync statistics
     public func getStats() -> ClockStats {
-        return ClockStats(offset: offset, rtt: rtt, quality: quality)
+        return ClockStats(offset: offset, rtt: rtt, quality: quality, drift: drift, sampleCount: sampleCount)
     }
 
     /// Get individual stats for Sendable contexts

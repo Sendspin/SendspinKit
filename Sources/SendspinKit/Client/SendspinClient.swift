@@ -746,6 +746,14 @@ public final class SendspinClient {
         // Send state update to server (required by spec)
         try? await sendClientState()
     }
+
+    /// Get clock synchronization statistics
+    /// Returns nil if not connected or clock sync not initialized
+    @MainActor
+    public func getClockStats() async -> ClockStats? {
+        guard let clockSync = clockSync else { return nil }
+        return await clockSync.getStats()
+    }
 }
 
 public enum ClientEvent: Sendable {
