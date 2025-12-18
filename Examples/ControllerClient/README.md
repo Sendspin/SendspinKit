@@ -83,7 +83,7 @@ The display shows real-time volume status with a visual bar:
 ### Main Components
 
 1. **ArgumentParser CLI** - Handles `--server` or `--discover` options
-2. **SendspinClient** - Created with `controller@v1` role
+2. **SendspinClient** - Created with `player@v1` + `metadata@v1` roles (silent player pattern)
 3. **Event monitoring** - Async task to display metadata and status
 4. **Command loop** - Raw terminal input for immediate key response
 5. **Control methods** - `setVolume()` and `setMute()` API calls
