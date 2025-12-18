@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/master.swiftdeps"
+  },
+  "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/checkouts/swift-argument-parser/Sources/ArgumentParserToolInfo/ToolInfo.swift": {
+    "dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/ToolInfo.d",
+    "object": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/ToolInfo.swift.o",
+    "swiftmodule": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/ToolInfo~partial.swiftmodule",
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/ToolInfo.swiftdeps",
+    "diagnostics": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ArgumentParserToolInfo.build/ToolInfo.dia"
+  }
+}

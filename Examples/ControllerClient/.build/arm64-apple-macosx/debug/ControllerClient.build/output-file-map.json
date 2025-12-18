@@ -1,0 +1,12 @@
+{
+  "": {
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/master.swiftdeps"
+  },
+  "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/Sources/ControllerClient/main.swift": {
+    "dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/main.d",
+    "object": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/main.swift.o",
+    "swiftmodule": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/main~partial.swiftmodule",
+    "swift-dependencies": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/main.swiftdeps",
+    "diagnostics": "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ControllerClient/.build/arm64-apple-macosx/debug/ControllerClient.build/main.dia"
+  }
+}
