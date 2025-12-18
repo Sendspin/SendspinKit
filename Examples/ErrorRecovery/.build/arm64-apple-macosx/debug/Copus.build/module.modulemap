@@ -1,4 +1,0 @@
-module Copus {
-    umbrella "/Users/harper/Public/src/personal/ma-interface/SendspinKit/Examples/ErrorRecovery/.build/checkouts/swift-opus/Sources/Copus/include"
-    export *
-}
