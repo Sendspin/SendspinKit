@@ -1,5 +1,7 @@
 # SendspinKit Examples
 
+> **Work in Progress**: These examples are under active development. APIs may change, and some features may be incomplete. Feedback and contributions welcome!
+
 This directory contains standalone example packages demonstrating various SendspinKit features. Each example is self-contained and can be copied as a starting point for your own projects.
 
 ## Quick Start
