@@ -1,5 +1,8 @@
 > This is a very early proof of concept of the Sendspin protocol. The protocol will likely change. This does work today (10/26), but may not work tomorrow.
 
+> [!WARNING]
+> **Incomplete implementation.** This SDK is missing the [Sendspin time filter](https://github.com/Sendspin/time-filter) — a Kalman filter required for accurate clock synchronization. The current implementation uses a fixed-gain estimator that does not track drift or adapt to measurement quality, which will result in poor synchronization accuracy. This SDK should not be used for synchronized audio playback until a proper time filter is implemented.
+
 # SendspinKit
 
 A Swift client library for the [Sendspin Protocol](https://github.com/Sendspin/spec) - enabling synchronized multi-room audio playback on Apple platforms.
