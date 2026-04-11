@@ -19,7 +19,6 @@ struct MessageEncodingTests {
                 bufferCapacity: 1024,
                 supportedCommands: [.volume, .mute]
             ),
-            metadataV1Support: nil,
             artworkV1Support: nil,
             visualizerV1Support: nil
         )

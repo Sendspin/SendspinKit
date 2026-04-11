@@ -30,7 +30,6 @@ public struct ClientHelloPayload: Codable, Sendable {
     public let version: Int
     public let supportedRoles: [VersionedRole]
     public let playerV1Support: PlayerSupport?
-    public let metadataV1Support: MetadataSupport?
     public let artworkV1Support: ArtworkSupport?
     public let visualizerV1Support: VisualizerSupport?
 
@@ -41,7 +40,6 @@ public struct ClientHelloPayload: Codable, Sendable {
         case version
         case supportedRoles = "supported_roles"
         case playerV1Support = "player@v1_support"
-        case metadataV1Support = "metadata@v1_support"
         case artworkV1Support = "artwork@v1_support"
         case visualizerV1Support = "visualizer@v1_support"
     }
@@ -53,7 +51,6 @@ public struct ClientHelloPayload: Codable, Sendable {
         version: Int,
         supportedRoles: [VersionedRole],
         playerV1Support: PlayerSupport?,
-        metadataV1Support: MetadataSupport?,
         artworkV1Support: ArtworkSupport?,
         visualizerV1Support: VisualizerSupport?
     ) {
@@ -63,7 +60,6 @@ public struct ClientHelloPayload: Codable, Sendable {
         self.version = version
         self.supportedRoles = supportedRoles
         self.playerV1Support = playerV1Support
-        self.metadataV1Support = metadataV1Support
         self.artworkV1Support = artworkV1Support
         self.visualizerV1Support = visualizerV1Support
     }
@@ -122,26 +118,18 @@ public struct PlayerSupport: Codable, Sendable {
     }
 }
 
-public struct MetadataSupport: Codable, Sendable {
-    public let supportedPictureFormats: [String]
+// NOTE: The metadata role has no support object in the spec.
+// It's activated by listing "metadata@v1" in supported_roles.
 
-    enum CodingKeys: String, CodingKey {
-        case supportedPictureFormats = "supported_picture_formats"
-    }
-
-    public init(supportedPictureFormats: [String] = []) {
-        self.supportedPictureFormats = supportedPictureFormats
-    }
-}
-
+/// Artwork@v1 support object in client/hello per spec.
+/// Declares artwork channels the client can display.
 public struct ArtworkSupport: Codable, Sendable {
-    // IMPLEMENTATION_NOTE: Implement when artwork role is added
+    /// Supported artwork channels (1-4), array index is the channel number
+    public let channels: [ArtworkChannel]
 
-    public init() {}
-
-    // Explicit Codable implementation for empty struct
-    public init(from _: Decoder) throws {}
-    public func encode(to _: Encoder) throws {}
+    public init(channels: [ArtworkChannel]) {
+        self.channels = channels
+    }
 }
 
 public struct VisualizerSupport: Codable, Sendable {
@@ -493,14 +481,15 @@ public struct StreamStartPlayer: Codable, Sendable {
     }
 }
 
+/// Artwork stream configuration in stream/start per spec.
+/// Contains per-channel config with resolved dimensions.
 public struct StreamStartArtwork: Codable, Sendable {
-    // IMPLEMENTATION_NOTE: Implement when artwork role is added
+    /// Configuration for each active artwork channel, array index is the channel number
+    public let channels: [StreamArtworkChannelConfig]
 
-    public init() {}
-
-    // Explicit Codable implementation for empty struct
-    public init(from _: Decoder) throws {}
-    public func encode(to _: Encoder) throws {}
+    public init(channels: [StreamArtworkChannelConfig]) {
+        self.channels = channels
+    }
 }
 
 public struct StreamStartVisualizer: Codable, Sendable {
@@ -513,11 +502,23 @@ public struct StreamStartVisualizer: Codable, Sendable {
     public func encode(to _: Encoder) throws {}
 }
 
-/// Stream end message
+/// Stream end message — ends streams for specified roles (or all if omitted)
 public struct StreamEndMessage: SendspinMessage {
     public let type = "stream/end"
+    public let payload: StreamEndPayload
 
-    public init() {}
+    public init(payload: StreamEndPayload = StreamEndPayload()) {
+        self.payload = payload
+    }
+}
+
+public struct StreamEndPayload: Codable, Sendable {
+    /// Roles to end streams for. If nil, ends all active streams.
+    public let roles: [String]?
+
+    public init(roles: [String]? = nil) {
+        self.roles = roles
+    }
 }
 
 /// Group update message
@@ -567,6 +568,85 @@ public struct StreamClearPayload: Codable, Sendable {
 
     public init(roles: [String]? = nil) {
         self.roles = roles
+    }
+}
+
+// MARK: - Stream Format Request
+
+/// Client requests a different stream format (upgrade or downgrade).
+/// Available for clients with the player or artwork role.
+public struct StreamRequestFormatMessage: SendspinMessage {
+    public let type = "stream/request-format"
+    public let payload: StreamRequestFormatPayload
+
+    public init(payload: StreamRequestFormatPayload) {
+        self.payload = payload
+    }
+}
+
+public struct StreamRequestFormatPayload: Codable, Sendable {
+    /// Player format request (only for clients with player role)
+    public let player: PlayerFormatRequest?
+    /// Artwork format request (only for clients with artwork role)
+    public let artwork: ArtworkFormatRequest?
+
+    public init(player: PlayerFormatRequest? = nil, artwork: ArtworkFormatRequest? = nil) {
+        self.player = player
+        self.artwork = artwork
+    }
+}
+
+/// Player format request within stream/request-format per spec
+public struct PlayerFormatRequest: Codable, Sendable {
+    public let codec: String?
+    public let channels: Int?
+    public let sampleRate: Int?
+    public let bitDepth: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case codec
+        case channels
+        case sampleRate = "sample_rate"
+        case bitDepth = "bit_depth"
+    }
+
+    public init(codec: String? = nil, channels: Int? = nil, sampleRate: Int? = nil, bitDepth: Int? = nil) {
+        self.codec = codec
+        self.channels = channels
+        self.sampleRate = sampleRate
+        self.bitDepth = bitDepth
+    }
+}
+
+/// Artwork format request within stream/request-format per spec.
+/// Requests the server to change artwork format for a specific channel.
+public struct ArtworkFormatRequest: Codable, Sendable {
+    /// Channel number (0-3)
+    public let channel: Int
+    /// Artwork source type
+    public let source: ArtworkSource?
+    /// Requested image format
+    public let format: ImageFormat?
+    /// Requested max width in pixels
+    public let mediaWidth: Int?
+    /// Requested max height in pixels
+    public let mediaHeight: Int?
+
+    enum CodingKeys: String, CodingKey {
+        case channel
+        case source
+        case format
+        case mediaWidth = "media_width"
+        case mediaHeight = "media_height"
+    }
+
+    public init(channel: Int, source: ArtworkSource? = nil, format: ImageFormat? = nil, mediaWidth: Int? = nil, mediaHeight: Int? = nil) {
+        precondition(channel >= 0 && channel <= 3, "channel must be 0-3")
+        self.channel = channel
+        self.source = source
+        self.format = format
+        self.mediaWidth = mediaWidth
+        self.mediaHeight = mediaHeight
     }
 }
 

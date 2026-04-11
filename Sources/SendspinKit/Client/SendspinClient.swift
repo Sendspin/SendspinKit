@@ -13,6 +13,7 @@ public final class SendspinClient {
     private let name: String
     private let roles: Set<VersionedRole>
     private let playerConfig: PlayerConfiguration?
+    private let artworkConfig: ArtworkConfiguration?
 
     // State
     public private(set) var connectionState: ConnectionState = .disconnected
@@ -22,6 +23,7 @@ public final class SendspinClient {
     private var currentVolume: Float = 1.0
     private var currentMuted: Bool = false
     private var staticDelayMs: Int = 0
+    private var artworkStreamActive = false
 
     // Controller state (received from server)
     public private(set) var controllerSupportedCommands: [String] = []
@@ -49,17 +51,22 @@ public final class SendspinClient {
         clientId: String,
         name: String,
         roles: Set<VersionedRole>,
-        playerConfig: PlayerConfiguration? = nil
+        playerConfig: PlayerConfiguration? = nil,
+        artworkConfig: ArtworkConfiguration? = nil
     ) {
         self.clientId = clientId
         self.name = name
         self.roles = roles
         self.playerConfig = playerConfig
+        self.artworkConfig = artworkConfig
 
         (events, eventsContinuation) = AsyncStream.makeStream()
 
         if roles.contains(.playerV1) {
             precondition(playerConfig != nil, "Player role requires playerConfig")
+        }
+        if roles.contains(.artworkV1) {
+            precondition(artworkConfig != nil, "Artwork role requires artworkConfig")
         }
     }
 
@@ -186,6 +193,7 @@ public final class SendspinClient {
         isClockSynced = false
         currentVolume = 1.0
         currentMuted = false
+        artworkStreamActive = false
 
         connectionState = .disconnected
     }
@@ -207,6 +215,11 @@ public final class SendspinClient {
             )
         }
 
+        var artworkV1Support: ArtworkSupport?
+        if roles.contains(.artworkV1), let artworkConfig = artworkConfig {
+            artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
+        }
+
         let payload = ClientHelloPayload(
             clientId: clientId,
             name: name,
@@ -214,8 +227,7 @@ public final class SendspinClient {
             version: 1,
             supportedRoles: Array(roles),
             playerV1Support: playerV1Support,
-            metadataV1Support: roles.contains(.metadataV1) ? MetadataSupport() : nil,
-            artworkV1Support: roles.contains(.artworkV1) ? ArtworkSupport() : nil,
+            artworkV1Support: artworkV1Support,
             visualizerV1Support: roles.contains(.visualizerV1) ? VisualizerSupport() : nil
         )
 
@@ -420,7 +432,10 @@ public final class SendspinClient {
             await handleAudioChunkNonisolated(message)
 
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
+            // Per spec: binary messages should be rejected if there is no active stream
+            guard await artworkStreamActive else { return }
             let channel = Int(message.type.rawValue - 8)
+            // Empty payload (no image data) means clear the artwork per spec
             eventsContinuation.yield(.artworkReceived(channel: channel, data: message.data))
 
         case .visualizerData:
@@ -511,6 +526,13 @@ public final class SendspinClient {
     }
 
     private func handleStreamStart(_ message: StreamStartMessage) async {
+        // Handle artwork stream start
+        if let artworkInfo = message.payload.artwork {
+            artworkStreamActive = true
+            eventsContinuation.yield(.artworkStreamStarted(artworkInfo.channels))
+        }
+
+        // Handle player stream start
         guard let playerInfo = message.payload.player else { return }
         guard let audioPlayer = audioPlayer else { return }
 
@@ -585,12 +607,22 @@ public final class SendspinClient {
         }
     }
 
-    private func handleStreamEnd(_: StreamEndMessage) async {
-        guard let audioPlayer = audioPlayer else { return }
+    private func handleStreamEnd(_ message: StreamEndMessage) async {
+        // stream/end with no roles ends all streams
+        let endedRoles = message.payload.roles
 
-        await audioScheduler?.stop()
-        await audioScheduler?.clear()
-        await audioPlayer.stop()
+        if endedRoles == nil || endedRoles?.contains("player") == true {
+            if let audioPlayer = audioPlayer {
+                await audioScheduler?.stop()
+                await audioScheduler?.clear()
+                await audioPlayer.stop()
+            }
+        }
+
+        if endedRoles == nil || endedRoles?.contains("artwork") == true {
+            artworkStreamActive = false
+        }
+
         clientOperationalState = .synchronized
         eventsContinuation.yield(.streamEnded)
     }
@@ -704,6 +736,33 @@ public final class SendspinClient {
         try? await sendClientState()
     }
 
+    // MARK: - Artwork commands
+
+    /// Request the server to change artwork format for a specific channel.
+    /// The server will respond with stream/start containing the updated config.
+    @MainActor
+    public func requestArtworkFormat(
+        channel: Int,
+        source: ArtworkSource? = nil,
+        format: ImageFormat? = nil,
+        mediaWidth: Int? = nil,
+        mediaHeight: Int? = nil
+    ) async {
+        guard let transport = transport else { return }
+
+        let request = ArtworkFormatRequest(
+            channel: channel,
+            source: source,
+            format: format,
+            mediaWidth: mediaWidth,
+            mediaHeight: mediaHeight
+        )
+        let message = StreamRequestFormatMessage(
+            payload: StreamRequestFormatPayload(artwork: request)
+        )
+        try? await transport.send(message)
+    }
+
     // MARK: - Controller commands
 
     /// Send a controller command to the server.
@@ -747,6 +806,7 @@ public enum ClientEvent: Sendable {
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
+    case artworkStreamStarted([StreamArtworkChannelConfig])
     case artworkReceived(channel: Int, data: Data)
     case visualizerData(Data)
     case error(String)

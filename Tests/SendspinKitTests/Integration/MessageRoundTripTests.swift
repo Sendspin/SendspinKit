@@ -29,7 +29,6 @@ struct MessageRoundTripTests {
                 bufferCapacity: 1_048_576,
                 supportedCommands: [.volume, .mute]
             ),
-            metadataV1Support: MetadataSupport(),
             artworkV1Support: nil,
             visualizerV1Support: nil
         )
@@ -127,7 +126,6 @@ struct MessageRoundTripTests {
                     bufferCapacity: 512_000,
                     supportedCommands: []
                 ),
-                metadataV1Support: nil,
                 artworkV1Support: nil,
                 visualizerV1Support: nil
             )

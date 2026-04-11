@@ -43,12 +43,18 @@ final class CLIPlayer {
             ]
         )
 
+        // Create artwork configuration (single channel, album art, JPEG, up to 800x800)
+        let artworkConfig = ArtworkConfiguration(channels: [
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
+        ])
+
         // Create client
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
-            roles: [.player, .metadata, .controller],
-            playerConfig: config
+            roles: [.player, .metadata, .controller, .artwork],
+            playerConfig: config,
+            artworkConfig: artworkConfig
         )
         self.client = client
 
@@ -141,9 +147,19 @@ final class CLIPlayer {
                     print("[CONTROLLER] commands=\(state.supportedCommands.joined(separator: ",")) volume=\(state.volume) muted=\(state.muted)")
                 }
 
+            case let .artworkStreamStarted(channels):
+                if !useTUI {
+                    let desc = channels.enumerated().map { "ch\($0): \($1.source)/\($1.format) \($1.width)x\($1.height)" }.joined(separator: ", ")
+                    print("[EVENT] Artwork stream started: \(desc)")
+                }
+
             case let .artworkReceived(channel, data):
                 if !useTUI {
-                    print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
+                    if data.isEmpty {
+                        print("[EVENT] Artwork cleared on channel \(channel)")
+                    } else {
+                        print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
+                    }
                 }
 
             case let .visualizerData(data):
