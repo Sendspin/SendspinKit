@@ -93,8 +93,12 @@ public actor AudioPlayer {
         audioFormat.mFramesPerPacket = 1
         audioFormat.mChannelsPerFrame = UInt32(format.channels)
 
-        // 24-bit input is unpacked to 32-bit Int32 by the decoder
-        let effectiveBitDepth = (format.bitDepth == 24) ? 32 : format.bitDepth
+        // Both 24-bit PCM and FLAC decoders output Int32 (4 bytes per sample):
+        // - 24-bit PCM: unpacked from 3 bytes to 4 bytes, left-shifted 8 bits
+        // - FLAC: libFLAC always outputs Int32, shifted to fill 32-bit range
+        // - Opus: also outputs Int32 (converted from float32)
+        let decoderOutputs32Bit = (format.bitDepth == 24 || format.codec == .flac || format.codec == .opus)
+        let effectiveBitDepth = decoderOutputs32Bit ? 32 : format.bitDepth
         let bytesPerSample = effectiveBitDepth / 8
 
         audioFormat.mBytesPerPacket = UInt32(format.channels * bytesPerSample)

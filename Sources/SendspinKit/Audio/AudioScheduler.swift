@@ -65,7 +65,6 @@ public struct ScheduledChunk: Sendable {
 public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     private let clockSync: ClockSync
     private let playbackWindow: TimeInterval
-    private let maxQueueSize: Int
     private var queue: [ScheduledChunk] = []
     private var schedulerStats: SchedulerStats
     private var timerTask: Task<Void, Never>?
@@ -76,12 +75,10 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     public init(
         clockSync: ClockSync,
-        playbackWindow: TimeInterval = 0.05,
-        maxQueueSize: Int = 100
+        playbackWindow: TimeInterval = 0.05
     ) {
         self.clockSync = clockSync
         self.playbackWindow = playbackWindow
-        self.maxQueueSize = maxQueueSize
         schedulerStats = SchedulerStats()
 
         // Create AsyncStream
@@ -103,17 +100,11 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
             originalTimestamp: serverTimestamp
         )
 
-        // Enforce queue size limit
-        while queue.count >= maxQueueSize {
-            queue.removeFirst()
-            schedulerStats = SchedulerStats(
-                received: schedulerStats.received,
-                played: schedulerStats.played,
-                dropped: schedulerStats.dropped + 1,
-                droppedLate: schedulerStats.droppedLate,
-                droppedOther: schedulerStats.droppedOther + 1
-            )
-        }
+        // No queue size limit: the server already respects our buffer_capacity
+        // from client/hello, so it won't send more than we can handle. Chunks are
+        // consumed by the audio callback as their play timestamps arrive.
+        // Dropping future chunks here would cause silence when servers pre-buffer
+        // aggressively (e.g., Music Assistant sends 25+ seconds ahead).
 
         // Insert into sorted position
         insertSorted(chunk)

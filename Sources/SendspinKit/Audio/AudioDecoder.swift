@@ -150,7 +150,7 @@ public class FLACDecoder: AudioDecoder {
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
-    public init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
+    public init(sampleRate: Int, channels: Int, bitDepth: Int, header: Data? = nil) throws {
         self.sampleRate = sampleRate
         self.channels = channels
         self.bitDepth = bitDepth
@@ -198,6 +198,12 @@ public class FLACDecoder: AudioDecoder {
         guard initStatus == FLAC__STREAM_DECODER_INIT_STATUS_OK else {
             FLAC__stream_decoder_delete(flacDecoder)
             throw AudioDecoderError.formatCreationFailed("FLAC decoder init failed: \(initStatus)")
+        }
+
+        // Prepend the codec header (fLaC magic + STREAMINFO) so the decoder
+        // can parse the stream. Without this, libFLAC can't decode any frames.
+        if let header = header {
+            pendingData.append(header)
         }
     }
 
@@ -304,17 +310,14 @@ public class FLACDecoder: AudioDecoder {
                 }
                 let sample = channelBuffer[i]
 
-                // Normalize based on bit depth
-                // FLAC int32 samples are right-aligned, shift to match our format
+                // FLAC outputs right-aligned samples in Int32.
+                // Shift left to fill the full 32-bit range for AudioQueue.
                 let normalizedSample: Int32
                 if bitDepth == 16 {
-                    // 16-bit: shift left 8 bits (to 24-bit position)
-                    normalizedSample = sample << 8
+                    normalizedSample = sample << 16
                 } else if bitDepth == 24 {
-                    // 24-bit: already correct position
-                    normalizedSample = sample
+                    normalizedSample = sample << 8
                 } else {
-                    // 32-bit or other: pass through
                     normalizedSample = sample
                 }
 
@@ -340,7 +343,7 @@ public enum AudioDecoderFactory {
         sampleRate: Int,
         channels: Int,
         bitDepth: Int,
-        header _: Data?
+        header: Data?
     ) throws -> AudioDecoder {
         switch codec {
         case .pcm:
@@ -348,7 +351,7 @@ public enum AudioDecoderFactory {
         case .opus:
             return try OpusDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
         case .flac:
-            return try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
+            return try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth, header: header)
         }
     }
 }

@@ -10,6 +10,42 @@ final class CLIPlayer {
     private var eventTask: Task<Void, Never>?
     private let display = StatusDisplay()
 
+    /// Shared player configuration for both connect and listen modes.
+    ///
+    /// Format list is priority-ordered: the server picks the FIRST compatible format.
+    /// The server does NOT match source quality — it always uses our top preference.
+    ///
+    /// Strategy: FLAC 24-bit first for maximum fidelity. FLAC compression means
+    /// 24-bit FLAC of a 16-bit source is barely larger than 16-bit FLAC (the extra
+    /// zero bits compress away), so there's no real bandwidth penalty. Standard
+    /// sample rates before hi-res to avoid unnecessary upsampling.
+    private static let playerConfig = PlayerConfiguration(
+        bufferCapacity: 2_097_152, // 2MB buffer
+        supportedFormats: [
+            // FLAC 24-bit — preferred (lossless, no quality loss on any source)
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 88_200, bitDepth: 24),
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 96_000, bitDepth: 24),
+            // FLAC 16-bit — fallback if server can't do 24-bit FLAC
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
+            // PCM fallbacks if server can't do FLAC
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
+            // Lossy compressed — lowest bandwidth option
+            AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
+        ]
+    )
+
+    private static let artworkConfig = ArtworkConfiguration(channels: [
+        ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
+    ])
+
     @MainActor
     func run(serverURL: String, clientName: String, useTUI: Bool = true) async throws {
         // Simple startup banner before TUI takes over
@@ -25,36 +61,13 @@ final class CLIPlayer {
 
         // Create player configuration
         // Advertise support for PCM, Opus, and FLAC formats
-        let config = PlayerConfiguration(
-            bufferCapacity: 2_097_152, // 2MB buffer
-            supportedFormats: [
-                // Hi-res PCM formats (24-bit)
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
-                // Standard PCM formats (16-bit)
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
-                // Compressed formats - validated and working
-                AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16)
-            ]
-        )
-
-        // Create artwork configuration (single channel, album art, JPEG, up to 800x800)
-        let artworkConfig = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-        ])
-
         // Create client
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.player, .metadata, .controller, .artwork],
-            playerConfig: config,
-            artworkConfig: artworkConfig
+            playerConfig: Self.playerConfig,
+            artworkConfig: Self.artworkConfig
         )
         self.client = client
 
@@ -238,32 +251,12 @@ final class CLIPlayer {
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Advertising on port \(port)...")
 
-        // Create player configuration (same as run mode)
-        let config = PlayerConfiguration(
-            bufferCapacity: 2_097_152,
-            supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
-                AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
-            ]
-        )
-
-        let artworkConfig = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-        ])
-
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.player, .metadata, .controller, .artwork],
-            playerConfig: config,
-            artworkConfig: artworkConfig
+            playerConfig: Self.playerConfig,
+            artworkConfig: Self.artworkConfig
         )
         self.client = client
 

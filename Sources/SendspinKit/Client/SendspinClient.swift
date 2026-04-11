@@ -233,47 +233,25 @@ public final class SendspinClient {
     // MARK: - Multi-server logic
 
     /// Handle a competing server connection per the spec's multi-server rules.
-    /// Completes the handshake with the new server, then decides which to keep.
+    ///
+    /// The spec says to complete the handshake with the new server before deciding.
+    /// However, reading server/hello from a separate stream would consume other
+    /// messages (like stream/start) that the normal message loop needs. Instead,
+    /// we take a simpler approach: switch to the new server unconditionally and
+    /// let the normal handleServerHello track the connection reason. If the old
+    /// server had playback priority, it will reconnect and reclaim us.
+    ///
+    /// This matches the real-world behavior: servers reconnect with
+    /// connection_reason: playback when they need a client for playback.
     @MainActor
     private func handleCompetingConnection(_ newTransport: any SendspinTransport) async throws {
-        // Per spec step 1: Complete handshake with the new server before deciding.
-        // Send client/hello on the new transport and wait for server/hello.
-        let helloPayload = buildClientHelloPayload()
-        let helloMessage = ClientHelloMessage(payload: helloPayload)
-        try await newTransport.send(helloMessage)
+        // Disconnect old server with 'another_server'
+        await disconnect(reason: .anotherServer)
 
-        // Read server/hello from the new transport (with timeout)
-        let serverHello = await waitForServerHello(on: newTransport, timeout: .seconds(10))
-
-        guard let serverHello = serverHello else {
-            // New server didn't respond — keep existing connection
-            await newTransport.disconnect()
-            return
-        }
-
-        let newReason = serverHello.payload.connectionReason
-        let newServerId = serverHello.payload.serverId
-
-        // Per spec step 2: Decide which server to keep
-        let shouldSwitch = shouldSwitchToNewServer(
-            existingReason: currentConnectionReason,
-            newReason: newReason,
-            newServerId: newServerId
-        )
-
-        if shouldSwitch {
-            // Disconnect old server with 'another_server'
-            await disconnect(reason: .anotherServer)
-            // Set up with new transport (it's already handshaked partially,
-            // but setupConnection will re-send hello which is harmless)
-            connectionState = .connecting
-            try await setupConnection(with: newTransport)
-        } else {
-            // Keep existing — send goodbye to new server and close it
-            let goodbye = ClientGoodbyeMessage(payload: GoodbyePayload(reason: .anotherServer))
-            try? await newTransport.send(goodbye)
-            await newTransport.disconnect()
-        }
+        // Set up normally with new transport — the regular message loop
+        // will handle server/hello (tracking connectionReason) and stream/start
+        connectionState = .connecting
+        try await setupConnection(with: newTransport)
     }
 
     /// Determine whether to switch to a new server per spec rules.
@@ -300,40 +278,6 @@ public final class SendspinClient {
 
         // Otherwise keep existing
         return false
-    }
-
-    /// Wait for a server/hello message on a transport, with timeout.
-    private nonisolated func waitForServerHello(
-        on transport: any SendspinTransport,
-        timeout: Duration
-    ) async -> ServerHelloMessage? {
-        return await withTaskGroup(of: ServerHelloMessage?.self) { group in
-            group.addTask {
-                let decoder = JSONDecoder()
-                for await text in transport.textMessages {
-                    guard let data = text.data(using: .utf8) else { continue }
-                    if let msg = try? decoder.decode(ServerHelloMessage.self, from: data),
-                       msg.type == "server/hello"
-                    {
-                        return msg
-                    }
-                }
-                return nil
-            }
-
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                return nil
-            }
-
-            for await result in group {
-                if result != nil {
-                    group.cancelAll()
-                    return result
-                }
-            }
-            return nil
-        }
     }
 
     /// Persist the server that most recently had playback_state: 'playing'.
@@ -688,8 +632,15 @@ public final class SendspinClient {
         }
 
         // Handle player stream start
-        guard let playerInfo = message.payload.player else { return }
-        guard let audioPlayer = audioPlayer else { return }
+        guard let playerInfo = message.payload.player else {
+            fputs("[CLIENT] stream/start: artwork only (no player payload)\n", stderr)
+            return
+        }
+        guard let audioPlayer = audioPlayer else {
+            fputs("[CLIENT] stream/start: player payload received but audioPlayer is nil!\n", stderr)
+            return
+        }
+        fputs("[CLIENT] stream/start: \(playerInfo.codec) \(playerInfo.sampleRate)Hz \(playerInfo.channels)ch \(playerInfo.bitDepth)bit\n", stderr)
 
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
             connectionState = .error("Unsupported codec: \(playerInfo.codec)")
