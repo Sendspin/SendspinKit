@@ -91,6 +91,34 @@ struct AudioPlayerTests {
         await player.stop()
     }
 
+    // MARK: - Perceptual volume
+
+    @Test("Perceptual gain at boundaries")
+    func perceptualGainBoundaries() {
+        #expect(AudioPlayer.perceptualGain(0.0) == 0.0)
+        #expect(AudioPlayer.perceptualGain(1.0) == 1.0)
+    }
+
+    @Test("Perceptual gain is non-linear")
+    func perceptualGainNonLinear() {
+        let halfLinear = AudioPlayer.perceptualGain(0.5)
+        // (0.5)^1.5 ≈ 0.354 — quieter than linear 0.5
+        #expect(halfLinear < 0.5)
+        #expect(halfLinear > 0.0)
+        // Should be close to 0.354
+        #expect(abs(halfLinear - 0.354) < 0.01)
+    }
+
+    @Test("Perceptual gain is monotonically increasing")
+    func perceptualGainMonotonic() {
+        var previous: Float = -1.0
+        for i in 0...100 {
+            let gain = AudioPlayer.perceptualGain(Float(i) / 100.0)
+            #expect(gain >= previous, "Gain should increase: \(i)% gave \(gain), previous was \(previous)")
+            previous = gain
+        }
+    }
+
     @Test("Decode method still available")
     func decodeMethod() async throws {
         let bufferManager = BufferManager(capacity: 1_048_576)

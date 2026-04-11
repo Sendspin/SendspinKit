@@ -336,19 +336,30 @@ public actor AudioPlayer {
     // MARK: - Volume
 
     /// Set volume (0.0 to 1.0)
+    /// Set volume (0.0 to 1.0 linear, mapped to perceptual amplitude)
     public func setVolume(_ volume: Float) {
         guard let queue = audioQueue else { return }
         let clampedVolume = max(0.0, min(1.0, volume))
         currentVolume = clampedVolume
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, clampedVolume)
+        let gain = Self.perceptualGain(clampedVolume)
+        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, muted ? 0.0 : gain)
     }
 
     /// Set mute state
     public func setMute(_ muted: Bool) {
         guard let queue = audioQueue else { return }
         isMuted = muted
-        let effectiveVolume = muted ? 0.0 : currentVolume
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, effectiveVolume)
+        let gain = muted ? Float(0.0) : Self.perceptualGain(currentVolume)
+        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+    }
+
+    /// Convert linear volume (0.0-1.0) to perceptual amplitude.
+    ///
+    /// Uses a 1.5-power curve matching the Rust reference implementation.
+    /// The spec requires volume 0-100 to represent perceived loudness, not
+    /// linear amplitude — volume 50 should sound roughly half as loud as 100.
+    static func perceptualGain(_ linearVolume: Float) -> Float {
+        powf(linearVolume, 1.5)
     }
 }
 
