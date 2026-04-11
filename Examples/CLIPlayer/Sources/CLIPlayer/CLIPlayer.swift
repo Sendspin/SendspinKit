@@ -230,6 +230,68 @@ final class CLIPlayer {
         }
     }
 
+    /// Listen for incoming server connections (server-initiated path).
+    /// Advertises via mDNS and waits for servers to connect.
+    @MainActor
+    func listen(port: UInt16, clientName: String, useTUI: Bool = true) async throws {
+        print("🎵 Sendspin CLI Player (Listen Mode)")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        print("Advertising on port \(port)...")
+
+        // Create player configuration (same as run mode)
+        let config = PlayerConfiguration(
+            bufferCapacity: 2_097_152,
+            supportedFormats: [
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
+                AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
+            ]
+        )
+
+        let artworkConfig = ArtworkConfiguration(channels: [
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
+        ])
+
+        let client = SendspinClient(
+            clientId: UUID().uuidString,
+            name: clientName,
+            roles: [.player, .metadata, .controller, .artwork],
+            playerConfig: config,
+            artworkConfig: artworkConfig
+        )
+        self.client = client
+
+        // Start event monitoring
+        eventTask = Task {
+            await monitorEvents(client: client, useTUI: useTUI)
+        }
+
+        // Start the advertiser
+        let advertiser = ClientAdvertiser(name: clientName, port: port)
+        try await advertiser.start()
+
+        print("✅ Advertising as '\(clientName)' on port \(port)")
+        print("   Waiting for servers to connect...")
+        print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        // Accept incoming server connections
+        for await transport in advertiser.connections {
+            fputs("[LISTEN] Server connected via transport, running handshake...\n", stderr)
+            do {
+                try await client.acceptConnection(transport)
+                fputs("[LISTEN] Handshake complete\n", stderr)
+            } catch {
+                fputs("[LISTEN] Connection failed: \(error)\n", stderr)
+            }
+        }
+    }
+
     deinit {
         eventTask?.cancel()
         // Disconnect client on cleanup

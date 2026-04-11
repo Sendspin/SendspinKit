@@ -30,8 +30,15 @@ public final class SendspinClient {
     public private(set) var groupVolume: Int = 0
     public private(set) var groupMuted: Bool = false
 
+    // Multi-server state
+    private var currentConnectionReason: ConnectionReason?
+    private var currentServerId: String?
+
+    /// Key used to persist the last-played server ID (spec requires persistence across reboots)
+    private static let lastPlayedServerKey = "SendspinKit.lastPlayedServerId"
+
     // Dependencies
-    private var transport: WebSocketTransport?
+    private var transport: (any SendspinTransport)?
     private var clockSync: ClockSynchronizer?
     private var audioScheduler: AudioScheduler<ClockSynchronizer>?
     private var bufferManager: BufferManager?
@@ -108,7 +115,7 @@ public final class SendspinClient {
 
     // MARK: - Connection lifecycle
 
-    /// Connect to Sendspin server
+    /// Connect to a Sendspin server at the given URL (client-initiated connection).
     @MainActor
     public func connect(to url: URL) async throws {
         guard connectionState == .disconnected else { return }
@@ -116,6 +123,30 @@ public final class SendspinClient {
         connectionState = .connecting
 
         let transport = WebSocketTransport(url: url)
+        try await transport.connect()
+
+        try await setupConnection(with: transport)
+    }
+
+    /// Accept an incoming server connection (server-initiated connection).
+    /// Used with `ClientAdvertiser` when servers connect to this client.
+    ///
+    /// If the client is already connected to a server, the multi-server decision
+    /// logic from the spec is applied after the handshake completes.
+    @MainActor
+    public func acceptConnection(_ transport: any SendspinTransport) async throws {
+        if connectionState == .disconnected {
+            connectionState = .connecting
+            try await setupConnection(with: transport)
+        } else {
+            // Already connected — run handshake on new connection, then decide
+            try await handleCompetingConnection(transport)
+        }
+    }
+
+    /// Common setup for both client-initiated and server-initiated connections.
+    @MainActor
+    private func setupConnection(with transport: any SendspinTransport) async throws {
         let clockSync = ClockSynchronizer()
         let audioScheduler = AudioScheduler(clockSync: clockSync)
 
@@ -134,7 +165,6 @@ public final class SendspinClient {
             currentMuted = await audioPlayer.muted
         }
 
-        try await transport.connect()
         try await sendClientHello()
 
         let textStream = transport.textMessages
@@ -194,18 +224,130 @@ public final class SendspinClient {
         currentVolume = 1.0
         currentMuted = false
         artworkStreamActive = false
+        currentConnectionReason = nil
+        currentServerId = nil
 
         connectionState = .disconnected
     }
 
-    // MARK: - Outbound messages
+    // MARK: - Multi-server logic
 
+    /// Handle a competing server connection per the spec's multi-server rules.
+    /// Completes the handshake with the new server, then decides which to keep.
     @MainActor
-    private func sendClientHello() async throws {
-        guard let transport = transport else {
-            throw SendspinClientError.notConnected
+    private func handleCompetingConnection(_ newTransport: any SendspinTransport) async throws {
+        // Per spec step 1: Complete handshake with the new server before deciding.
+        // Send client/hello on the new transport and wait for server/hello.
+        let helloPayload = buildClientHelloPayload()
+        let helloMessage = ClientHelloMessage(payload: helloPayload)
+        try await newTransport.send(helloMessage)
+
+        // Read server/hello from the new transport (with timeout)
+        let serverHello = await waitForServerHello(on: newTransport, timeout: .seconds(10))
+
+        guard let serverHello = serverHello else {
+            // New server didn't respond — keep existing connection
+            await newTransport.disconnect()
+            return
         }
 
+        let newReason = serverHello.payload.connectionReason
+        let newServerId = serverHello.payload.serverId
+
+        // Per spec step 2: Decide which server to keep
+        let shouldSwitch = shouldSwitchToNewServer(
+            existingReason: currentConnectionReason,
+            newReason: newReason,
+            newServerId: newServerId
+        )
+
+        if shouldSwitch {
+            // Disconnect old server with 'another_server'
+            await disconnect(reason: .anotherServer)
+            // Set up with new transport (it's already handshaked partially,
+            // but setupConnection will re-send hello which is harmless)
+            connectionState = .connecting
+            try await setupConnection(with: newTransport)
+        } else {
+            // Keep existing — send goodbye to new server and close it
+            let goodbye = ClientGoodbyeMessage(payload: GoodbyePayload(reason: .anotherServer))
+            try? await newTransport.send(goodbye)
+            await newTransport.disconnect()
+        }
+    }
+
+    /// Determine whether to switch to a new server per spec rules.
+    private func shouldSwitchToNewServer(
+        existingReason: ConnectionReason?,
+        newReason: ConnectionReason,
+        newServerId: String
+    ) -> Bool {
+        // If new server's connection_reason is 'playback' → switch
+        if newReason == .playback {
+            return true
+        }
+
+        // If new is 'discovery' and existing was 'playback' → keep existing
+        if existingReason == .playback {
+            return false
+        }
+
+        // Both are 'discovery': prefer last-played server
+        let lastPlayed = Self.lastPlayedServerId
+        if let lastPlayed = lastPlayed, newServerId == lastPlayed {
+            return true
+        }
+
+        // Otherwise keep existing
+        return false
+    }
+
+    /// Wait for a server/hello message on a transport, with timeout.
+    private nonisolated func waitForServerHello(
+        on transport: any SendspinTransport,
+        timeout: Duration
+    ) async -> ServerHelloMessage? {
+        return await withTaskGroup(of: ServerHelloMessage?.self) { group in
+            group.addTask {
+                let decoder = JSONDecoder()
+                for await text in transport.textMessages {
+                    guard let data = text.data(using: .utf8) else { continue }
+                    if let msg = try? decoder.decode(ServerHelloMessage.self, from: data),
+                       msg.type == "server/hello"
+                    {
+                        return msg
+                    }
+                }
+                return nil
+            }
+
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return nil
+            }
+
+            for await result in group {
+                if result != nil {
+                    group.cancelAll()
+                    return result
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Persist the server that most recently had playback_state: 'playing'.
+    /// Spec: "Clients must persistently store the server_id of the server that
+    /// most recently had playback_state: 'playing' (the 'last played server')."
+    public static var lastPlayedServerId: String? {
+        get { UserDefaults.standard.string(forKey: lastPlayedServerKey) }
+        set { UserDefaults.standard.set(newValue, forKey: lastPlayedServerKey) }
+    }
+
+    // MARK: - Outbound messages
+
+    /// Build the client/hello payload (used by both connect paths)
+    private func buildClientHelloPayload() -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
         if roles.contains(.playerV1), let playerConfig = playerConfig {
             playerV1Support = PlayerSupport(
@@ -220,7 +362,7 @@ public final class SendspinClient {
             artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
         }
 
-        let payload = ClientHelloPayload(
+        return ClientHelloPayload(
             clientId: clientId,
             name: name,
             deviceInfo: DeviceInfo.current,
@@ -230,7 +372,15 @@ public final class SendspinClient {
             artworkV1Support: artworkV1Support,
             visualizerV1Support: roles.contains(.visualizerV1) ? VisualizerSupport() : nil
         )
+    }
 
+    @MainActor
+    private func sendClientHello() async throws {
+        guard let transport = transport else {
+            throw SendspinClientError.notConnected
+        }
+
+        let payload = buildClientHelloPayload()
         try await transport.send(ClientHelloMessage(payload: payload))
     }
 
@@ -448,10 +598,15 @@ public final class SendspinClient {
     private func handleServerHello(_ message: ServerHelloMessage) async {
         connectionState = .connected
 
+        // Track server identity and connection reason for multi-server logic
+        currentServerId = message.payload.serverId
+        currentConnectionReason = message.payload.connectionReason
+
         let info = ServerInfo(
             serverId: message.payload.serverId,
             name: message.payload.name,
-            version: message.payload.version
+            version: message.payload.version,
+            connectionReason: message.payload.connectionReason
         )
         eventsContinuation.yield(.serverConnected(info))
 
@@ -628,6 +783,11 @@ public final class SendspinClient {
     }
 
     private func handleGroupUpdate(_ message: GroupUpdateMessage) async {
+        // Per spec: persist server_id when playback_state transitions to 'playing'
+        if message.payload.playbackState == "playing", let serverId = currentServerId {
+            Self.lastPlayedServerId = serverId
+        }
+
         if let groupId = message.payload.groupId,
            let groupName = message.payload.groupName {
             let info = GroupInfo(
@@ -816,6 +976,7 @@ public struct ServerInfo: Sendable {
     public let serverId: String
     public let name: String
     public let version: Int
+    public let connectionReason: ConnectionReason
 }
 
 public struct GroupInfo: Sendable {

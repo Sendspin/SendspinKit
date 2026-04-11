@@ -87,8 +87,8 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
     }
 }
 
-/// WebSocket transport for Sendspin protocol
-public actor WebSocketTransport {
+/// WebSocket transport for Sendspin protocol (outbound, client-initiated connections)
+public actor WebSocketTransport: SendspinTransport {
     private nonisolated let delegate: StarscreamDelegate
     private var webSocket: WebSocket?
     private let url: URL
