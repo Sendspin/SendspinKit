@@ -47,7 +47,7 @@ final class CLIPlayer {
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
-            roles: [.player, .metadata],
+            roles: [.player, .metadata, .controller],
             playerConfig: config
         )
         self.client = client
@@ -136,6 +136,11 @@ final class CLIPlayer {
                     }
                 }
 
+            case let .controllerStateUpdated(state):
+                if !useTUI {
+                    print("[CONTROLLER] commands=\(state.supportedCommands.joined(separator: ",")) volume=\(state.volume) muted=\(state.muted)")
+                }
+
             case let .artworkReceived(channel, data):
                 if !useTUI {
                     print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
@@ -184,8 +189,27 @@ final class CLIPlayer {
                 await client.setMute(false)
                 await display.updateVolume(100, muted: false)
 
+            // Controller commands
+            case "p", "play":
+                await client.play()
+            case "pause":
+                await client.pause()
+            case "s", "stop":
+                await client.stopPlayback()
+            case "n", "next":
+                await client.next()
+            case "b", "prev", "previous":
+                await client.previous()
+            case "gv":
+                guard parts.count > 1, let vol = Int(parts[1]) else { continue }
+                await client.setGroupVolume(vol)
+            case "gm":
+                await client.setGroupMute(true)
+            case "gu":
+                await client.setGroupMute(false)
+
             default:
-                break // Ignore unknown commands in TUI mode
+                break // Ignore unknown commands
             }
         }
     }
@@ -377,7 +401,7 @@ actor StatusDisplay {
 
         // Commands
         output += "\(ANSI.dim)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\(ANSI.reset)\n"
-        output += "\(ANSI.dim)Commands: [v <0-100>] volume  [m] mute  [u] unmute  [q] quit\(ANSI.reset)\n"
+        output += "\(ANSI.dim)Commands: [p]lay [pause] [n]ext [b]ack [s]top  [v <0-100>] vol [m]ute [u]nmute [q]uit\(ANSI.reset)\n"
         output += "\(ANSI.dim)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\(ANSI.reset)\n"
         output += "> "
 

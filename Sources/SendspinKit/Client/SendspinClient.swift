@@ -23,6 +23,11 @@ public final class SendspinClient {
     private var currentMuted: Bool = false
     private var staticDelayMs: Int = 0
 
+    // Controller state (received from server)
+    public private(set) var controllerSupportedCommands: [String] = []
+    public private(set) var groupVolume: Int = 0
+    public private(set) var groupMuted: Bool = false
+
     // Dependencies
     private var transport: WebSocketTransport?
     private var clockSync: ClockSynchronizer?
@@ -486,6 +491,23 @@ public final class SendspinClient {
                 await setMute(muted)
             }
         }
+
+        if let controller = message.payload.controller {
+            if let cmds = controller.supportedCommands {
+                controllerSupportedCommands = cmds
+            }
+            if let vol = controller.volume {
+                groupVolume = vol
+            }
+            if let muted = controller.muted {
+                groupMuted = muted
+            }
+            eventsContinuation.yield(.controllerStateUpdated(ControllerState(
+                supportedCommands: controllerSupportedCommands,
+                volume: groupVolume,
+                muted: groupMuted
+            )))
+        }
     }
 
     private func handleStreamStart(_ message: StreamStartMessage) async {
@@ -681,6 +703,39 @@ public final class SendspinClient {
         // TODO: persist staticDelayMs across reboots (spec requires this)
         try? await sendClientState()
     }
+
+    // MARK: - Controller commands
+
+    /// Send a controller command to the server.
+    /// Only valid if the client has the controller role and the command is in
+    /// the server's `supported_commands`.
+    @MainActor
+    public func sendCommand(_ command: String, volume: Int? = nil, mute: Bool? = nil) async {
+        guard let transport = transport else { return }
+
+        let controller = ControllerCommand(command: command, volume: volume, mute: mute)
+        let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
+        try? await transport.send(message)
+    }
+
+    /// Convenience: play
+    @MainActor public func play() async { await sendCommand("play") }
+    /// Convenience: pause
+    @MainActor public func pause() async { await sendCommand("pause") }
+    /// Convenience: stop playback
+    @MainActor public func stopPlayback() async { await sendCommand("stop") }
+    /// Convenience: next track
+    @MainActor public func next() async { await sendCommand("next") }
+    /// Convenience: previous track
+    @MainActor public func previous() async { await sendCommand("previous") }
+    /// Convenience: set group volume (0-100)
+    @MainActor public func setGroupVolume(_ volume: Int) async {
+        await sendCommand("volume", volume: max(0, min(100, volume)))
+    }
+    /// Convenience: set group mute
+    @MainActor public func setGroupMute(_ muted: Bool) async {
+        await sendCommand("mute", mute: muted)
+    }
 }
 
 // MARK: - Supporting types
@@ -691,6 +746,7 @@ public enum ClientEvent: Sendable {
     case streamEnded
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
+    case controllerStateUpdated(ControllerState)
     case artworkReceived(channel: Int, data: Data)
     case visualizerData(Data)
     case error(String)
@@ -716,6 +772,12 @@ public struct TrackMetadata: Sendable {
     public let track: Int?
     public let year: Int?
     public let artworkUrl: String?
+}
+
+public struct ControllerState: Sendable {
+    public let supportedCommands: [String]
+    public let volume: Int
+    public let muted: Bool
 }
 
 public enum SendspinClientError: Error {

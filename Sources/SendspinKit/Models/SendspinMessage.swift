@@ -334,10 +334,13 @@ public struct ServerStatePayload: Codable, Sendable {
     public let player: ServerPlayerState?
     /// Metadata state from server
     public let metadata: ServerMetadataState?
+    /// Controller state from server (group volume, mute, supported commands)
+    public let controller: ServerControllerState?
 
-    public init(player: ServerPlayerState? = nil, metadata: ServerMetadataState? = nil) {
+    public init(player: ServerPlayerState? = nil, metadata: ServerMetadataState? = nil, controller: ServerControllerState? = nil) {
         self.player = player
         self.metadata = metadata
+        self.controller = controller
     }
 }
 
@@ -352,7 +355,30 @@ public struct ServerPlayerState: Codable, Sendable {
     }
 }
 
-/// Metadata state within server/state (uses same structure as session metadata)
+/// Controller state within server/state — tells the client what commands are available
+/// and the current group volume/mute state.
+public struct ServerControllerState: Codable, Sendable {
+    /// Which commands the server supports for this group
+    public let supportedCommands: [String]?
+    /// Group volume (0-100, average of all player volumes)
+    public let volume: Int?
+    /// Group mute state (true only when all players muted)
+    public let muted: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case supportedCommands = "supported_commands"
+        case volume
+        case muted
+    }
+
+    public init(supportedCommands: [String]? = nil, volume: Int? = nil, muted: Bool? = nil) {
+        self.supportedCommands = supportedCommands
+        self.volume = volume
+        self.muted = muted
+    }
+}
+
+/// Metadata state within server/state
 public struct ServerMetadataState: Codable, Sendable {
     public let timestamp: Int64?
     public let title: String?
@@ -565,10 +591,18 @@ public struct ClientCommandPayload: Codable, Sendable {
 }
 
 public struct ControllerCommand: Codable, Sendable {
+    /// Command type: play, pause, stop, next, previous, volume, mute,
+    /// repeat_off, repeat_one, repeat_all, shuffle, unshuffle, switch
     public let command: String
+    /// Group volume (0-100), only when command is "volume"
+    public let volume: Int?
+    /// Group mute state, only when command is "mute"
+    public let mute: Bool?
 
-    public init(command: String) {
+    public init(command: String, volume: Int? = nil, mute: Bool? = nil) {
         self.command = command
+        self.volume = volume
+        self.mute = mute
     }
 }
 
