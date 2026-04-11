@@ -16,19 +16,36 @@ public actor AudioPlayer {
 
     private var _isPlaying: Bool = false
 
-    // Continuous byte buffer consumed by AudioQueue callback.
+    // Ring buffer consumed by AudioQueue callback.
     // All fields accessed under pcmBufferLock from the audio thread.
     private nonisolated let pcmBufferLock = NSLock()
-    private nonisolated(unsafe) var pcmByteBuffer = Data()
+    // 512KB ring buffer — ~2.7s at 48kHz/stereo/16-bit
+    private nonisolated(unsafe) var pcmRingBuffer = PCMRingBuffer(capacity: 524_288)
     // Frame size in bytes (channels × bytesPerSample after decoding)
     private nonisolated(unsafe) var frameSize: Int = 0
-    // Last output frame for insert (sample-hold repeat)
-    private nonisolated(unsafe) var lastFrame = Data()
+    // Last output frame for insert (sample-hold repeat) — fixed allocation, no Data on audio thread
+    private nonisolated(unsafe) var lastFrameStorage: UnsafeMutableRawBufferPointer =
+        .allocate(byteCount: 32, alignment: 8) // max: 8ch × 4bytes = 32
+    private nonisolated(unsafe) var lastFrameValid: Bool = false
 
-    // Sync correction state (accessed under pcmBufferLock)
+    // Sync correction state (accessed under pcmBufferLock from audio thread)
     private nonisolated(unsafe) var correctionSchedule = CorrectionSchedule()
     private nonisolated(unsafe) var dropCounter: UInt32 = 0
     private nonisolated(unsafe) var insertCounter: UInt32 = 0
+
+    // Callback-driven sync: the audio callback computes error and runs the planner directly.
+    // The time filter snapshot is pushed from the clock sync path; the planner lives here.
+    private nonisolated(unsafe) var timeSnapshot: TimeFilterSnapshot = .invalid
+    private nonisolated(unsafe) var syncPlanner = CorrectionPlanner(
+        deadbandMicroseconds: 1_500,   // Tight thresholds — measurement is now precise
+        engageMicroseconds: 3_000,
+        reanchorThresholdMicroseconds: 500_000
+    )
+    // Latest sync error in µs, written by audio callback, read by telemetry
+    private nonisolated(unsafe) var lastSyncErrorUs: Int64 = 0
+    // Whether a reanchor was requested by the callback (handled by the actor method)
+    private nonisolated(unsafe) var pendingReanchorServerTime: Int64 = 0
+    private nonisolated(unsafe) var reanchorRequested: Bool = false
 
     // Playback cursor: tracks server-time position of what's being output.
     // Advanced by 1_000_000/sampleRate per frame consumed. Accessed under pcmBufferLock.
@@ -48,6 +65,11 @@ public actor AudioPlayer {
     public init(bufferManager: BufferManager, clockSync: ClockSynchronizer) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
+    }
+
+    deinit {
+        pcmRingBuffer.deallocate()
+        lastFrameStorage.deallocate()
     }
 
     /// Start playback with specified format
@@ -99,7 +121,9 @@ public actor AudioPlayer {
         let computedFrameSize = format.channels * bytesPerSample
         pcmBufferLock.withLock {
             frameSize = computedFrameSize
-            lastFrame = Data(count: computedFrameSize)
+            lastFrameValid = false
+            memset(lastFrameStorage.baseAddress!, 0, lastFrameStorage.count)
+            pcmRingBuffer.reset()
             sampleRate = format.sampleRate
             cursorMicroseconds = 0
             cursorRemainder = 0
@@ -107,9 +131,17 @@ public actor AudioPlayer {
             correctionSchedule = CorrectionSchedule()
             dropCounter = 0
             insertCounter = 0
+            lastSyncErrorUs = 0
+            reanchorRequested = false
+            pendingReanchorServerTime = 0
         }
 
-        // Allocate and prime buffers
+        // Allocate and prime buffers.
+        // 16384 bytes = ~4096 frames @ 48kHz stereo 16-bit = ~85ms per callback.
+        // 3 buffers primed = ~256ms pipeline latency. Sync correction runs inside
+        // each callback, so we get ~85ms feedback loops — sufficient for ±1-3ms
+        // steady-state accuracy. Smaller buffers cause instability due to the
+        // correction schedule updating too frequently relative to its effect.
         let bufferSize: UInt32 = 16384
         for _ in 0 ..< 3 {
             var buffer: AudioQueueBufferRef?
@@ -140,7 +172,7 @@ public actor AudioPlayer {
         _isPlaying = false
 
         pcmBufferLock.withLock {
-            pcmByteBuffer.removeAll(keepingCapacity: false)
+            pcmRingBuffer.reset()
             cursorMicroseconds = 0
             cursorRemainder = 0
             framesConsumed = 0
@@ -166,7 +198,7 @@ public actor AudioPlayer {
             if framesConsumed == 0, cursorMicroseconds == 0 {
                 cursorMicroseconds = serverTimestamp
             }
-            pcmByteBuffer.append(pcmData)
+            pcmRingBuffer.write(pcmData)
         }
     }
 
@@ -177,39 +209,60 @@ public actor AudioPlayer {
         }
 
         pcmBufferLock.withLock {
-            pcmByteBuffer.append(pcmData)
+            pcmRingBuffer.write(pcmData)
         }
     }
 
     // MARK: - Sync correction interface
 
-    /// Update the correction schedule (called from scheduler loop)
-    public func updateCorrectionSchedule(_ schedule: CorrectionSchedule) {
+    /// Push a new time filter snapshot for use by the audio callback.
+    /// Called from the clock sync path whenever processServerTime updates the filter.
+    public func updateTimeSnapshot(_ snapshot: TimeFilterSnapshot) {
         pcmBufferLock.withLock {
-            let wasActive = correctionSchedule.isCorrecting
-            correctionSchedule = schedule
-
-            // Reset counters when schedule changes
-            if schedule.isCorrecting && !wasActive {
-                dropCounter = schedule.dropEveryNFrames
-                insertCounter = schedule.insertEveryNFrames
-            }
-
-            if schedule.reanchor {
-                // Reanchor handled externally — just clear correction state
-                correctionSchedule = CorrectionSchedule()
-                dropCounter = 0
-                insertCounter = 0
-            }
+            timeSnapshot = snapshot
         }
     }
 
-    /// Reanchor the playback cursor to a new server time position
+    /// Reanchor the playback cursor to a new server time position.
     public func reanchorCursor(to serverTimeMicros: Int64) {
         pcmBufferLock.withLock {
             cursorMicroseconds = serverTimeMicros
             cursorRemainder = 0
-            pcmByteBuffer.removeAll(keepingCapacity: true)
+            pcmRingBuffer.reset()
+            correctionSchedule = CorrectionSchedule()
+            dropCounter = 0
+            insertCounter = 0
+            reanchorRequested = false
+        }
+    }
+
+    /// Check if the audio callback requested a reanchor. Returns the target server time
+    /// if so, and clears the flag. Called from the sync/telemetry loop.
+    public func pollReanchor() -> Int64? {
+        pcmBufferLock.withLock {
+            guard reanchorRequested else { return nil }
+            reanchorRequested = false
+            return pendingReanchorServerTime
+        }
+    }
+
+    /// Telemetry snapshot — read by the external telemetry loop for logging.
+    public struct TelemetrySnapshot: Sendable {
+        public let cursorMicroseconds: Int64
+        public let sampleRate: Int
+        public let syncErrorUs: Int64
+        public let correctionSchedule: CorrectionSchedule
+    }
+
+    /// Capture telemetry state atomically for the logging loop.
+    public var telemetrySnapshot: TelemetrySnapshot {
+        pcmBufferLock.withLock {
+            TelemetrySnapshot(
+                cursorMicroseconds: cursorMicroseconds,
+                sampleRate: sampleRate,
+                syncErrorUs: lastSyncErrorUs,
+                correctionSchedule: correctionSchedule
+            )
         }
     }
 
@@ -218,25 +271,10 @@ public actor AudioPlayer {
         pcmBufferLock.withLock { cursorMicroseconds }
     }
 
-    /// Current sample rate (for CorrectionPlanner)
-    public var currentSampleRate: Int {
-        pcmBufferLock.withLock { sampleRate }
-    }
-
-    /// Current correction schedule (for hysteresis check)
-    public var currentCorrectionSchedule: CorrectionSchedule {
-        pcmBufferLock.withLock { correctionSchedule }
-    }
-
-    /// Current frame size in bytes (channels × bytesPerSample)
-    public var currentFrameSize: Int {
-        pcmBufferLock.withLock { frameSize }
-    }
-
     /// Clear buffered PCM data (for seek/stream clear without stopping playback)
     public func clearBuffer() {
         pcmBufferLock.withLock {
-            pcmByteBuffer.removeAll(keepingCapacity: true)
+            pcmRingBuffer.reset()
         }
     }
 
@@ -260,18 +298,55 @@ public actor AudioPlayer {
 
         let sr = sampleRate
 
+        // --- Compute sync error and update correction schedule (in the callback!) ---
+        // Wall clock and cursor are read in the same lock scope = zero jitter.
+        if cursorMicroseconds > 0, timeSnapshot.isValid {
+            let nowAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
+            let expectedServerTime = timeSnapshot.localToServerTime(nowAbsolute)
+
+            // AQ pipeline latency: ~2 buffers active (1 playing + 1 queued).
+            // This is the gap between what we've fed and what's actually at the DAC.
+            let aqLatencyUs = Int64(2 * capacity) * 1_000_000 / Int64(sr * fs)
+
+            let syncErrorUs = (expectedServerTime - cursorMicroseconds) - aqLatencyUs
+            lastSyncErrorUs = syncErrorUs
+
+            let newSchedule = syncPlanner.plan(
+                errorMicroseconds: syncErrorUs,
+                sampleRate: UInt32(sr),
+                currentlyCorrecting: correctionSchedule.isCorrecting
+            )
+
+            if newSchedule.reanchor {
+                // Can't reset the ring buffer and cursor here safely while iterating,
+                // so signal the actor to handle it on the next poll.
+                pendingReanchorServerTime = expectedServerTime
+                reanchorRequested = true
+                // Disable correction while waiting for reanchor
+                correctionSchedule = CorrectionSchedule()
+                dropCounter = 0
+                insertCounter = 0
+            } else if newSchedule != correctionSchedule {
+                let wasActive = correctionSchedule.isCorrecting
+                correctionSchedule = newSchedule
+                if newSchedule.isCorrecting, !wasActive {
+                    dropCounter = newSchedule.dropEveryNFrames
+                    insertCounter = newSchedule.insertEveryNFrames
+                }
+            }
+        }
+
+        // --- Fill the buffer with PCM frames, applying drop/insert correction ---
         while outOffset + fs <= capacity {
             // --- Drop cadence: consume a frame without writing it ---
             if correctionSchedule.dropEveryNFrames > 0 {
                 dropCounter = dropCounter > 0 ? dropCounter - 1 : 0
                 if dropCounter == 0 {
                     dropCounter = correctionSchedule.dropEveryNFrames
-                    // Consume one frame silently (skip it)
-                    if pcmByteBuffer.count >= fs {
-                        pcmByteBuffer.removeFirst(fs)
+                    if pcmRingBuffer.availableToRead >= fs {
+                        pcmRingBuffer.skip(fs)
                         advanceCursor(sampleRate: sr)
                     }
-                    // Don't write anything — continue to next output frame
                 }
             }
 
@@ -280,35 +355,31 @@ public actor AudioPlayer {
                 insertCounter = insertCounter > 0 ? insertCounter - 1 : 0
                 if insertCounter == 0 {
                     insertCounter = correctionSchedule.insertEveryNFrames
-                    // Write last frame again (sample-hold)
-                    lastFrame.withUnsafeBytes { src in
-                        memcpy(dest + outOffset, src.baseAddress!, fs)
+                    if lastFrameValid {
+                        memcpy(dest + outOffset, lastFrameStorage.baseAddress!, fs)
+                    } else {
+                        memset(dest + outOffset, 0, fs)
                     }
                     outOffset += fs
-                    // Don't consume from buffer, don't advance cursor
                     continue
                 }
             }
 
             // --- Normal: consume one frame and write it ---
-            if pcmByteBuffer.count >= fs {
-                pcmByteBuffer.withUnsafeBytes { src in
-                    memcpy(dest + outOffset, src.baseAddress!, fs)
-                }
-                // Save as last frame for potential insert repeat
-                lastFrame = pcmByteBuffer.prefix(fs)
-                pcmByteBuffer.removeFirst(fs)
+            if pcmRingBuffer.availableToRead >= fs {
+                pcmRingBuffer.read(into: dest + outOffset, count: fs)
+                memcpy(lastFrameStorage.baseAddress!, dest + outOffset, fs)
+                lastFrameValid = true
                 advanceCursor(sampleRate: sr)
                 outOffset += fs
             } else {
-                // Underrun — write silence for remaining capacity
-                break
+                break // underrun
             }
         }
 
         pcmBufferLock.unlock()
 
-        // Fill any remaining space with silence
+        // Fill remaining space with silence
         if outOffset < capacity {
             memset(dest + outOffset, 0, capacity - outOffset)
         }

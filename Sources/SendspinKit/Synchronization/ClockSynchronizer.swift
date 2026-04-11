@@ -123,6 +123,22 @@ public actor ClockSynchronizer: ClockSyncProtocol {
         return filter.computeServerTime(clientRelative)
     }
 
+    /// Create an immutable snapshot of the current filter state for audio-thread use.
+    /// The snapshot captures everything needed for time conversion without actor isolation.
+    public func snapshot() -> TimeFilterSnapshot {
+        guard filter.isInitialized else {
+            return .invalid
+        }
+        return TimeFilterSnapshot(
+            offset: filter.offset,
+            drift: filter.drift,
+            lastUpdate: filter.lastUpdate,
+            useDrift: filter.useDrift,
+            clientProcessStartAbsolute: clientProcessStartAbsolute,
+            isValid: true
+        )
+    }
+
     /// Check and update quality based on time since last sync
     public func checkQuality() -> SyncQuality {
         if let lastSync = lastSyncTime, Date().timeIntervalSince(lastSync) > 5.0 {

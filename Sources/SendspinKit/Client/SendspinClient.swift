@@ -16,11 +16,12 @@ public final class SendspinClient {
 
     // State
     public private(set) var connectionState: ConnectionState = .disconnected
-    private var playerState: PlayerStateValue = .synchronized
+    private var clientOperationalState: ClientOperationalState = .synchronized
     private var isAutoStarting = false
     private var isClockSynced = false
     private var currentVolume: Float = 1.0
     private var currentMuted: Bool = false
+    private var staticDelayMs: Int = 0
 
     // Dependencies
     private var transport: WebSocketTransport?
@@ -176,7 +177,7 @@ public final class SendspinClient {
         bufferManager = nil
         audioPlayer = nil
 
-        playerState = .synchronized
+        clientOperationalState = .synchronized
         isClockSynced = false
         currentVolume = 1.0
         currentMuted = false
@@ -221,16 +222,22 @@ public final class SendspinClient {
             throw SendspinClientError.notConnected
         }
 
-        guard roles.contains(.playerV1) else { return }
+        var playerStateObject: PlayerStateObject?
+        if roles.contains(.playerV1) {
+            let volumeInt = Int((currentVolume * 100).rounded())
+            playerStateObject = PlayerStateObject(
+                volume: volumeInt,
+                muted: currentMuted,
+                staticDelayMs: staticDelayMs,
+                supportedCommands: ["set_static_delay"]
+            )
+        }
 
-        let volumeInt = Int((currentVolume * 100).rounded())
-        let playerStateObject = PlayerStateObject(
-            state: playerState,
-            volume: volumeInt,
-            muted: currentMuted
+        let payload = ClientStatePayload(
+            state: clientOperationalState,
+            player: playerStateObject
         )
-
-        try await transport.send(ClientStateMessage(payload: ClientStatePayload(player: playerStateObject)))
+        try await transport.send(ClientStateMessage(payload: payload))
     }
 
     // MARK: - Clock synchronization
@@ -310,20 +317,11 @@ public final class SendspinClient {
         }
     }
 
-    /// Runs sync correction at 100ms intervals and telemetry at 1s intervals.
+    /// Polls for reanchor requests from the audio callback and logs telemetry.
+    /// Sync correction is now computed inside the AudioQueue callback itself.
     private nonisolated func runSyncCorrectionAndTelemetry() async {
         var lastTelemetryStats = DetailedSchedulerStats()
-        // Wider thresholds than the Rust defaults (3ms/1.5ms) because we update at
-        // 100ms intervals vs Rust's ~5ms. Measurement jitter is ±5ms at this rate,
-        // so we need thresholds above the noise floor.
-        let planner = CorrectionPlanner(
-            deadbandMicroseconds: 5_000,    // 5ms (was 1.5ms)
-            engageMicroseconds: 10_000,     // 10ms (was 3ms)
-            reanchorThresholdMicroseconds: 500_000
-        )
         var tickCount = 0
-        // Cache AudioQueue latency (constant for a given format)
-        var cachedAqLatencyUs: Int64 = 0
 
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(100))
@@ -333,36 +331,9 @@ public final class SendspinClient {
                   let clockSync = await clockSync,
                   let audioPlayer = await audioPlayer else { continue }
 
-            // --- Sync correction (every 100ms) ---
-            let cursorUs = await audioPlayer.playbackCursorMicroseconds
-            if cursorUs > 0, await clockSync.hasSynced {
-                let nowAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
-                let expectedServerTime = await clockSync.localTimeToServer(nowAbsolute)
-
-                // Compute AQ latency once
-                if cachedAqLatencyUs == 0 {
-                    let sr = await audioPlayer.currentSampleRate
-                    let fs = await audioPlayer.currentFrameSize
-                    if fs > 0, sr > 0 {
-                        // ~2 buffers active at a time (1 playing + 1 queued)
-                        cachedAqLatencyUs = Int64(2 * 16384) * 1_000_000 / Int64(sr * fs)
-                    }
-                }
-
-                let syncErrorUs = (cursorUs - expectedServerTime) - cachedAqLatencyUs
-
-                let currentSchedule = await audioPlayer.currentCorrectionSchedule
-                let schedule = planner.plan(
-                    errorMicroseconds: syncErrorUs,
-                    sampleRate: UInt32(await audioPlayer.currentSampleRate),
-                    currentlyCorrecting: currentSchedule.isCorrecting
-                )
-
-                // Correction infrastructure is in place but disabled until the error
-                // computation moves into the audio callback for tight-loop stability.
-                // At 100ms update intervals, the drop/insert feedback loop diverges.
-                // See: Rust synced_player.rs which computes error at ~5ms in the cpal callback.
-                _ = schedule
+            // --- Poll for reanchor requests from the audio callback ---
+            if let reanchorTarget = await audioPlayer.pollReanchor() {
+                await audioPlayer.reanchorCursor(to: reanchorTarget)
             }
 
             // --- Telemetry (every 1s = every 10 ticks) ---
@@ -380,15 +351,13 @@ public final class SendspinClient {
                 let clockOffsetMs = Double(offset) / 1000.0
                 let rttMs = Double(rtt) / 1000.0
 
-                let syncErrorUs = cursorUs > 0
-                    ? (cursorUs - (await clockSync.localTimeToServer(
-                        Int64(Date().timeIntervalSince1970 * 1_000_000)
-                    ))) - cachedAqLatencyUs
-                    : Int64(0)
+                // Read sync error computed by the audio callback (precise, no actor jitter)
+                let tSnap = await audioPlayer.telemetrySnapshot
+                let syncErrorUs = tSnap.syncErrorUs
+                let dropN = tSnap.correctionSchedule.dropEveryNFrames
+                let insertN = tSnap.correctionSchedule.insertEveryNFrames
 
-                let currentSchedule = await audioPlayer.currentCorrectionSchedule
-
-                fputs("[TELEMETRY] framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed), framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther), bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)), clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)), rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize), syncErrorUs=\(syncErrorUs), correcting=\(currentSchedule.isCorrecting)\n", stderr)
+                fputs("[TELEMETRY] framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed), framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther), bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)), clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)), rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize), syncErrorUs=\(syncErrorUs), correcting=\(tSnap.correctionSchedule.isCorrecting), dropEvery=\(dropN), insertEvery=\(insertN)\n", stderr)
 
                 lastTelemetryStats = currentStats
             }
@@ -487,6 +456,13 @@ public final class SendspinClient {
             serverTransmitted: message.payload.serverTransmitted,
             clientReceived: now
         )
+
+        // Push updated time filter state to the audio callback for sync correction.
+        // This is the only cross-boundary needed — the callback does all the math.
+        if let audioPlayer = audioPlayer {
+            let snapshot = await clockSync.snapshot()
+            await audioPlayer.updateTimeSnapshot(snapshot)
+        }
     }
 
     private func handleServerState(_ message: ServerStateMessage) async {
@@ -520,7 +496,7 @@ public final class SendspinClient {
 
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
             connectionState = .error("Unsupported codec: \(playerInfo.codec)")
-            playerState = .error
+            clientOperationalState = .error
             try? await sendClientState()
             return
         }
@@ -541,7 +517,7 @@ public final class SendspinClient {
 
         do {
             try await audioPlayer.start(format: format, codecHeader: codecHeader)
-            playerState = .synchronized
+            clientOperationalState = .synchronized
             await audioScheduler?.startScheduling()
 
             if !wasPlaying {
@@ -550,7 +526,7 @@ public final class SendspinClient {
             try? await sendClientState()
         } catch {
             connectionState = .error("Failed to start audio: \(error.localizedDescription)")
-            playerState = .error
+            clientOperationalState = .error
             try? await sendClientState()
         }
     }
@@ -580,6 +556,10 @@ public final class SendspinClient {
             if let mute = playerCmd.mute {
                 await setMute(mute)
             }
+        case "set_static_delay":
+            if let delayMs = playerCmd.staticDelayMs {
+                await setStaticDelay(max(0, min(5000, delayMs)))
+            }
         default:
             break // Ignore unsupported commands per spec
         }
@@ -591,7 +571,7 @@ public final class SendspinClient {
         await audioScheduler?.stop()
         await audioScheduler?.clear()
         await audioPlayer.stop()
-        playerState = .synchronized
+        clientOperationalState = .synchronized
         eventsContinuation.yield(.streamEnded)
     }
 
@@ -670,7 +650,7 @@ public final class SendspinClient {
 
             do {
                 try await audioPlayer.start(format: defaultFormat, codecHeader: nil)
-                playerState = .synchronized
+                clientOperationalState = .synchronized
                 await audioScheduler.startScheduling()
                 eventsContinuation.yield(.streamStarted(defaultFormat))
                 try? await sendClientState()
@@ -684,7 +664,9 @@ public final class SendspinClient {
 
         do {
             let pcmData = try await audioPlayer.decode(message.data)
-            await audioScheduler.schedule(pcm: pcmData, serverTimestamp: message.timestamp)
+            // Per spec: subtract static_delay_ms from server timestamp before scheduling
+            let adjustedTimestamp = message.timestamp - Int64(staticDelayMs) * 1000
+            await audioScheduler.schedule(pcm: pcmData, serverTimestamp: adjustedTimestamp)
         } catch {
             // Decode/schedule failure — drop this chunk
         }
@@ -719,6 +701,16 @@ public final class SendspinClient {
         await audioPlayer.setMute(muted)
         currentMuted = await audioPlayer.muted
 
+        try? await sendClientState()
+    }
+
+    /// Set static delay in milliseconds (0-5000).
+    /// Per spec: compensates for delay beyond the audio port (external speakers, amplifiers).
+    @MainActor
+    public func setStaticDelay(_ delayMs: Int) async {
+        let clamped = max(0, min(5000, delayMs))
+        staticDelayMs = clamped
+        // TODO: persist staticDelayMs across reboots (spec requires this)
         try? await sendClientState()
     }
 }

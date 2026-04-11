@@ -250,12 +250,15 @@ public struct ServerTimePayload: Codable, Sendable {
 
 // MARK: - State Messages
 
-/// Player state values per Sendspin protocol
-public enum PlayerStateValue: String, Codable, Sendable {
-    /// Normal operation, player maintains clock sync
+/// Client operational state per Sendspin protocol spec.
+/// This is a top-level field in client/state, independent of any role.
+public enum ClientOperationalState: String, Codable, Sendable {
+    /// Client is operational and synchronized with server timestamps
     case synchronized
-    /// Unable to keep up, issues keeping the clock in sync
+    /// Client has a problem preventing normal operation
     case error
+    /// Client output is in use by an external system
+    case externalSource = "external_source"
 }
 
 /// Client state message (sent by clients to report current state)
@@ -268,31 +271,49 @@ public struct ClientStateMessage: SendspinMessage {
     }
 }
 
-/// Client state payload containing role-specific state objects
+/// Client state payload containing client-level state and role-specific state objects.
+/// Per spec: must be sent after server/hello and whenever any state changes.
 public struct ClientStatePayload: Codable, Sendable {
+    /// Client operational state (required on initial send, optional on deltas)
+    public let state: ClientOperationalState?
+    /// Player role state (only if client has player role)
     public let player: PlayerStateObject?
 
-    public init(player: PlayerStateObject?) {
+    public init(state: ClientOperationalState? = nil, player: PlayerStateObject? = nil) {
+        self.state = state
         self.player = player
     }
 }
 
-/// Player state object within client/state message
+/// Player state object within client/state message.
+/// Per spec: volume/muted are optional (only if supported), but static_delay_ms is always required.
 public struct PlayerStateObject: Codable, Sendable {
-    /// Player state: "synchronized" or "error"
-    public let state: PlayerStateValue
-    /// Volume level (0-100), only if volume command is supported
+    /// Volume level (0-100), only if 'volume' is in supported_commands from player@v1_support
     public let volume: Int?
-    /// Mute state, only if mute command is supported
+    /// Mute state, only if 'mute' is in supported_commands from player@v1_support
     public let muted: Bool?
+    /// Static delay in milliseconds (0-5000), always required for players.
+    /// Compensates for delay beyond the audio port (external speakers, amplifiers).
+    public let staticDelayMs: Int
+    /// Supported commands that can change at runtime (e.g. when audio output changes)
+    public let supportedCommands: [String]?
 
-    public init(state: PlayerStateValue, volume: Int? = nil, muted: Bool? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case volume
+        case muted
+        case staticDelayMs = "static_delay_ms"
+        case supportedCommands = "supported_commands"
+    }
+
+    public init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [String]? = nil) {
         if let vol = volume {
             precondition(vol >= 0 && vol <= 100, "Volume must be between 0 and 100")
         }
-        self.state = state
+        precondition(staticDelayMs >= 0 && staticDelayMs <= 5000, "static_delay_ms must be 0-5000")
         self.volume = volume
         self.muted = muted
+        self.staticDelayMs = staticDelayMs
+        self.supportedCommands = supportedCommands
     }
 }
 

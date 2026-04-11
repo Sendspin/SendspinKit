@@ -66,10 +66,10 @@ struct MessageEncodingTests {
         #expect(message.payload.connectionReason == .playback)
     }
 
-    @Test("ClientState encodes with player state object")
+    @Test("ClientState encodes with client state and player state object")
     func clientStateEncoding() throws {
-        let playerState = PlayerStateObject(state: .synchronized, volume: 80, muted: false)
-        let payload = ClientStatePayload(player: playerState)
+        let playerState = PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
+        let payload = ClientStatePayload(state: .synchronized, player: playerState)
         let message = ClientStateMessage(payload: payload)
 
         let encoder = JSONEncoder()
@@ -80,6 +80,7 @@ struct MessageEncodingTests {
         #expect(json.contains("\"state\":\"synchronized\""))
         #expect(json.contains("\"volume\":80"))
         #expect(json.contains("\"muted\":false"))
+        #expect(json.contains("\"static_delay_ms\":0"))
     }
 
     // MARK: - client/goodbye
