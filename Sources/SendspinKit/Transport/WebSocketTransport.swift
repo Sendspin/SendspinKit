@@ -17,8 +17,6 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
     }
 
     func didReceive(event: WebSocketEvent, client _: any WebSocketClient) {
-        // Verbose logging disabled for production - uncomment for debugging
-        // print("[STARSCREAM] didReceive called with event: \(event)")
         switch event {
         case .connected:
             // Logging disabled for TUI mode

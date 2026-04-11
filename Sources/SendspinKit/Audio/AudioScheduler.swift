@@ -97,16 +97,6 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         let localTimeSeconds = Double(localTimeMicros) / 1_000_000.0
         let playTime = Date(timeIntervalSince1970: localTimeSeconds)
 
-        // Log first 10 chunks with detailed timing info
-        if receivedCount < 10 {
-            let now = Date()
-            let delay = playTime.timeIntervalSince(now)
-            let delayMs = Int(delay * 1000)
-
-            // Chunk #\(receivedCount): server_ts=\(serverTimestamp)μs,
-            // delay=\(delayMs)ms, queue_size=\(queue.count)
-        }
-
         let chunk = ScheduledChunk(
             pcmData: pcm,
             playTime: playTime,
@@ -123,7 +113,6 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                 droppedLate: schedulerStats.droppedLate,
                 droppedOther: schedulerStats.droppedOther + 1
             )
-            // print("[SCHEDULER] Queue overflow: dropped oldest chunk")
         }
 
         // Insert into sorted position
@@ -217,7 +206,6 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     /// Clear all queued chunks
     public func clear() {
         queue.removeAll()
-        // print("[SCHEDULER] Queue cleared")
     }
 
     /// Check queue and output ready chunks
@@ -243,7 +231,6 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
                 // Log first 10 drops
                 if schedulerStats.droppedLate <= 10 {
-                    // print("[SCHEDULER] Dropped late chunk: \(Int(-delay * 1000))ms late")
                 }
             } else {
                 // Ready to play (within ±50ms window)

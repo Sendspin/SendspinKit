@@ -58,7 +58,8 @@ public class PCMDecoder: AudioDecoder {
 
         for i in 0 ..< sampleCount {
             let sample = PCMUtilities.unpack24Bit(bytes, offset: i * bytesPerSample)
-            samples.append(sample)
+            // Left-shift 8 bits: 24-bit range → 32-bit range for AudioQueue
+            samples.append(sample << 8)
         }
 
         // Convert Int32 array to Data

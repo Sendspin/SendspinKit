@@ -63,7 +63,6 @@ public actor ServerDiscovery {
         case .ready:
             break
         case let .failed(error):
-            // print("Discovery failed: \(error)")
             stopDiscovery()
         case .cancelled:
             break

@@ -16,9 +16,9 @@ public actor AudioPlayer {
 
     private var _isPlaying: Bool = false
 
-    // Simplified PCM buffer queue - AudioScheduler handles timing
+    // Continuous byte buffer consumed by AudioQueue callback
     private nonisolated let pcmBufferLock = NSLock()
-    private nonisolated(unsafe) var pcmBuffer: [Data] = []
+    private nonisolated(unsafe) var pcmByteBuffer = Data()
 
     private var currentVolume: Float = 1.0
     private var isMuted: Bool = false
@@ -107,7 +107,12 @@ public actor AudioPlayer {
         }
 
         // Start the queue AFTER buffers are enqueued
-        AudioQueueStart(queue, nil)
+        let startStatus = AudioQueueStart(queue, nil)
+        if startStatus != noErr {
+            fputs("[AUDIO] AudioQueueStart failed with status: \(startStatus)\n", stderr)
+            throw AudioPlayerError.queueCreationFailed
+        }
+        fputs("[AUDIO] AudioQueue started: \(format.codec.rawValue) \(format.sampleRate)Hz \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)\n", stderr)
         _isPlaying = true
     }
 
@@ -125,7 +130,7 @@ public actor AudioPlayer {
 
         // Clear PCM buffer to prevent stale audio on restart
         pcmBufferLock.withLock {
-            pcmBuffer.removeAll()
+            pcmByteBuffer.removeAll(keepingCapacity: false)
         }
     }
 
@@ -143,46 +148,43 @@ public actor AudioPlayer {
             throw AudioPlayerError.notStarted
         }
 
-        // Add to PCM buffer for AudioQueue callback to consume
-        // AudioScheduler already handles timing, we just queue for playback
+        // Append to continuous byte buffer for AudioQueue callback to consume
         pcmBufferLock.withLock {
-            pcmBuffer.append(pcmData)
+            pcmByteBuffer.append(pcmData)
         }
     }
 
     fileprivate nonisolated func fillBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
-        // Get next PCM data from buffer (AudioScheduler handles timing)
-        let pcmData = getNextPCMDataSync()
+        let capacity = Int(buffer.pointee.mAudioDataBytesCapacity)
 
-        guard let data = pcmData else {
-            // No data available - enqueue silence
-            memset(buffer.pointee.mAudioData, 0, Int(buffer.pointee.mAudioDataBytesCapacity))
-            buffer.pointee.mAudioDataByteSize = buffer.pointee.mAudioDataBytesCapacity
-            AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
-            return
+        pcmBufferLock.lock()
+        let available = pcmByteBuffer.count
+        let copySize = min(available, capacity)
+
+        if copySize > 0 {
+            pcmByteBuffer.withUnsafeBytes { srcBytes in
+                memcpy(buffer.pointee.mAudioData, srcBytes.baseAddress!, copySize)
+            }
+            pcmByteBuffer.removeFirst(copySize)
+            pcmBufferLock.unlock()
+
+            buffer.pointee.mAudioDataByteSize = UInt32(copySize)
+        } else {
+            pcmBufferLock.unlock()
+
+            // No data available — enqueue silence to keep the queue alive
+            memset(buffer.pointee.mAudioData, 0, capacity)
+            buffer.pointee.mAudioDataByteSize = UInt32(capacity)
         }
 
-        // Copy PCM data to buffer
-        let copySize = min(data.count, Int(buffer.pointee.mAudioDataBytesCapacity))
-        _ = data.withUnsafeBytes { srcBytes in
-            memcpy(buffer.pointee.mAudioData, srcBytes.baseAddress, copySize)
-        }
-
-        buffer.pointee.mAudioDataByteSize = UInt32(copySize)
-
-        // Enqueue buffer for immediate playback (timing handled by scheduler)
         AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
     }
 
-    private nonisolated func getNextPCMDataSync() -> Data? {
-        // Thread-safe access using NSLock - can be called from any thread
-        pcmBufferLock.lock()
-        defer { pcmBufferLock.unlock() }
-
-        guard !pcmBuffer.isEmpty else {
-            return nil
+    /// Clear buffered PCM data (for seek/stream clear without stopping playback)
+    public func clearBuffer() {
+        pcmBufferLock.withLock {
+            pcmByteBuffer.removeAll(keepingCapacity: true)
         }
-        return pcmBuffer.removeFirst()
     }
 
     /// Set volume (0.0 to 1.0)

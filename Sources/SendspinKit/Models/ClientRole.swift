@@ -41,25 +41,17 @@ public struct VersionedRole: Codable, Sendable, Hashable, ExpressibleByStringLit
         try container.encode(identifier)
     }
 
-    // Common role constants
+    // Common role constants (versioned)
     public static let playerV1: VersionedRole = "player@v1"
     public static let controllerV1: VersionedRole = "controller@v1"
     public static let metadataV1: VersionedRole = "metadata@v1"
     public static let artworkV1: VersionedRole = "artwork@v1"
     public static let visualizerV1: VersionedRole = "visualizer@v1"
-}
 
-/// Legacy ClientRole enum for backward compatibility
-@available(*, deprecated, renamed: "VersionedRole", message: "Use VersionedRole with version strings like 'player@v1'")
-public enum ClientRole: String, Codable, Sendable, Hashable {
-    case player
-    case controller
-    case metadata
-    case artwork
-    case visualizer
-
-    /// Convert to versioned role (defaults to v1)
-    public var versioned: VersionedRole {
-        VersionedRole(role: rawValue, version: "v1")
-    }
+    // Shorthand aliases (default to v1)
+    public static let player = playerV1
+    public static let controller = controllerV1
+    public static let metadata = metadataV1
+    public static let artwork = artworkV1
+    public static let visualizer = visualizerV1
 }

@@ -8,4 +8,4 @@ DerivedData/
 .netrc
 go-working-code.txt
 output.txt
-
+/test-logs/
