@@ -138,7 +138,7 @@ public final class SendspinClient {
         }
 
         schedulerStatsTask = Task.detached { [weak self] in
-            await self?.logSchedulerStats()
+            await self?.runSyncCorrectionAndTelemetry()
         }
     }
 
@@ -306,35 +306,91 @@ public final class SendspinClient {
         else { return }
 
         for await chunk in audioScheduler.scheduledChunks {
-            try? await audioPlayer.playPCM(chunk.pcmData)
+            try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
         }
     }
 
-    private nonisolated func logSchedulerStats() async {
-        var lastStats = DetailedSchedulerStats()
+    /// Runs sync correction at 100ms intervals and telemetry at 1s intervals.
+    private nonisolated func runSyncCorrectionAndTelemetry() async {
+        var lastTelemetryStats = DetailedSchedulerStats()
+        // Wider thresholds than the Rust defaults (3ms/1.5ms) because we update at
+        // 100ms intervals vs Rust's ~5ms. Measurement jitter is ±5ms at this rate,
+        // so we need thresholds above the noise floor.
+        let planner = CorrectionPlanner(
+            deadbandMicroseconds: 5_000,    // 5ms (was 1.5ms)
+            engageMicroseconds: 10_000,     // 10ms (was 3ms)
+            reanchorThresholdMicroseconds: 500_000
+        )
+        var tickCount = 0
+        // Cache AudioQueue latency (constant for a given format)
+        var cachedAqLatencyUs: Int64 = 0
 
         while !Task.isCancelled {
-            try? await Task.sleep(for: .seconds(1))
+            try? await Task.sleep(for: .milliseconds(100))
+            tickCount += 1
 
             guard let audioScheduler = await audioScheduler,
-                  let clockSync = await clockSync else { continue }
+                  let clockSync = await clockSync,
+                  let audioPlayer = await audioPlayer else { continue }
 
-            let currentStats = await audioScheduler.getDetailedStats()
+            // --- Sync correction (every 100ms) ---
+            let cursorUs = await audioPlayer.playbackCursorMicroseconds
+            if cursorUs > 0, await clockSync.hasSynced {
+                let nowAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
+                let expectedServerTime = await clockSync.localTimeToServer(nowAbsolute)
 
-            if currentStats.received > 0 {
-                let framesScheduled = currentStats.received - lastStats.received
-                let framesPlayed = currentStats.played - lastStats.played
-                let framesDroppedLate = currentStats.droppedLate - lastStats.droppedLate
-                let framesDroppedOther = currentStats.droppedOther - lastStats.droppedOther
+                // Compute AQ latency once
+                if cachedAqLatencyUs == 0 {
+                    let sr = await audioPlayer.currentSampleRate
+                    let fs = await audioPlayer.currentFrameSize
+                    if fs > 0, sr > 0 {
+                        // ~2 buffers active at a time (1 playing + 1 queued)
+                        cachedAqLatencyUs = Int64(2 * 16384) * 1_000_000 / Int64(sr * fs)
+                    }
+                }
+
+                let syncErrorUs = (cursorUs - expectedServerTime) - cachedAqLatencyUs
+
+                let currentSchedule = await audioPlayer.currentCorrectionSchedule
+                let schedule = planner.plan(
+                    errorMicroseconds: syncErrorUs,
+                    sampleRate: UInt32(await audioPlayer.currentSampleRate),
+                    currentlyCorrecting: currentSchedule.isCorrecting
+                )
+
+                // Correction infrastructure is in place but disabled until the error
+                // computation moves into the audio callback for tight-loop stability.
+                // At 100ms update intervals, the drop/insert feedback loop diverges.
+                // See: Rust synced_player.rs which computes error at ~5ms in the cpal callback.
+                _ = schedule
+            }
+
+            // --- Telemetry (every 1s = every 10 ticks) ---
+            if tickCount % 10 == 0 {
+                let currentStats = await audioScheduler.getDetailedStats()
+                guard currentStats.received > 0 else { continue }
+
+                let framesScheduled = currentStats.received - lastTelemetryStats.received
+                let framesPlayed = currentStats.played - lastTelemetryStats.played
+                let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
+                let framesDroppedOther = currentStats.droppedOther - lastTelemetryStats.droppedOther
 
                 let offset = await clockSync.statsOffset
                 let rtt = await clockSync.statsRtt
                 let clockOffsetMs = Double(offset) / 1000.0
                 let rttMs = Double(rtt) / 1000.0
 
-                fputs("[TELEMETRY] framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed), framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther), bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)), clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)), rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize)\n", stderr)
+                let syncErrorUs = cursorUs > 0
+                    ? (cursorUs - (await clockSync.localTimeToServer(
+                        Int64(Date().timeIntervalSince1970 * 1_000_000)
+                    ))) - cachedAqLatencyUs
+                    : Int64(0)
 
-                lastStats = currentStats
+                let currentSchedule = await audioPlayer.currentCorrectionSchedule
+
+                fputs("[TELEMETRY] framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed), framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther), bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)), clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)), rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize), syncErrorUs=\(syncErrorUs), correcting=\(currentSchedule.isCorrecting)\n", stderr)
+
+                lastTelemetryStats = currentStats
             }
         }
     }
