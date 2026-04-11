@@ -318,13 +318,16 @@ public final class SendspinClient {
     }
 
     /// Polls for reanchor requests from the audio callback and logs telemetry.
-    /// Sync correction is now computed inside the AudioQueue callback itself.
+    /// Sync correction is now computed inside the AudioQueue callback itself,
+    /// so this loop only handles rare reanchor events and periodic logging.
     private nonisolated func runSyncCorrectionAndTelemetry() async {
         var lastTelemetryStats = DetailedSchedulerStats()
         var tickCount = 0
 
         while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(100))
+            // 500ms poll — reanchors are rare events, no need to check faster.
+            // Telemetry logs every 4th tick (2s).
+            try? await Task.sleep(for: .milliseconds(500))
             tickCount += 1
 
             guard let audioScheduler = await audioScheduler,
@@ -336,8 +339,8 @@ public final class SendspinClient {
                 await audioPlayer.reanchorCursor(to: reanchorTarget)
             }
 
-            // --- Telemetry (every 1s = every 10 ticks) ---
-            if tickCount % 10 == 0 {
+            // --- Telemetry (every 2s = every 4 ticks) ---
+            if tickCount % 4 == 0 {
                 let currentStats = await audioScheduler.getDetailedStats()
                 guard currentStats.received > 0 else { continue }
 

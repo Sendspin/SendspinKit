@@ -8,7 +8,6 @@ import SendspinKit
 final class CLIPlayer {
     private var client: SendspinClient?
     private var eventTask: Task<Void, Never>?
-    private var statsTask: Task<Void, Never>?
     private let display = StatusDisplay()
 
     @MainActor
@@ -56,11 +55,6 @@ final class CLIPlayer {
         // Start event monitoring
         eventTask = Task {
             await monitorEvents(client: client, useTUI: useTUI)
-        }
-
-        // Start stats monitoring
-        statsTask = Task {
-            await monitorStats(client: client)
         }
 
         // Connect to server
@@ -160,17 +154,6 @@ final class CLIPlayer {
                     print("[ERROR] \(message)")
                 }
             }
-        }
-    }
-
-    @MainActor
-    private func monitorStats(client _: SendspinClient) async {
-        while !Task.isCancelled {
-            // Update volume from client
-            // Note: Would need to expose these as observable properties
-            // For now, we'll update them from command loop
-
-            try? await Task.sleep(for: .milliseconds(100))
         }
     }
 

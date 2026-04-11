@@ -184,7 +184,27 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         timerTask = Task {
             while !Task.isCancelled {
                 checkQueue()
-                try? await Task.sleep(for: .milliseconds(10))
+
+                // Smart sleep: wait until the next chunk is due instead of
+                // polling at a fixed 10ms interval. This drops wakeups from
+                // ~100/sec to ~42/sec (one per chunk arrival at 48kHz).
+                let sleepDuration: Duration
+                if let next = queue.first {
+                    let delay = next.playTime.timeIntervalSince(Date()) - playbackWindow
+                    if delay > 0 {
+                        // Cap at playbackWindow so new arrivals aren't delayed too long
+                        let cappedDelay = min(delay, playbackWindow)
+                        sleepDuration = .nanoseconds(Int64(cappedDelay * 1_000_000_000))
+                    } else {
+                        // Chunk is due now or overdue — tight loop briefly to drain
+                        sleepDuration = .milliseconds(1)
+                    }
+                } else {
+                    // Empty queue — no rush, check back in 50ms
+                    sleepDuration = .milliseconds(50)
+                }
+
+                try? await Task.sleep(for: sleepDuration)
             }
         }
     }
