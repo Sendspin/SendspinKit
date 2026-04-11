@@ -397,12 +397,8 @@ public final class SendspinClient {
             await handleStreamEnd(message)
         } else if let message = try? decoder.decode(ServerCommandMessage.self, from: data), message.type == msgType {
             await handleServerCommand(message)
-        } else if let message = try? decoder.decode(StreamMetadataMessage.self, from: data), message.type == msgType {
-            await handleStreamMetadata(message)
         } else if let message = try? decoder.decode(GroupUpdateMessage.self, from: data), message.type == msgType {
             await handleGroupUpdate(message)
-        } else if let message = try? decoder.decode(SessionUpdateMessage.self, from: data), message.type == msgType {
-            await handleSessionUpdate(message)
         } else {
             let preview = text.prefix(500)
             fputs("[CLIENT] ❌ Failed to decode message type '\(msgType)': \(preview)\n", stderr)
@@ -476,7 +472,6 @@ public final class SendspinClient {
                 album: metadata.album,
                 albumArtist: metadata.albumArtist,
                 track: metadata.track,
-                duration: nil,
                 year: metadata.year,
                 artworkUrl: metadata.artworkUrl
             )
@@ -587,36 +582,6 @@ public final class SendspinClient {
                 playbackState: message.payload.playbackState
             )
             eventsContinuation.yield(.groupUpdated(info))
-        }
-    }
-
-    private func handleStreamMetadata(_ message: StreamMetadataMessage) async {
-        let metadata = TrackMetadata(
-            title: message.payload.title,
-            artist: message.payload.artist,
-            album: message.payload.album,
-            albumArtist: nil,
-            track: nil,
-            duration: nil,
-            year: nil,
-            artworkUrl: message.payload.artworkUrl
-        )
-        eventsContinuation.yield(.metadataReceived(metadata))
-    }
-
-    private func handleSessionUpdate(_ message: SessionUpdateMessage) async {
-        if let sessionMetadata = message.payload.metadata {
-            let metadata = TrackMetadata(
-                title: sessionMetadata.title,
-                artist: sessionMetadata.artist,
-                album: sessionMetadata.album,
-                albumArtist: sessionMetadata.albumArtist,
-                track: sessionMetadata.track,
-                duration: sessionMetadata.trackDuration,
-                year: sessionMetadata.year,
-                artworkUrl: sessionMetadata.artworkUrl
-            )
-            eventsContinuation.yield(.metadataReceived(metadata))
         }
     }
 
@@ -749,7 +714,6 @@ public struct TrackMetadata: Sendable {
     public let album: String?
     public let albumArtist: String?
     public let track: Int?
-    public let duration: Int?
     public let year: Int?
     public let artworkUrl: String?
 }

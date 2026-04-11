@@ -131,9 +131,6 @@ final class CLIPlayer {
                     print("[METADATA] Track: \(metadata.title ?? "unknown")")
                     print("[METADATA] Artist: \(metadata.artist ?? "unknown")")
                     print("[METADATA] Album: \(metadata.album ?? "unknown")")
-                    if let duration = metadata.duration {
-                        print("[METADATA] Duration: \(duration)s")
-                    }
                     if let artworkUrl = metadata.artworkUrl {
                         print("[METADATA] Artwork URL: \(artworkUrl)")
                     }
