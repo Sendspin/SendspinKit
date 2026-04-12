@@ -37,12 +37,7 @@ struct AudioPlayerTests {
         #expect(isPlaying == true)
     }
 
-    // NOTE: Old testEnqueueChunk removed - enqueue(chunk:) method has been removed
-    // in favor of AudioScheduler-based scheduling. The new flow is:
-    // SendspinClient -> AudioScheduler -> AudioPlayer.playPCM()
-    // See testEnqueueMethodRemoved below for verification
-
-    @Test("Play PCM data directly")
+    @Test("Play PCM data with timestamp")
     func testPlayPCM() async throws {
         let bufferManager = BufferManager(capacity: 1_048_576)
         let clockSync = ClockSynchronizer()
@@ -62,8 +57,8 @@ struct AudioPlayerTests {
         let samplesPerSecond = format.sampleRate
         let pcmData = Data(repeating: 0, count: samplesPerSecond * bytesPerSample)
 
-        // Should not throw
-        try await player.playPCM(pcmData)
+        // Should not throw — timestamp 0 is fine for tests
+        try await player.playPCM(pcmData, serverTimestamp: 0)
 
         await player.stop()
     }
@@ -72,21 +67,17 @@ struct AudioPlayerTests {
     func enqueueMethodRemoved() async throws {
         // This test documents that the old enqueue(chunk:) method has been removed
         // in favor of the AudioScheduler-based architecture.
-        // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM()
+        // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM(_:serverTimestamp:)
 
         let bufferManager = BufferManager(capacity: 1_048_576)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
 
-        // If the old method still exists, this test would fail at compile time
-        // This is intentional - we want to ensure the method is removed
-
-        // Verify playPCM is the correct interface
         let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         let pcmData = Data(repeating: 0, count: 1024)
-        try await player.playPCM(pcmData)
+        try await player.playPCM(pcmData, serverTimestamp: 0)
 
         await player.stop()
     }

@@ -378,19 +378,66 @@ struct ServerControllerState: Codable, Sendable {
     }
 }
 
-/// Metadata state within server/state
-struct ServerMetadataState: Codable, Sendable {
+/// Distinguishes "field absent" from "field explicitly null" in JSON delta merges.
+/// Per spec: absent means "no change", null means "clear the value".
+enum Nullable<T: Codable & Sendable>: Sendable {
+    /// Key was not present in JSON — keep previous value
+    case absent
+    /// Key was present with a JSON null — clear the value
+    case null
+    /// Key was present with a value
+    case value(T)
+
+    /// Merge this delta field with a previous value.
+    /// - `.absent` → keep previous
+    /// - `.null` → clear (return nil)
+    /// - `.value(v)` → use new value
+    func merge(previous: T?) -> T? {
+        switch self {
+        case .absent: return previous
+        case .null: return nil
+        case .value(let v): return v
+        }
+    }
+}
+
+extension Nullable: Codable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else {
+            self = .value(try container.decode(T.self))
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .absent:
+            break // Don't encode anything — omit from output
+        case .null:
+            try container.encodeNil()
+        case .value(let v):
+            try container.encode(v)
+        }
+    }
+}
+
+/// Metadata state within server/state.
+/// Uses `Nullable` for fields that the spec says can be cleared with explicit null.
+struct ServerMetadataState: Sendable {
     public let timestamp: Int64?
-    public let title: String?
-    public let artist: String?
-    public let albumArtist: String?
-    public let album: String?
-    public let artworkUrl: String?
-    public let year: Int?
-    public let track: Int?
-    public let progress: MetadataProgress?
-    public let `repeat`: String?
-    public let shuffle: Bool?
+    public let title: Nullable<String>
+    public let artist: Nullable<String>
+    public let albumArtist: Nullable<String>
+    public let album: Nullable<String>
+    public let artworkUrl: Nullable<String>
+    public let year: Nullable<Int>
+    public let track: Nullable<Int>
+    public let progress: Nullable<MetadataProgress>
+    public let `repeat`: Nullable<String>
+    public let shuffle: Nullable<Bool>
 
     enum CodingKeys: String, CodingKey {
         case timestamp
@@ -407,10 +454,10 @@ struct ServerMetadataState: Codable, Sendable {
     }
 
     public init(
-        timestamp: Int64? = nil, title: String? = nil, artist: String? = nil,
-        albumArtist: String? = nil, album: String? = nil, artworkUrl: String? = nil,
-        year: Int? = nil, track: Int? = nil, progress: MetadataProgress? = nil,
-        repeat: String? = nil, shuffle: Bool? = nil
+        timestamp: Int64? = nil, title: Nullable<String> = .absent, artist: Nullable<String> = .absent,
+        albumArtist: Nullable<String> = .absent, album: Nullable<String> = .absent, artworkUrl: Nullable<String> = .absent,
+        year: Nullable<Int> = .absent, track: Nullable<Int> = .absent, progress: Nullable<MetadataProgress> = .absent,
+        repeat: Nullable<String> = .absent, shuffle: Nullable<Bool> = .absent
     ) {
         self.timestamp = timestamp
         self.title = title
@@ -423,6 +470,41 @@ struct ServerMetadataState: Codable, Sendable {
         self.progress = progress
         self.repeat = `repeat`
         self.shuffle = shuffle
+    }
+}
+
+extension ServerMetadataState: Decodable {
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decodeIfPresent(Int64.self, forKey: .timestamp)
+        title = container.contains(.title) ? try container.decode(Nullable<String>.self, forKey: .title) : .absent
+        artist = container.contains(.artist) ? try container.decode(Nullable<String>.self, forKey: .artist) : .absent
+        albumArtist = container.contains(.albumArtist) ? try container.decode(Nullable<String>.self, forKey: .albumArtist) : .absent
+        album = container.contains(.album) ? try container.decode(Nullable<String>.self, forKey: .album) : .absent
+        artworkUrl = container.contains(.artworkUrl) ? try container.decode(Nullable<String>.self, forKey: .artworkUrl) : .absent
+        year = container.contains(.year) ? try container.decode(Nullable<Int>.self, forKey: .year) : .absent
+        track = container.contains(.track) ? try container.decode(Nullable<Int>.self, forKey: .track) : .absent
+        progress = container.contains(.progress) ? try container.decode(Nullable<MetadataProgress>.self, forKey: .progress) : .absent
+        `repeat` = container.contains(.repeat) ? try container.decode(Nullable<String>.self, forKey: .repeat) : .absent
+        shuffle = container.contains(.shuffle) ? try container.decode(Nullable<Bool>.self, forKey: .shuffle) : .absent
+    }
+}
+
+extension ServerMetadataState: Encodable {
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(timestamp, forKey: .timestamp)
+        // Only encode non-absent fields
+        switch title { case .absent: break; default: try container.encode(title, forKey: .title) }
+        switch artist { case .absent: break; default: try container.encode(artist, forKey: .artist) }
+        switch albumArtist { case .absent: break; default: try container.encode(albumArtist, forKey: .albumArtist) }
+        switch album { case .absent: break; default: try container.encode(album, forKey: .album) }
+        switch artworkUrl { case .absent: break; default: try container.encode(artworkUrl, forKey: .artworkUrl) }
+        switch year { case .absent: break; default: try container.encode(year, forKey: .year) }
+        switch track { case .absent: break; default: try container.encode(track, forKey: .track) }
+        switch progress { case .absent: break; default: try container.encode(progress, forKey: .progress) }
+        switch `repeat` { case .absent: break; default: try container.encode(`repeat`, forKey: .repeat) }
+        switch shuffle { case .absent: break; default: try container.encode(shuffle, forKey: .shuffle) }
     }
 }
 

@@ -195,9 +195,9 @@ struct MessageEncodingTests {
 
     // MARK: - server/state
 
-    @Test("ServerState decodes metadata with null fields")
-    func serverStateMetadata() throws {
-        // This is what sendspin-cli actually sends
+    @Test("ServerState decodes metadata with null fields as .null")
+    func serverStateMetadataExplicitNull() throws {
+        // When the server sends explicit null, it means "clear this field"
         let json = """
         {"type": "server/state", "payload": {"metadata": {"timestamp": 12345678, "title": null, "artist": null, "album": null, "album_artist": null, "artwork_url": null, "year": null, "track": null, "progress": null, "repeat": null, "shuffle": null}}}
         """
@@ -206,7 +206,31 @@ struct MessageEncodingTests {
 
         let metadata = try #require(message.payload.metadata)
         #expect(metadata.timestamp == 12345678)
-        #expect(metadata.title == nil)
-        #expect(metadata.artist == nil)
+        // Explicit null should decode as .null (clear), not .absent (keep previous)
+        #expect(metadata.title.merge(previous: "old") == nil)
+        #expect(metadata.artist.merge(previous: "old") == nil)
+        #expect(metadata.album.merge(previous: "old") == nil)
+        #expect(metadata.year.merge(previous: 2024) == nil)
+    }
+
+    @Test("ServerState decodes metadata with absent fields as .absent")
+    func serverStateMetadataAbsentFields() throws {
+        // When a field is absent from JSON, it means "no change" — keep previous value
+        let json = """
+        {"type": "server/state", "payload": {"metadata": {"timestamp": 12345678, "title": "New Song"}}}
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+
+        let metadata = try #require(message.payload.metadata)
+        #expect(metadata.timestamp == 12345678)
+        // Present field should have the value
+        #expect(metadata.title.merge(previous: "old") == "New Song")
+        // Absent fields should preserve previous values
+        #expect(metadata.artist.merge(previous: "Previous Artist") == "Previous Artist")
+        #expect(metadata.album.merge(previous: "Previous Album") == "Previous Album")
+        #expect(metadata.year.merge(previous: 2024) == 2024)
+        // Absent with no previous should remain nil
+        #expect(metadata.shuffle.merge(previous: nil) == nil)
     }
 }

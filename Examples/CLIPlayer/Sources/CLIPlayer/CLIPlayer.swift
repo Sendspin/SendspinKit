@@ -9,6 +9,13 @@ final class CLIPlayer {
     private var client: SendspinClient?
     private var eventTask: Task<Void, Never>?
     private let display = StatusDisplay()
+    /// Signals that the connection has ended and the process should exit.
+    private let disconnected: AsyncStream<Void>
+    private let disconnectedContinuation: AsyncStream<Void>.Continuation
+
+    init() {
+        (disconnected, disconnectedContinuation) = AsyncStream.makeStream()
+    }
 
     /// Shared player configuration for both connect and listen modes.
     ///
@@ -59,8 +66,6 @@ final class CLIPlayer {
             throw CLIPlayerError.invalidURL
         }
 
-        // Create player configuration
-        // Advertise support for PCM, Opus, and FLAC formats
         // Create client
         let client = SendspinClient(
             clientId: UUID().uuidString,
@@ -83,26 +88,25 @@ final class CLIPlayer {
         try? await Task.sleep(for: .milliseconds(500))
 
         if useTUI {
-            // Start TUI
             await display.start()
-
-            // Run command loop on background thread to avoid blocking MainActor
-            let commandTask = Task.detached { [display] in
-                await CLIPlayer.runCommandLoopStatic(client: client, display: display)
-            }
-            await commandTask.value
-
-            // Clean up TUI
-            await display.stop()
         } else {
-            // No TUI mode — log events, but still accept commands from stdin
             print("✅ Connected! Logging mode (type 'help' for commands, Ctrl-C to exit)")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+        }
 
-            let commandTask = Task.detached {
-                await CLIPlayer.runCommandLoopStatic(client: client, display: nil)
-            }
-            await commandTask.value
+        // Start the stdin command loop (fire-and-forget — it's optional input,
+        // not the lifecycle owner). If stdin is EOF (piped from /dev/null, running
+        // under `timeout`, etc.) this task exits immediately and harmlessly.
+        Task.detached { [display] in
+            await CLIPlayer.runCommandLoopStatic(client: client, display: useTUI ? display : nil)
+        }
+
+        // Stay alive until the connection drops. monitorEvents signals this
+        // when it sees a .disconnected event.
+        for await _ in disconnected { break }
+
+        if useTUI {
+            await display.stop()
         }
     }
 
@@ -199,6 +203,8 @@ final class CLIPlayer {
                 if !useTUI {
                     print("[EVENT] Disconnected: \(reason)")
                 }
+                disconnectedContinuation.yield()
+                disconnectedContinuation.finish()
 
             case let .error(message):
                 if !useTUI {
@@ -206,6 +212,9 @@ final class CLIPlayer {
                 }
             }
         }
+        // Event stream ended (client deallocated or connection dropped)
+        disconnectedContinuation.yield()
+        disconnectedContinuation.finish()
     }
 
     private nonisolated static func runCommandLoopStatic(client: SendspinClient, display: StatusDisplay?) async {
@@ -343,15 +352,16 @@ final class CLIPlayer {
         }
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-        // Run command loop concurrently with connection acceptance
         if useTUI {
             await display.start()
         }
-        let commandTask = Task.detached { [display] in
+
+        // Fire-and-forget stdin command loop
+        Task.detached { [display] in
             await CLIPlayer.runCommandLoopStatic(client: client, display: useTUI ? display : nil)
         }
 
-        // Accept incoming server connections
+        // Accept incoming server connections (runs until advertiser stops)
         for await transport in advertiser.connections {
             fputs("[LISTEN] Server connected via transport, running handshake...\n", stderr)
             do {
@@ -362,7 +372,6 @@ final class CLIPlayer {
             }
         }
 
-        commandTask.cancel()
         if useTUI {
             await display.stop()
         }

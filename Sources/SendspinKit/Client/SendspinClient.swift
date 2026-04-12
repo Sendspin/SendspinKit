@@ -171,7 +171,12 @@ public final class SendspinClient {
 
         if roles.contains(.playerV1), let playerConfig = playerConfig {
             let bufferManager = BufferManager(capacity: playerConfig.bufferCapacity)
-            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
+            // PCM ring buffer holds decompressed audio for the AudioQueue pipeline.
+            // Size it relative to the compressed buffer: compressed audio expands ~10-20x
+            // when decoded, but we only need ~2-3s of headroom. Use half the compressed
+            // capacity as a reasonable default (512KB for a typical 1MB buffer).
+            let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
+            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity)
 
             self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
@@ -674,9 +679,12 @@ public final class SendspinClient {
         if let metadata = message.payload.metadata {
             let prev = currentMetadata
 
-            // Build progress if present in this update
-            var progress: PlaybackProgress? = prev?.progress
-            if let p = metadata.progress {
+            // Build progress: Nullable.merge handles absent vs null vs value
+            let mergedProgress = metadata.progress.merge(previous: prev?.progress.flatMap { p in
+                MetadataProgress(trackProgress: p.trackProgressMs, trackDuration: p.trackDurationMs, playbackSpeed: p.playbackSpeed)
+            })
+            var progress: PlaybackProgress?
+            if let p = mergedProgress {
                 progress = PlaybackProgress(
                     trackProgressMs: p.trackProgress ?? 0,
                     trackDurationMs: p.trackDuration ?? 0,
@@ -685,18 +693,19 @@ public final class SendspinClient {
                 )
             }
 
-            // Merge: incoming non-nil fields override, explicit null clears
+            // Merge using Nullable: .absent keeps previous, .null clears, .value updates
+            let mergedRepeatStr = metadata.repeat.merge(previous: prev?.repeatMode?.rawValue)
             let merged = TrackMetadata(
-                title: metadata.title ?? prev?.title,
-                artist: metadata.artist ?? prev?.artist,
-                album: metadata.album ?? prev?.album,
-                albumArtist: metadata.albumArtist ?? prev?.albumArtist,
-                track: metadata.track ?? prev?.track,
-                year: metadata.year ?? prev?.year,
-                artworkUrl: metadata.artworkUrl ?? prev?.artworkUrl,
+                title: metadata.title.merge(previous: prev?.title),
+                artist: metadata.artist.merge(previous: prev?.artist),
+                album: metadata.album.merge(previous: prev?.album),
+                albumArtist: metadata.albumArtist.merge(previous: prev?.albumArtist),
+                track: metadata.track.merge(previous: prev?.track),
+                year: metadata.year.merge(previous: prev?.year),
+                artworkUrl: metadata.artworkUrl.merge(previous: prev?.artworkUrl),
                 progress: progress,
-                repeatMode: metadata.repeat.flatMap { RepeatMode(rawValue: $0) } ?? prev?.repeatMode,
-                shuffle: metadata.shuffle ?? prev?.shuffle
+                repeatMode: mergedRepeatStr.flatMap { RepeatMode(rawValue: $0) },
+                shuffle: metadata.shuffle.merge(previous: prev?.shuffle)
             )
             currentMetadata = merged
             eventsContinuation.yield(.metadataReceived(merged))
@@ -1104,6 +1113,18 @@ public final class SendspinClient {
     @MainActor public func setGroupMute(_ muted: Bool) async {
         await sendCommand("mute", mute: muted)
     }
+    /// Convenience: repeat off
+    @MainActor public func repeatOff() async { await sendCommand("repeat_off") }
+    /// Convenience: repeat one track
+    @MainActor public func repeatOne() async { await sendCommand("repeat_one") }
+    /// Convenience: repeat all tracks
+    @MainActor public func repeatAll() async { await sendCommand("repeat_all") }
+    /// Convenience: shuffle playback
+    @MainActor public func shuffle() async { await sendCommand("shuffle") }
+    /// Convenience: unshuffle playback
+    @MainActor public func unshuffle() async { await sendCommand("unshuffle") }
+    /// Convenience: switch to next group
+    @MainActor public func switchGroup() async { await sendCommand("switch") }
 }
 
 // MARK: - Supporting types

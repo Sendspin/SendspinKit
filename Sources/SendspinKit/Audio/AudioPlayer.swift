@@ -19,8 +19,11 @@ actor AudioPlayer {
     // Ring buffer consumed by AudioQueue callback.
     // All fields accessed under pcmBufferLock from the audio thread.
     private nonisolated let pcmBufferLock = NSLock()
-    // 512KB ring buffer — ~2.7s at 48kHz/stereo/16-bit
-    private nonisolated(unsafe) var pcmRingBuffer = PCMRingBuffer(capacity: 524_288)
+    // Ring buffer sized relative to the compressed buffer capacity.
+    // Decompressed PCM is ~10-20x larger than compressed audio, but we don't
+    // need to buffer all of it — just enough for the AudioQueue pipeline (~2-3s).
+    // Default 512KB ≈ 2.7s at 48kHz/stereo/16-bit.
+    private nonisolated(unsafe) var pcmRingBuffer: PCMRingBuffer
     // Frame size in bytes (channels × bytesPerSample after decoding)
     private nonisolated(unsafe) var frameSize: Int = 0
     // Last output frame for insert (sample-hold repeat) — fixed allocation, no Data on audio thread
@@ -66,9 +69,12 @@ actor AudioPlayer {
     var volume: Float { currentVolume }
     var muted: Bool { isMuted }
 
-    init(bufferManager: BufferManager, clockSync: ClockSynchronizer) {
+    /// - Parameter pcmBufferCapacity: Size of the PCM ring buffer in bytes.
+    ///   Defaults to 524_288 (512KB ≈ 2.7s at 48kHz/stereo/16-bit).
+    init(bufferManager: BufferManager, clockSync: ClockSynchronizer, pcmBufferCapacity: Int = 524_288) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
+        self.pcmRingBuffer = PCMRingBuffer(capacity: pcmBufferCapacity)
     }
 
     deinit {
@@ -228,16 +234,6 @@ actor AudioPlayer {
         }
     }
 
-    /// Play PCM data directly (legacy path, no timestamp)
-    func playPCM(_ pcmData: Data) async throws {
-        guard audioQueue != nil, currentFormat != nil else {
-            throw AudioPlayerError.notStarted
-        }
-
-        pcmBufferLock.withLock {
-            _ = pcmRingBuffer.write(pcmData)
-        }
-    }
 
     // MARK: - Sync correction interface
 
