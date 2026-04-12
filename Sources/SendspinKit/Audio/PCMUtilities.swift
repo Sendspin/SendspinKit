@@ -1,14 +1,10 @@
 // ABOUTME: PCM sample conversion utilities for multi-bit-depth audio
-// ABOUTME: Handles 24-bit unpacking/packing and 16-bit to 24-bit conversion
+// ABOUTME: Handles 24-bit unpacking for decoder pipeline
 
 import Foundation
 
 /// PCM sample conversion utilities
 enum PCMUtilities {
-    /// 24-bit sample range constants
-    static let max24Bit: Int32 = 8_388_607 // 2^23 - 1
-    static let min24Bit: Int32 = -8_388_608 // -2^23
-
     /// Unpack 3-byte little-endian to Int32 with sign extension
     /// - Parameters:
     ///   - bytes: Source byte array
@@ -27,44 +23,5 @@ enum PCMUtilities {
         }
 
         return value
-    }
-
-    /// Pack Int32 to 3-byte little-endian
-    /// - Parameter sample: Signed 24-bit value as Int32
-    /// - Returns: 3-byte array (little-endian)
-    static func pack24Bit(_ sample: Int32) -> [UInt8] {
-        return [
-            UInt8(sample & 0xFF),
-            UInt8((sample >> 8) & 0xFF),
-            UInt8((sample >> 16) & 0xFF)
-        ]
-    }
-
-    /// Convert int32 sample to 16-bit (right-shift 8 bits)
-    /// Used when downconverting 24-bit to 16-bit
-    /// - Parameter sample: 24-bit sample as Int32
-    /// - Returns: 16-bit sample
-    static func convertTo16Bit(_ sample: Int32) -> Int16 {
-        return Int16(sample >> 8)
-    }
-
-    /// Convert int16 sample to 24-bit range (left-shift 8 bits)
-    /// Used when upconverting 16-bit to 24-bit
-    /// - Parameter sample: 16-bit sample
-    /// - Returns: 24-bit sample as Int32
-    static func convertFrom16Bit(_ sample: Int16) -> Int32 {
-        return Int32(sample) << 8
-    }
-
-    /// Clamp Int32 value to 24-bit range
-    /// - Parameter sample: Unclamped sample value
-    /// - Returns: Clamped value within 24-bit range
-    static func clamp24Bit(_ sample: Int32) -> Int32 {
-        if sample > max24Bit {
-            return max24Bit
-        } else if sample < min24Bit {
-            return min24Bit
-        }
-        return sample
     }
 }

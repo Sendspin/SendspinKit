@@ -101,43 +101,6 @@ struct PCMRingBuffer {
         return toSkip
     }
 
-    /// Peek at the most recently written frame (for sample-hold insert correction).
-    /// Copies `frameSize` bytes ending at the current write position into `dest`.
-    /// Returns true if there was enough data to peek.
-    func peekLastFrame(into dest: UnsafeMutableRawPointer, frameSize: Int) -> Bool {
-        guard availableToRead >= frameSize else { return false }
-
-        // The last written frame ends at writePos
-        let startPos = (writePos - frameSize) & mask
-        let firstChunk = min(frameSize, capacity - startPos)
-        let secondChunk = frameSize - firstChunk
-
-        memcpy(dest, storage.baseAddress! + startPos, firstChunk)
-        if secondChunk > 0 {
-            memcpy(dest + firstChunk, storage.baseAddress!, secondChunk)
-        }
-
-        return true
-    }
-
-    /// Peek at the next frame to be read (the oldest unread frame).
-    /// Copies `frameSize` bytes starting at the current read position into `dest`.
-    /// Returns true if there was enough data to peek.
-    func peekNextFrame(into dest: UnsafeMutableRawPointer, frameSize: Int) -> Bool {
-        guard availableToRead >= frameSize else { return false }
-
-        let readOffset = readPos & mask
-        let firstChunk = min(frameSize, capacity - readOffset)
-        let secondChunk = frameSize - firstChunk
-
-        memcpy(dest, storage.baseAddress! + readOffset, firstChunk)
-        if secondChunk > 0 {
-            memcpy(dest + firstChunk, storage.baseAddress!, secondChunk)
-        }
-
-        return true
-    }
-
     /// Reset read and write positions (effectively clearing the buffer).
     mutating func reset() {
         readPos = 0

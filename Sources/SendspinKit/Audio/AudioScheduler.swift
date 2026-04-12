@@ -1,5 +1,5 @@
-// ABOUTME: Timestamp-based audio playback scheduler with priority queue
-// ABOUTME: Converts server timestamps to local time and schedules precise playback
+// ABOUTME: Timestamp-based audio chunk scheduler with sorted queue
+// ABOUTME: Converts server timestamps to local time and yields chunks when due
 
 import Foundation
 
@@ -14,14 +14,12 @@ struct SchedulerStats: Sendable {
     let played: Int
     let dropped: Int
     let droppedLate: Int // Frames dropped because they were >50ms late
-    let droppedOther: Int // Frames dropped due to queue overflow
 
-    init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0, droppedOther: Int = 0) {
+    init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0) {
         self.received = received
         self.played = played
         self.dropped = dropped
         self.droppedLate = droppedLate
-        self.droppedOther = droppedOther
     }
 }
 
@@ -31,7 +29,6 @@ struct DetailedSchedulerStats: Sendable {
     let played: Int
     let dropped: Int
     let droppedLate: Int
-    let droppedOther: Int
     let queueSize: Int
     let bufferFillMs: Double // Current buffer fill in milliseconds
 
@@ -40,7 +37,6 @@ struct DetailedSchedulerStats: Sendable {
         played: Int = 0,
         dropped: Int = 0,
         droppedLate: Int = 0,
-        droppedOther: Int = 0,
         queueSize: Int = 0,
         bufferFillMs: Double = 0.0
     ) {
@@ -48,7 +44,6 @@ struct DetailedSchedulerStats: Sendable {
         self.played = played
         self.dropped = dropped
         self.droppedLate = droppedLate
-        self.droppedOther = droppedOther
         self.queueSize = queueSize
         self.bufferFillMs = bufferFillMs
     }
@@ -115,8 +110,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
             received: schedulerStats.received + 1,
             played: schedulerStats.played,
             dropped: schedulerStats.dropped,
-            droppedLate: schedulerStats.droppedLate,
-            droppedOther: schedulerStats.droppedOther
+            droppedLate: schedulerStats.droppedLate
         )
     }
 
@@ -164,7 +158,6 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
             played: schedulerStats.played,
             dropped: schedulerStats.dropped,
             droppedLate: schedulerStats.droppedLate,
-            droppedOther: schedulerStats.droppedOther,
             queueSize: queue.count,
             bufferFillMs: bufferFillMs
         )
@@ -179,8 +172,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                 checkQueue()
 
                 // Smart sleep: wait until the next chunk is due instead of
-                // polling at a fixed 10ms interval. This drops wakeups from
-                // ~100/sec to ~42/sec (one per chunk arrival at 48kHz).
+                // polling at a fixed interval.
                 let sleepDuration: Duration
                 if let next = queue.first {
                     let delay = next.playTime.timeIntervalSince(Date()) - playbackWindow
@@ -238,13 +230,8 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                     received: schedulerStats.received,
                     played: schedulerStats.played,
                     dropped: schedulerStats.dropped + 1,
-                    droppedLate: schedulerStats.droppedLate + 1,
-                    droppedOther: schedulerStats.droppedOther
+                    droppedLate: schedulerStats.droppedLate + 1
                 )
-
-                // Log first 10 drops
-                if schedulerStats.droppedLate <= 10 {
-                }
             } else {
                 // Ready to play (within ±50ms window)
                 let chunk = queue.removeFirst()
@@ -254,8 +241,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                     received: schedulerStats.received,
                     played: schedulerStats.played + 1,
                     dropped: schedulerStats.dropped,
-                    droppedLate: schedulerStats.droppedLate,
-                    droppedOther: schedulerStats.droppedOther
+                    droppedLate: schedulerStats.droppedLate
                 )
             }
         }

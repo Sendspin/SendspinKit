@@ -103,7 +103,7 @@ struct MessageEncodingTests {
             (GoodbyeReason.anotherServer, "another_server"),
             (.shutdown, "shutdown"),
             (.restart, "restart"),
-            (.userRequest, "user_request"),
+            (.userRequest, "user_request")
         ] as [(GoodbyeReason, String)] {
             let message = ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason))
             let data = try encoder.encode(message)
@@ -199,7 +199,17 @@ struct MessageEncodingTests {
     func serverStateMetadataExplicitNull() throws {
         // When the server sends explicit null, it means "clear this field"
         let json = """
-        {"type": "server/state", "payload": {"metadata": {"timestamp": 12345678, "title": null, "artist": null, "album": null, "album_artist": null, "artwork_url": null, "year": null, "track": null, "progress": null, "repeat": null, "shuffle": null}}}
+        {
+            "type": "server/state",
+            "payload": {
+                "metadata": {
+                    "timestamp": 12345678,
+                    "title": null, "artist": null, "album": null,
+                    "album_artist": null, "artwork_url": null, "year": null,
+                    "track": null, "progress": null, "repeat": null, "shuffle": null
+                }
+            }
+        }
         """
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)

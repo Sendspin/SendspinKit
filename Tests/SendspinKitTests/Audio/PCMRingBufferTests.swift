@@ -107,49 +107,6 @@ struct PCMRingBufferTests {
         #expect(dest == [50, 60])
     }
 
-    @Test("Peek last frame reads without consuming")
-    func peekLastFrame() {
-        var buf = PCMRingBuffer(capacity: 32)
-        defer { buf.deallocate() }
-
-        // Write 3 frames of 4 bytes each
-        let frames: [UInt8] = [1, 1, 1, 1, 2, 2, 2, 2, 3, 3, 3, 3]
-        frames.withUnsafeBytes { ptr in
-            buf.write(from: ptr.baseAddress!, count: 12)
-        }
-
-        var lastFrame = [UInt8](repeating: 0, count: 4)
-        let ok = lastFrame.withUnsafeMutableBytes { ptr in
-            buf.peekLastFrame(into: ptr.baseAddress!, frameSize: 4)
-        }
-        #expect(ok)
-        #expect(lastFrame == [3, 3, 3, 3])
-        // Peek should not consume
-        #expect(buf.availableToRead == 12)
-    }
-
-    @Test("Peek next frame reads oldest unread data without consuming")
-    func peekNextFrame() {
-        var buf = PCMRingBuffer(capacity: 32)
-        defer { buf.deallocate() }
-
-        let frames: [UInt8] = [1, 1, 1, 1, 2, 2, 2, 2]
-        frames.withUnsafeBytes { ptr in
-            buf.write(from: ptr.baseAddress!, count: 8)
-        }
-
-        // Skip first frame
-        buf.skip(4)
-
-        var nextFrame = [UInt8](repeating: 0, count: 4)
-        let ok = nextFrame.withUnsafeMutableBytes { ptr in
-            buf.peekNextFrame(into: ptr.baseAddress!, frameSize: 4)
-        }
-        #expect(ok)
-        #expect(nextFrame == [2, 2, 2, 2])
-        #expect(buf.availableToRead == 4) // still there
-    }
-
     @Test("Reset clears the buffer")
     func resetClears() {
         var buf = PCMRingBuffer(capacity: 32)

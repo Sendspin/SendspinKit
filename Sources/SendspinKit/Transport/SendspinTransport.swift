@@ -1,5 +1,5 @@
 // ABOUTME: Protocol abstracting the WebSocket transport layer
-// ABOUTME: Enables both client-initiated (Starscream) and server-initiated (NWListener) connections
+// ABOUTME: Enables both client-initiated and server-initiated connections
 
 import Foundation
 

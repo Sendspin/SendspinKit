@@ -3,35 +3,18 @@
 
 import Foundation
 
-/// Quality of clock synchronization
-enum SyncQuality: Sendable {
-    case good
-    case degraded
-    case lost
-}
-
-/// Clock synchronization statistics
-struct ClockStats: Sendable {
-    let offset: Int64
-    let rtt: Int64
-    let quality: SyncQuality
-}
-
 /// Synchronizes local clock with server clock using a 2D Kalman filter.
 ///
 /// Wraps `SendspinTimeFilter` with:
 /// - NTP four-timestamp processing (client_tx, server_rx, server_tx, client_rx)
 /// - RTT gating (rejects negative and >100ms samples)
 /// - Absolute time conversion (process-relative → Unix epoch for Date construction)
-/// - Quality tracking
 actor ClockSynchronizer: ClockSyncProtocol {
 
     private var filter = SendspinTimeFilter()
 
     // Latest raw measurements for telemetry
     private var latestRtt: Int64 = 0
-    private var quality: SyncQuality = .lost
-    private var lastSyncTime: Date?
 
     // Absolute anchor: converts process-relative client timestamps to Unix epoch
     private let clientProcessStartAbsolute: Int64
@@ -45,18 +28,9 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// Current clock offset in microseconds (server - client)
     var currentOffset: Int64 { Int64(filter.offset.rounded()) }
 
-    /// Current sync quality
-    var currentQuality: SyncQuality { quality }
-
-    /// Get sync statistics
-    func getStats() -> ClockStats {
-        ClockStats(offset: Int64(filter.offset.rounded()), rtt: latestRtt, quality: quality)
-    }
-
     /// Individual stats for telemetry
     var statsOffset: Int64 { Int64(filter.offset.rounded()) }
     var statsRtt: Int64 { latestRtt }
-    var statsQuality: SyncQuality { quality }
 
     /// Whether at least one sync sample has been accepted
     var hasSynced: Bool { filter.isInitialized }
@@ -79,7 +53,6 @@ actor ClockSynchronizer: ClockSyncProtocol {
         let measuredOffset = ((serverReceived - clientTransmitted) + (serverTransmitted - clientReceived)) / 2
 
         latestRtt = rtt
-        lastSyncTime = Date()
 
         // Gate: reject invalid RTT
         guard rtt >= 0, rtt <= 100_000 else { return }
@@ -91,9 +64,6 @@ actor ClockSynchronizer: ClockSyncProtocol {
             measurement: Double(measuredOffset),
             maxError: maxError
         )
-
-        // Update quality based on RTT
-        quality = rtt < 50_000 ? .good : .degraded
     }
 
     /// Convert a server timestamp to local absolute time (Unix epoch μs).
@@ -139,19 +109,9 @@ actor ClockSynchronizer: ClockSyncProtocol {
         )
     }
 
-    /// Check and update quality based on time since last sync
-    func checkQuality() -> SyncQuality {
-        if let lastSync = lastSyncTime, Date().timeIntervalSince(lastSync) > 5.0 {
-            quality = .lost
-        }
-        return quality
-    }
-
     /// Reset clock synchronization (e.g., after reconnection)
     func reset() {
         filter.reset()
         latestRtt = 0
-        quality = .lost
-        lastSyncTime = nil
     }
 }

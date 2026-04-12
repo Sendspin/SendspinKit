@@ -65,7 +65,7 @@ public final class SendspinClient {
     private var messageLoopTask: Task<Void, Never>?
     private var clockSyncTask: Task<Void, Never>?
     private var schedulerOutputTask: Task<Void, Never>?
-    private var schedulerStatsTask: Task<Void, Never>?
+    private var syncTelemetryTask: Task<Void, Never>?
 
     // Event stream
     private let eventsContinuation: AsyncStream<ClientEvent>.Continuation
@@ -208,7 +208,13 @@ public final class SendspinClient {
             // when decoded, but we only need ~2-3s of headroom. Use half the compressed
             // capacity as a reasonable default (512KB for a typical 1MB buffer).
             let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
-            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity, volumeControl: volumeControl, processCallback: playerConfig.processCallback)
+            let audioPlayer = AudioPlayer(
+                bufferManager: bufferManager,
+                clockSync: clockSync,
+                pcmBufferCapacity: pcmBufferCapacity,
+                volumeControl: volumeControl,
+                processCallback: playerConfig.processCallback
+            )
 
             self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
@@ -231,7 +237,7 @@ public final class SendspinClient {
             await self?.runSchedulerOutput()
         }
 
-        schedulerStatsTask = Task.detached { [weak self] in
+        syncTelemetryTask = Task.detached { [weak self] in
             await self?.runSyncCorrectionAndTelemetry()
         }
     }
@@ -250,11 +256,11 @@ public final class SendspinClient {
         messageLoopTask?.cancel()
         clockSyncTask?.cancel()
         schedulerOutputTask?.cancel()
-        schedulerStatsTask?.cancel()
+        syncTelemetryTask?.cancel()
         messageLoopTask = nil
         clockSyncTask = nil
         schedulerOutputTask = nil
-        schedulerStatsTask = nil
+        syncTelemetryTask = nil
 
         if let audioPlayer = audioPlayer {
             await audioPlayer.stop()
@@ -310,32 +316,6 @@ public final class SendspinClient {
         // will handle server/hello (tracking connectionReason) and stream/start
         connectionState = .connecting
         try await setupConnection(with: newTransport)
-    }
-
-    /// Determine whether to switch to a new server per spec rules.
-    private func shouldSwitchToNewServer(
-        existingReason: ConnectionReason?,
-        newReason: ConnectionReason,
-        newServerId: String
-    ) -> Bool {
-        // If new server's connection_reason is 'playback' → switch
-        if newReason == .playback {
-            return true
-        }
-
-        // If new is 'discovery' and existing was 'playback' → keep existing
-        if existingReason == .playback {
-            return false
-        }
-
-        // Both are 'discovery': prefer last-played server
-        let lastPlayed = Self.lastPlayedServerId
-        if let lastPlayed = lastPlayed, newServerId == lastPlayed {
-            return true
-        }
-
-        // Otherwise keep existing
-        return false
     }
 
     /// Persist the server that most recently had playback_state: 'playing'.
@@ -580,7 +560,6 @@ public final class SendspinClient {
                 let framesScheduled = currentStats.received - lastTelemetryStats.received
                 let framesPlayed = currentStats.played - lastTelemetryStats.played
                 let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
-                let framesDroppedOther = currentStats.droppedOther - lastTelemetryStats.droppedOther
 
                 let offset = await clockSync.statsOffset
                 let rtt = await clockSync.statsRtt
@@ -593,7 +572,21 @@ public final class SendspinClient {
                 let dropN = tSnap.correctionSchedule.dropEveryNFrames
                 let insertN = tSnap.correctionSchedule.insertEveryNFrames
 
-                fputs("[TELEMETRY] framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed), framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther), bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)), clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)), rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize), syncErrorUs=\(syncErrorUs), correcting=\(tSnap.correctionSchedule.isCorrecting), dropEvery=\(dropN), insertEvery=\(insertN)\n", stderr)
+                let bufferFill = String(format: "%.1f", currentStats.bufferFillMs)
+                let offsetFmt = String(format: "%.2f", clockOffsetMs)
+                let rttFmt = String(format: "%.2f", rttMs)
+                let correcting = tSnap.correctionSchedule.isCorrecting
+                fputs(
+                    "[TELEMETRY]"
+                    + " sched=\(framesScheduled) played=\(framesPlayed)"
+                    + " late=\(framesDroppedLate) buf=\(bufferFill)ms"
+                    + " offset=\(offsetFmt)ms rtt=\(rttFmt)ms"
+                    + " queue=\(currentStats.queueSize)"
+                    + " sync=\(syncErrorUs)us"
+                    + " correcting=\(correcting)"
+                    + " drop=\(dropN) insert=\(insertN)\n",
+                    stderr
+                )
 
                 lastTelemetryStats = currentStats
             }
@@ -833,13 +826,14 @@ public final class SendspinClient {
             do {
                 try await audioPlayer.swapDecoder(format: format, codecHeader: codecHeader)
             } catch {
-                fputs("[CLIENT] Decoder swap failed, falling back to full restart: \(error)\n", stderr)
+                fputs("[CLIENT] Decoder swap failed, full restart: \(error)\n", stderr)
                 pendingFormat = nil
                 pendingCodecHeader = nil
                 try? await audioPlayer.start(format: format, codecHeader: codecHeader)
             }
 
-            fputs("[CLIENT] Format change: seamless transition (\(previousFormat!.sampleRate)Hz → \(format.sampleRate)Hz), old audio continues\n", stderr)
+            let oldRate = previousFormat!.sampleRate
+            fputs("[CLIENT] Format change: \(oldRate)Hz → \(format.sampleRate)Hz\n", stderr)
             eventsContinuation.yield(.streamFormatChanged(format))
             try? await sendClientState()
             return
@@ -1157,121 +1151,4 @@ public final class SendspinClient {
     @MainActor public func unshuffle() async { await sendCommand("unshuffle") }
     /// Convenience: switch to next group
     @MainActor public func switchGroup() async { await sendCommand("switch") }
-}
-
-// MARK: - Supporting types
-
-/// Playback state of a Sendspin group
-public enum PlaybackState: String, Sendable {
-    case playing
-    case stopped
-}
-
-/// Controller commands per spec
-public enum ControllerCommandType: String, Sendable {
-    case play, pause, stop, next, previous
-    case volume, mute
-    case repeatOff = "repeat_off"
-    case repeatOne = "repeat_one"
-    case repeatAll = "repeat_all"
-    case shuffle, unshuffle
-    case `switch`
-}
-
-public enum ClientEvent: Sendable {
-    case serverConnected(ServerInfo)
-    case streamStarted(AudioFormatSpec)
-    /// Format changed mid-stream (e.g. after a `stream/request-format` request)
-    case streamFormatChanged(AudioFormatSpec)
-    case streamEnded
-    case groupUpdated(GroupInfo)
-    case metadataReceived(TrackMetadata)
-    case controllerStateUpdated(ControllerState)
-    case artworkStreamStarted([StreamArtworkChannelConfig])
-    case artworkReceived(channel: Int, data: Data)
-    case visualizerData(Data)
-    /// Server changed the static delay via `server/command`. The host app should
-    /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
-    case staticDelayChanged(Int)
-    /// Client disconnected from the server (connection lost or explicit disconnect)
-    case disconnected(reason: DisconnectReason)
-    case error(String)
-}
-
-/// Why the client disconnected
-public enum DisconnectReason: Sendable {
-    /// Client explicitly disconnected (via `disconnect()`)
-    case explicit(GoodbyeReason)
-    /// Connection was lost (WebSocket dropped, network error)
-    case connectionLost
-}
-
-public struct ServerInfo: Sendable {
-    public let serverId: String
-    public let name: String
-    public let version: Int
-    public let connectionReason: ConnectionReason
-}
-
-public struct GroupInfo: Sendable {
-    public let groupId: String
-    public let groupName: String
-    public let playbackState: PlaybackState?
-}
-
-/// Playback progress information.
-/// Use `currentPositionMs` to get the real-time interpolated position.
-public struct PlaybackProgress: Sendable {
-    /// Playback position in milliseconds at the time of the metadata update
-    public let trackProgressMs: Int
-    /// Total track length in milliseconds (0 = unknown/unlimited, e.g. live radio)
-    public let trackDurationMs: Int
-    /// Playback speed multiplier x1000 (1000 = normal, 0 = paused)
-    public let playbackSpeed: Int
-    /// Server timestamp (microseconds) when this progress was valid
-    public let timestamp: Int64
-
-    /// Calculate the current playback position in milliseconds.
-    /// Interpolates from the last known position using the playback speed.
-    /// - Parameter currentTimeMicros: Current time in microseconds (same clock domain as `timestamp`)
-    public func currentPositionMs(at currentTimeMicros: Int64) -> Int {
-        let elapsed = currentTimeMicros - timestamp
-        let calculated = trackProgressMs + Int(elapsed * Int64(playbackSpeed) / 1_000_000)
-        if trackDurationMs != 0 {
-            return max(min(calculated, trackDurationMs), 0)
-        }
-        return max(calculated, 0)
-    }
-}
-
-public struct TrackMetadata: Sendable {
-    public let title: String?
-    public let artist: String?
-    public let album: String?
-    public let albumArtist: String?
-    public let track: Int?
-    public let year: Int?
-    public let artworkUrl: String?
-    public let progress: PlaybackProgress?
-    public let repeatMode: RepeatMode?
-    public let shuffle: Bool?
-}
-
-/// Repeat mode per spec
-public enum RepeatMode: String, Sendable {
-    case off
-    case one
-    case all
-}
-
-public struct ControllerState: Sendable {
-    public let supportedCommands: [ControllerCommandType]
-    public let volume: Int
-    public let muted: Bool
-}
-
-public enum SendspinClientError: Error {
-    case notConnected
-    case unsupportedCodec(String)
-    case audioSetupFailed
 }

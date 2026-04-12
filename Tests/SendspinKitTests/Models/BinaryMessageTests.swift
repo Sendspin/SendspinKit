@@ -48,7 +48,7 @@ struct BinaryMessageTests {
             (0, BinaryMessageType.artworkChannel0),
             (1, BinaryMessageType.artworkChannel1),
             (2, BinaryMessageType.artworkChannel2),
-            (3, BinaryMessageType.artworkChannel3),
+            (3, BinaryMessageType.artworkChannel3)
         ] {
             var data = Data()
             data.append(UInt8(8 + channelNum)) // Types 8-11 for channels 0-3

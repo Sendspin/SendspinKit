@@ -388,6 +388,12 @@ enum Nullable<T: Codable & Sendable>: Sendable {
     /// Key was present with a value
     case value(T)
 
+    /// Whether this field was absent from the JSON (key not present).
+    var isAbsent: Bool {
+        if case .absent = self { return true }
+        return false
+    }
+
     /// Merge this delta field with a previous value.
     /// - `.absent` → keep previous
     /// - `.null` → clear (return nil)
@@ -494,17 +500,17 @@ extension ServerMetadataState: Encodable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(timestamp, forKey: .timestamp)
-        // Only encode non-absent fields
-        switch title { case .absent: break; default: try container.encode(title, forKey: .title) }
-        switch artist { case .absent: break; default: try container.encode(artist, forKey: .artist) }
-        switch albumArtist { case .absent: break; default: try container.encode(albumArtist, forKey: .albumArtist) }
-        switch album { case .absent: break; default: try container.encode(album, forKey: .album) }
-        switch artworkUrl { case .absent: break; default: try container.encode(artworkUrl, forKey: .artworkUrl) }
-        switch year { case .absent: break; default: try container.encode(year, forKey: .year) }
-        switch track { case .absent: break; default: try container.encode(track, forKey: .track) }
-        switch progress { case .absent: break; default: try container.encode(progress, forKey: .progress) }
-        switch `repeat` { case .absent: break; default: try container.encode(`repeat`, forKey: .repeat) }
-        switch shuffle { case .absent: break; default: try container.encode(shuffle, forKey: .shuffle) }
+        // Only encode non-absent fields (absent = key not in JSON delta)
+        if !title.isAbsent { try container.encode(title, forKey: .title) }
+        if !artist.isAbsent { try container.encode(artist, forKey: .artist) }
+        if !albumArtist.isAbsent { try container.encode(albumArtist, forKey: .albumArtist) }
+        if !album.isAbsent { try container.encode(album, forKey: .album) }
+        if !artworkUrl.isAbsent { try container.encode(artworkUrl, forKey: .artworkUrl) }
+        if !year.isAbsent { try container.encode(year, forKey: .year) }
+        if !track.isAbsent { try container.encode(track, forKey: .track) }
+        if !progress.isAbsent { try container.encode(progress, forKey: .progress) }
+        if !`repeat`.isAbsent { try container.encode(`repeat`, forKey: .repeat) }
+        if !shuffle.isAbsent { try container.encode(shuffle, forKey: .shuffle) }
     }
 }
 

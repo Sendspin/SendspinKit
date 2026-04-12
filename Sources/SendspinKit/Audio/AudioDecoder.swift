@@ -167,7 +167,7 @@ class FLACDecoder: AudioDecoder {
 
         let initStatus = FLAC__stream_decoder_init_stream(
             decoder,
-            { decoder, buffer, bytes, clientData -> FLAC__StreamDecoderReadStatus in
+            { _, buffer, bytes, clientData -> FLAC__StreamDecoderReadStatus in
                 guard let clientData = clientData else {
                     return FLAC__STREAM_DECODER_READ_STATUS_ABORT
                 }
@@ -178,7 +178,7 @@ class FLACDecoder: AudioDecoder {
             nil,  // tell callback (optional)
             nil,  // length callback (optional)
             nil,  // eof callback (optional)
-            { decoder, frame, buffer, clientData -> FLAC__StreamDecoderWriteStatus in
+            { _, frame, buffer, clientData -> FLAC__StreamDecoderWriteStatus in
                 guard let clientData = clientData else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
@@ -186,7 +186,7 @@ class FLACDecoder: AudioDecoder {
                 return selfRef.writeCallback(frame: frame, buffer: buffer)
             },
             nil,  // metadata callback (optional)
-            { decoder, status, clientData in
+            { _, status, clientData in
                 // Error callback - store error for later checking
                 guard let clientData = clientData else { return }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
@@ -294,7 +294,10 @@ class FLACDecoder: AudioDecoder {
         return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE
     }
 
-    private func writeCallback(frame: UnsafePointer<FLAC__Frame>?, buffer: UnsafePointer<UnsafePointer<FLAC__int32>?>?) -> FLAC__StreamDecoderWriteStatus {
+    private func writeCallback(
+        frame: UnsafePointer<FLAC__Frame>?,
+        buffer: UnsafePointer<UnsafePointer<FLAC__int32>?>?
+    ) -> FLAC__StreamDecoderWriteStatus {
         guard let frame = frame, let buffer = buffer else {
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
         }
@@ -360,7 +363,5 @@ enum AudioDecoderError: Error {
     case unsupportedBitDepth(Int)
     case invalidDataSize(expected: String, actual: Int)
     case formatCreationFailed(String)
-    case converterCreationFailed
-    case bufferCreationFailed
     case conversionFailed(String)
 }

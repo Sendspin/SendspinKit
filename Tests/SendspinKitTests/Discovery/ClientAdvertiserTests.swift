@@ -45,9 +45,8 @@ struct ClientAdvertiserTests {
 
 @Suite("Multi-Server Decision Logic")
 struct MultiServerDecisionTests {
-    // Test the decision logic indirectly via ServerInfo and the spec rules.
-    // The actual shouldSwitchToNewServer method is private, but we can test
-    // the observable behavior through ServerInfo.connectionReason tracking.
+    // Test the multi-server decision logic indirectly via ServerInfo and the spec rules.
+    // Observable behavior is tested through ServerInfo.connectionReason tracking.
 
     @Test("ServerInfo includes connectionReason")
     func serverInfoConnectionReason() {
@@ -100,13 +99,13 @@ struct MultiServerDecisionTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(payload)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["connection_reason"] as? String == "playback")
     }
 
     @Test("ConnectionReason decodes discovery")
     func connectionReasonDecodesDiscovery() throws {
-        let json = """
+        let json = Data("""
         {
             "server_id": "srv-1",
             "name": "Test",
@@ -114,7 +113,7 @@ struct MultiServerDecisionTests {
             "active_roles": ["player@v1"],
             "connection_reason": "discovery"
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let payload = try decoder.decode(ServerHelloPayload.self, from: json)
@@ -126,7 +125,7 @@ struct MultiServerDecisionTests {
         let payload = GoodbyePayload(reason: .anotherServer)
         let encoder = JSONEncoder()
         let data = try encoder.encode(payload)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["reason"] as? String == "another_server")
     }
 }

@@ -111,7 +111,7 @@ public actor NWWebSocketTransport: SendspinTransport {
 
     /// Recursively receive WebSocket messages from the NWConnection.
     private nonisolated func receiveNext(on connection: NWConnection) {
-        connection.receiveMessage { [weak self] content, context, isComplete, error in
+        connection.receiveMessage { [weak self] content, context, _, error in
             guard let self = self else { return }
 
             if let error = error {
@@ -122,8 +122,7 @@ public actor NWWebSocketTransport: SendspinTransport {
 
             // Extract WebSocket metadata to determine frame type
             if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
-                as? NWProtocolWebSocket.Metadata
-            {
+                as? NWProtocolWebSocket.Metadata {
                 switch metadata.opcode {
                 case .text:
                     if let data = content, let text = String(data: data, encoding: .utf8) {

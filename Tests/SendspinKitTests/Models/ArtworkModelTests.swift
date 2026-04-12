@@ -21,7 +21,7 @@ struct ArtworkModelTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(channel)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         #expect(json["source"] as? String == "album")
         #expect(json["format"] as? String == "jpeg")
@@ -47,7 +47,7 @@ struct ArtworkModelTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(channel)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["source"] as? String == "none")
     }
 
@@ -95,14 +95,14 @@ struct ArtworkModelTests {
     func artworkSupportEncoding() throws {
         let support = ArtworkSupport(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400),
+            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
         ])
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(support)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
-        let channels = json["channels"] as! [[String: Any]]
+        let channels = try #require(json["channels"] as? [[String: Any]])
         #expect(channels.count == 2)
         #expect(channels[0]["source"] as? String == "album")
         #expect(channels[0]["format"] as? String == "jpeg")
@@ -114,13 +114,13 @@ struct ArtworkModelTests {
 
     @Test("ArtworkSupport decodes from server-like JSON")
     func artworkSupportDecoding() throws {
-        let json = """
+        let json = Data("""
         {
             "channels": [
                 {"source": "album", "format": "jpeg", "media_width": 300, "media_height": 300}
             ]
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let support = try decoder.decode(ArtworkSupport.self, from: json)
@@ -141,7 +141,7 @@ struct ArtworkModelTests {
             supportedRoles: [.artworkV1],
             playerV1Support: nil,
             artworkV1Support: ArtworkSupport(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
+                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
             ]),
             visualizerV1Support: nil
         )
@@ -149,12 +149,12 @@ struct ArtworkModelTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(message)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        let payloadJson = json["payload"] as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payloadJson = try #require(json["payload"] as? [String: Any])
 
         // Check artwork@v1_support key is present with correct wire format
-        let artworkSupport = payloadJson["artwork@v1_support"] as! [String: Any]
-        let channels = artworkSupport["channels"] as! [[String: Any]]
+        let artworkSupport = try #require(payloadJson["artwork@v1_support"] as? [String: Any])
+        let channels = try #require(artworkSupport["channels"] as? [[String: Any]])
         #expect(channels.count == 1)
         #expect(channels[0]["source"] as? String == "album")
     }
@@ -163,7 +163,7 @@ struct ArtworkModelTests {
 
     @Test("StreamStartArtwork decodes stream/start artwork payload")
     func streamStartArtworkDecoding() throws {
-        let json = """
+        let json = Data("""
         {
             "type": "stream/start",
             "payload": {
@@ -175,7 +175,7 @@ struct ArtworkModelTests {
                 }
             }
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let message = try decoder.decode(StreamStartMessage.self, from: json)
@@ -194,7 +194,7 @@ struct ArtworkModelTests {
 
     @Test("StreamStartArtwork with none source channel")
     func streamStartArtworkNoneChannel() throws {
-        let json = """
+        let json = Data("""
         {
             "type": "stream/start",
             "payload": {
@@ -205,7 +205,7 @@ struct ArtworkModelTests {
                 }
             }
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let message = try decoder.decode(StreamStartMessage.self, from: json)
@@ -230,11 +230,11 @@ struct ArtworkModelTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(message)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
 
         #expect(json["type"] as? String == "stream/request-format")
-        let payloadJson = json["payload"] as! [String: Any]
-        let artworkJson = payloadJson["artwork"] as! [String: Any]
+        let payloadJson = try #require(json["payload"] as? [String: Any])
+        let artworkJson = try #require(payloadJson["artwork"] as? [String: Any])
         #expect(artworkJson["channel"] as? Int == 0)
         #expect(artworkJson["source"] as? String == "album")
         #expect(artworkJson["format"] as? String == "jpeg")
@@ -255,9 +255,9 @@ struct ArtworkModelTests {
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(message)
-        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        let payloadJson = json["payload"] as! [String: Any]
-        let artworkJson = payloadJson["artwork"] as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let payloadJson = try #require(json["payload"] as? [String: Any])
+        let artworkJson = try #require(payloadJson["artwork"] as? [String: Any])
 
         #expect(artworkJson["channel"] as? Int == 1)
         #expect(artworkJson["format"] as? String == "png")
@@ -269,9 +269,9 @@ struct ArtworkModelTests {
 
     @Test("stream/end with roles decodes correctly")
     func streamEndWithRoles() throws {
-        let json = """
+        let json = Data("""
         {"type": "stream/end", "payload": {"roles": ["player", "artwork"]}}
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let message = try decoder.decode(StreamEndMessage.self, from: json)
@@ -282,9 +282,9 @@ struct ArtworkModelTests {
 
     @Test("stream/end without roles decodes (ends all streams)")
     func streamEndWithoutRoles() throws {
-        let json = """
+        let json = Data("""
         {"type": "stream/end", "payload": {}}
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let message = try decoder.decode(StreamEndMessage.self, from: json)
@@ -297,7 +297,7 @@ struct ArtworkModelTests {
     func artworkConfigValidation() {
         // Valid: 1-4 channels
         let config = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
         ])
         #expect(config.channels.count == 1)
 
@@ -305,7 +305,7 @@ struct ArtworkModelTests {
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
             ArtworkChannel(source: .none, format: .bmp, mediaWidth: 100, mediaHeight: 100),
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400),
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400)
         ])
         #expect(config4.channels.count == 4)
     }
@@ -315,14 +315,14 @@ struct ArtworkModelTests {
     @Test("Artwork channel JSON matches Rust/Python wire format")
     func wireFormatInterop() throws {
         // This JSON was taken from the sendspin-rs test suite
-        let rustJson = """
+        let rustJson = Data("""
         {
             "source": "album",
             "format": "jpeg",
             "media_width": 300,
             "media_height": 300
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let channel = try decoder.decode(ArtworkChannel.self, from: rustJson)
@@ -334,7 +334,7 @@ struct ArtworkModelTests {
         // Re-encode and verify keys match wire format
         let encoder = JSONEncoder()
         let reencoded = try encoder.encode(channel)
-        let json = try JSONSerialization.jsonObject(with: reencoded) as! [String: Any]
+        let json = try #require(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
         #expect(json.keys.contains("media_width"))
         #expect(json.keys.contains("media_height"))
         // Verify no camelCase keys leaked
@@ -345,7 +345,7 @@ struct ArtworkModelTests {
     @Test("stream/start with both player and artwork decodes")
     func streamStartCombined() throws {
         // Real-world scenario: server sends stream/start for both roles
-        let json = """
+        let json = Data("""
         {
             "type": "stream/start",
             "payload": {
@@ -362,7 +362,7 @@ struct ArtworkModelTests {
                 }
             }
         }
-        """.data(using: .utf8)!
+        """.utf8)
 
         let decoder = JSONDecoder()
         let message = try decoder.decode(StreamStartMessage.self, from: json)

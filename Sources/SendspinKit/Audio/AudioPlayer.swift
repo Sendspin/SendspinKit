@@ -2,7 +2,6 @@
 // ABOUTME: Applies drop/insert cadence from CorrectionPlanner to maintain clock sync
 
 import AudioToolbox
-import AVFoundation
 import Foundation
 
 /// Callback invoked on the audio thread with the buffer about to be played.
@@ -227,7 +226,9 @@ actor AudioPlayer {
             fputs("[AUDIO] AudioQueueStart failed with status: \(startStatus)\n", stderr)
             throw AudioPlayerError.queueCreationFailed
         }
-        fputs("[AUDIO] AudioQueue started: \(format.codec.rawValue) \(format.sampleRate)Hz \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)\n", stderr)
+        let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
+            + " \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)"
+        fputs("[AUDIO] AudioQueue started: \(desc)\n", stderr)
         _isPlaying = true
     }
 
@@ -273,7 +274,7 @@ actor AudioPlayer {
         return try decoder.decode(data)
     }
 
-    /// Play PCM data with associated server timestamp
+    /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
     func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
         guard audioQueue != nil, currentFormat != nil else {
             throw AudioPlayerError.notStarted
@@ -287,7 +288,6 @@ actor AudioPlayer {
             _ = pcmRingBuffer.write(pcmData)
         }
     }
-
 
     // MARK: - Sync correction interface
 
@@ -541,6 +541,4 @@ private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, bu
 enum AudioPlayerError: Error {
     case queueCreationFailed
     case notStarted
-    case decodingFailed
-    case bufferFull
 }

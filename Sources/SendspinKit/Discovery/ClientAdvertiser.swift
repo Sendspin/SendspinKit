@@ -1,5 +1,5 @@
 // ABOUTME: mDNS advertisement and WebSocket server for server-initiated connections
-// ABOUTME: Advertises _sendspin._tcp.local. and accepts incoming server WebSocket connections
+// ABOUTME: Advertises _sendspin._tcp and accepts incoming server WebSocket connections
 
 import Foundation
 import Network

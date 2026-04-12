@@ -1,25 +1,34 @@
-# SwiftLint Configuration for ResonateKit
+# SwiftLint Configuration for SendspinKit
+
+excluded:
+  - .build
+  - Examples
 
 # Disabled rules
 disabled_rules:
-  - todo # We use IMPLEMENTATION_NOTE instead, but allow legacy TODOs temporarily
+  - todo
 
 # Opt-in rules
 opt_in_rules:
   - trailing_comma
 
-# File and function length - adjusted for protocol implementation needs
+# File and function length - adjusted for protocol implementation needs.
+# SendspinClient.swift is ~1150 lines (protocol orchestrator with many message handlers).
+# SendspinMessage.swift is ~880 lines (one struct per protocol message type).
 file_length:
-  warning: 800
-  error: 1000
+  warning: 900
+  error: 1200
 
 function_body_length:
   warning: 100
   error: 150
 
+# SendspinClient is the protocol orchestrator — its class body holds connection
+# lifecycle, message dispatch, handlers, clock sync, and audio chunk processing.
+# Splitting further would require exposing private state across files.
 type_body_length:
-  warning: 600
-  error: 800
+  warning: 800
+  error: 1000
 
 # Cyclomatic complexity - adjusted for real-world protocol handling
 cyclomatic_complexity:
@@ -42,6 +51,16 @@ identifier_name:
     - id
     - to
     - db
+    - i   # loop counter
+    - t   # time variable in tests
+    - v   # value in decode/encode
+    - p   # payload destructuring
+    - b0  # byte unpacking
+    - b1
+    - b2
+    - fs  # frameSize (audio callback hot path)
+    - sr  # sampleRate (audio callback hot path)
+    - dt  # delta time (Kalman filter)
 
 # Trailing commas - never allow them (matches SwiftFormat config)
 trailing_comma:
@@ -51,3 +70,7 @@ trailing_comma:
 large_tuple:
   warning: 4
   error: 5
+
+# Force casts are acceptable in test assertions (JSON parsing, etc.)
+force_cast:
+  severity: warning

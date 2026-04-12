@@ -13,18 +13,18 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
     init(textContinuation: AsyncStream<String>.Continuation, binaryContinuation: AsyncStream<Data>.Continuation) {
         self.textContinuation = textContinuation
         self.binaryContinuation = binaryContinuation
-        // Logging disabled for TUI mode
+
     }
 
     func didReceive(event: WebSocketEvent, client _: any WebSocketClient) {
         switch event {
         case .connected:
-            // Logging disabled for TUI mode
+
             connectionContinuation?.resume()
             connectionContinuation = nil
 
         case .disconnected:
-            // Logging disabled for TUI mode
+
             // If we were waiting for connection, fail it
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
@@ -34,31 +34,31 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case let .text(string):
-            // High-frequency event - logging disabled
+
             textContinuation.yield(string)
 
         case let .binary(data):
-            // High-frequency event - logging disabled
+
             binaryContinuation.yield(data)
 
         case .ping:
-            // High-frequency event - logging disabled
+
             break
 
         case .pong:
-            // High-frequency event - logging disabled
+
             break
 
         case .viabilityChanged:
-            // Logging disabled for TUI mode
+
             break
 
         case .reconnectSuggested:
-            // Logging disabled for TUI mode
+
             break
 
         case .cancelled:
-            // Logging disabled for TUI mode
+
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -67,7 +67,7 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case .error:
-            // Logging disabled for TUI mode
+
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -76,7 +76,7 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case .peerClosed:
-            // Logging disabled for TUI mode
+
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -135,7 +135,6 @@ public actor WebSocketTransport: SendspinTransport {
         socket.callbackQueue = DispatchQueue(label: "com.sendspin.websocket", qos: .userInitiated)
         socket.delegate = delegate
 
-        // Logging disabled for TUI mode
         webSocket = socket
 
         // Wait for connection to complete
@@ -162,7 +161,7 @@ public actor WebSocketTransport: SendspinTransport {
         guard let text = String(data: data, encoding: .utf8) else {
             throw TransportError.encodingFailed
         }
-        // Logging disabled for TUI mode
+
         webSocket.write(string: text)
     }
 
