@@ -13,6 +13,7 @@ var clientName = "CLI Player"
 var enableTUI = true
 var listenMode = false
 var listenPort: UInt16 = 8928
+var volumeMode: VolumeMode = .software
 
 var argIndex = 1
 while argIndex < args.count {
@@ -26,6 +27,18 @@ while argIndex < args.count {
         if argIndex + 1 < args.count, let port = UInt16(args[argIndex + 1]) {
             listenPort = port
             argIndex += 1
+        }
+    } else if arg == "--volume-mode" {
+        if argIndex + 1 < args.count {
+            argIndex += 1
+            switch args[argIndex] {
+            case "software": volumeMode = .software
+            case "hardware": volumeMode = .hardware
+            case "none": volumeMode = .none
+            default:
+                print("Unknown volume mode '\(args[argIndex])'. Use: software, hardware, none")
+                exit(1)
+            }
         }
     } else if arg.starts(with: "ws://") {
         serverURL = arg
@@ -80,7 +93,7 @@ do {
             serverURL = selected.url.absoluteString
         }
 
-        try await player.run(serverURL: serverURL!, clientName: clientName, useTUI: enableTUI)
+        try await player.run(serverURL: serverURL!, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
     }
 } catch {
     print("❌ Fatal error: \(error)")

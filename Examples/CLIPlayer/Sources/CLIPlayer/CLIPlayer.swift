@@ -26,35 +26,44 @@ final class CLIPlayer {
     /// 24-bit FLAC of a 16-bit source is barely larger than 16-bit FLAC (the extra
     /// zero bits compress away), so there's no real bandwidth penalty. Standard
     /// sample rates before hi-res to avoid unnecessary upsampling.
-    private static let playerConfig = PlayerConfiguration(
-        bufferCapacity: 2_097_152, // 2MB buffer
-        supportedFormats: [
-            // FLAC 24-bit — preferred (lossless, no quality loss on any source)
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 88_200, bitDepth: 24),
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 96_000, bitDepth: 24),
-            // FLAC 16-bit — fallback if server can't do 24-bit FLAC
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
-            // PCM fallbacks if server can't do FLAC
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
-            // Lossy compressed — lowest bandwidth option
-            AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
-        ]
-    )
+    /// Shared format list for both connect and listen modes.
+    ///
+    /// Priority-ordered: the server picks the FIRST compatible format.
+    /// FLAC 24-bit first for maximum fidelity. Standard sample rates before hi-res.
+    private static let supportedFormats = [
+        // FLAC 24-bit — preferred (lossless, no quality loss on any source)
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 88_200, bitDepth: 24),
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 96_000, bitDepth: 24),
+        // FLAC 16-bit — fallback if server can't do 24-bit FLAC
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
+        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
+        // PCM fallbacks if server can't do FLAC
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
+        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
+        // Lossy compressed — lowest bandwidth option
+        AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
+    ]
+
+    private static func playerConfig(volumeMode: VolumeMode) -> PlayerConfiguration {
+        PlayerConfiguration(
+            bufferCapacity: 2_097_152, // 2MB buffer
+            supportedFormats: supportedFormats,
+            volumeMode: volumeMode
+        )
+    }
 
     private static let artworkConfig = ArtworkConfiguration(channels: [
         ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
     ])
 
     @MainActor
-    func run(serverURL: String, clientName: String, useTUI: Bool = true) async throws {
+    func run(serverURL: String, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software) async throws {
         // Simple startup banner before TUI takes over
         print("🎵 Sendspin CLI Player")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -67,14 +76,17 @@ final class CLIPlayer {
         }
 
         // Create client
+        let config = Self.playerConfig(volumeMode: volumeMode)
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.player, .metadata, .controller, .artwork],
-            playerConfig: Self.playerConfig,
+            playerConfig: config,
             artworkConfig: Self.artworkConfig
         )
         self.client = client
+
+        fputs("[CONFIG] Volume mode: \(volumeMode)\n", stderr)
 
         // Start event monitoring
         eventTask = Task {
@@ -322,16 +334,17 @@ final class CLIPlayer {
     /// Listen for incoming server connections (server-initiated path).
     /// Advertises via mDNS and waits for servers to connect.
     @MainActor
-    func listen(port: UInt16, clientName: String, useTUI: Bool = true) async throws {
+    func listen(port: UInt16, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software) async throws {
         print("🎵 Sendspin CLI Player (Listen Mode)")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Advertising on port \(port)...")
 
+        let config = Self.playerConfig(volumeMode: volumeMode)
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.player, .metadata, .controller, .artwork],
-            playerConfig: Self.playerConfig,
+            playerConfig: config,
             artworkConfig: Self.artworkConfig
         )
         self.client = client
