@@ -14,6 +14,9 @@ public final class SendspinClient {
     private let roles: Set<VersionedRole>
     private let playerConfig: PlayerConfiguration?
     private let artworkConfig: ArtworkConfiguration?
+    /// Resolved volume capabilities and control implementation
+    private let volumeCapabilities: VolumeCapabilities
+    private let volumeControl: VolumeControl
 
     // State
     public private(set) var connectionState: ConnectionState = .disconnected
@@ -81,6 +84,11 @@ public final class SendspinClient {
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
         self.staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
+
+        // Resolve volume mode into concrete capabilities and control implementation
+        let resolved = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software)
+        self.volumeCapabilities = resolved.capabilities
+        self.volumeControl = resolved.control
 
         (events, eventsContinuation) = AsyncStream.makeStream()
 
@@ -200,7 +208,7 @@ public final class SendspinClient {
             // when decoded, but we only need ~2-3s of headroom. Use half the compressed
             // capacity as a reasonable default (512KB for a typical 1MB buffer).
             let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
-            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity)
+            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity, volumeControl: volumeControl)
 
             self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
@@ -347,7 +355,7 @@ public final class SendspinClient {
             playerV1Support = PlayerSupport(
                 supportedFormats: playerConfig.supportedFormats,
                 bufferCapacity: playerConfig.bufferCapacity,
-                supportedCommands: [.volume, .mute]
+                supportedCommands: volumeCapabilities.playerCommands
             )
         }
 

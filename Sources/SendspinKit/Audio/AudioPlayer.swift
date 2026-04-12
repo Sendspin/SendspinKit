@@ -64,6 +64,7 @@ actor AudioPlayer {
 
     private var currentVolume: Float = 1.0
     private var isMuted: Bool = false
+    private let volumeControl: VolumeControl
 
     var isPlaying: Bool { _isPlaying }
     var volume: Float { currentVolume }
@@ -71,10 +72,13 @@ actor AudioPlayer {
 
     /// - Parameter pcmBufferCapacity: Size of the PCM ring buffer in bytes.
     ///   Defaults to 524_288 (512KB ≈ 2.7s at 48kHz/stereo/16-bit).
-    init(bufferManager: BufferManager, clockSync: ClockSynchronizer, pcmBufferCapacity: Int = 524_288) {
+    /// - Parameter volumeControl: How volume/mute commands are applied.
+    ///   Defaults to `SoftwareVolumeControl` (AudioQueue gain).
+    init(bufferManager: BufferManager, clockSync: ClockSynchronizer, pcmBufferCapacity: Int = 524_288, volumeControl: VolumeControl = SoftwareVolumeControl()) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
         self.pcmRingBuffer = PCMRingBuffer(capacity: pcmBufferCapacity)
+        self.volumeControl = volumeControl
     }
 
     deinit {
@@ -441,22 +445,19 @@ actor AudioPlayer {
 
     // MARK: - Volume
 
-    /// Set volume (0.0 to 1.0)
-    /// Set volume (0.0 to 1.0 linear, mapped to perceptual amplitude)
+    /// Set volume (0.0 to 1.0 linear). Delegates to the configured VolumeControl.
     func setVolume(_ volume: Float) {
-        guard let queue = audioQueue else { return }
         let clampedVolume = max(0.0, min(1.0, volume))
         currentVolume = clampedVolume
-        let gain = Self.perceptualGain(clampedVolume)
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, muted ? 0.0 : gain)
+        if !isMuted {
+            volumeControl.setVolume(clampedVolume, on: audioQueue)
+        }
     }
 
-    /// Set mute state
+    /// Set mute state. Delegates to the configured VolumeControl.
     func setMute(_ muted: Bool) {
-        guard let queue = audioQueue else { return }
         isMuted = muted
-        let gain = muted ? Float(0.0) : Self.perceptualGain(currentVolume)
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+        volumeControl.setMute(muted, currentVolume: currentVolume, on: audioQueue)
     }
 
     /// Convert linear volume (0.0-1.0) to perceptual amplitude.

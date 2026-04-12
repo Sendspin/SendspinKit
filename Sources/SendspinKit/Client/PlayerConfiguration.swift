@@ -1,7 +1,25 @@
 // ABOUTME: Configuration for player role capabilities
-// ABOUTME: Specifies buffer capacity and supported audio formats
+// ABOUTME: Specifies buffer capacity, supported audio formats, and volume control mode
 
 import Foundation
+
+/// How the player handles volume and mute commands from the server.
+public enum VolumeMode: Sendable {
+    /// Software volume via AudioQueue gain (works everywhere).
+    /// Always advertises `volume` and `mute` in `supported_commands`.
+    case software
+
+    /// Hardware volume via CoreAudio device properties (macOS only).
+    /// Queries the current output device for volume/mute capability at startup
+    /// and only advertises commands the hardware supports.
+    /// Falls back to `.software` on platforms without CoreAudio device control.
+    case hardware
+
+    /// No volume control — the device is fixed-volume (e.g. line-out to an
+    /// external amplifier that handles its own volume). Does not advertise
+    /// `volume` or `mute` in `supported_commands`.
+    case none
+}
 
 /// Configuration for player role
 public struct PlayerConfiguration: Sendable {
@@ -24,7 +42,17 @@ public struct PlayerConfiguration: Sendable {
     /// initial value, apply it, and notify the app when the server changes it.
     public let initialStaticDelayMs: Int
 
-    public init(bufferCapacity: Int, supportedFormats: [AudioFormatSpec], initialStaticDelayMs: Int = 0) {
+    /// How the player handles volume/mute commands.
+    /// Defaults to `.software` which uses AudioQueue gain and always advertises
+    /// volume/mute support to the server.
+    public let volumeMode: VolumeMode
+
+    public init(
+        bufferCapacity: Int,
+        supportedFormats: [AudioFormatSpec],
+        initialStaticDelayMs: Int = 0,
+        volumeMode: VolumeMode = .software
+    ) {
         precondition(bufferCapacity > 0, "Buffer capacity must be positive")
         precondition(!supportedFormats.isEmpty, "Must support at least one audio format")
         precondition(initialStaticDelayMs >= 0 && initialStaticDelayMs <= 5000,
@@ -33,5 +61,6 @@ public struct PlayerConfiguration: Sendable {
         self.bufferCapacity = bufferCapacity
         self.supportedFormats = supportedFormats
         self.initialStaticDelayMs = initialStaticDelayMs
+        self.volumeMode = volumeMode
     }
 }
