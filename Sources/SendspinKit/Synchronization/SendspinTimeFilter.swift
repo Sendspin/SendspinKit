@@ -14,7 +14,7 @@ import Foundation
 /// - RTT floor of 1μs to prevent zero-variance NaN on localhost (from Rust port)
 ///
 /// Units: all timestamps in microseconds (Int64), offset/drift in microseconds (Double).
-public struct SendspinTimeFilter: Sendable {
+struct SendspinTimeFilter: Sendable {
 
     // MARK: - State
 
@@ -74,7 +74,7 @@ public struct SendspinTimeFilter: Sendable {
     ///   - adaptiveCutoff: Fraction of max_error that triggers forgetting. Default 0.75.
     ///   - minSamples: Minimum measurements before forgetting engages. Default 100.
     ///   - driftSignificanceThreshold: SNR threshold for applying drift. Default 2.0.
-    public init(
+    init(
         processStdDev: Double = 0.01,
         driftProcessStdDev: Double = 0.001,
         forgetFactor: Double = 1.001,
@@ -100,7 +100,7 @@ public struct SendspinTimeFilter: Sendable {
     ///   - measurement: Measured clock offset (μs): server_time - client_time.
     ///   - maxError: Maximum measurement error (μs), typically RTT/2.
     ///     Floored to 1μs internally to prevent zero-variance on localhost.
-    public mutating func update(timeAdded: Int64, measurement: Double, maxError: Double) {
+    mutating func update(timeAdded: Int64, measurement: Double, maxError: Double) {
         // Guard: timestamps must be strictly monotonic
         guard timeAdded > lastUpdate || count == 0 else { return }
 
@@ -193,7 +193,7 @@ public struct SendspinTimeFilter: Sendable {
     ///
     /// - Parameter clientTime: Client-domain timestamp (μs)
     /// - Returns: Estimated server-domain timestamp (μs)
-    public func computeServerTime(_ clientTime: Int64) -> Int64 {
+    func computeServerTime(_ clientTime: Int64) -> Int64 {
         let effectiveDrift = useDrift ? drift : 0.0
         let currentOffset = offset + effectiveDrift * Double(clientTime - lastUpdate)
         return clientTime + Int64(currentOffset.rounded())
@@ -203,7 +203,7 @@ public struct SendspinTimeFilter: Sendable {
     ///
     /// - Parameter serverTime: Server-domain timestamp (μs)
     /// - Returns: Estimated client-domain timestamp (μs)
-    public func computeClientTime(_ serverTime: Int64) -> Int64 {
+    func computeClientTime(_ serverTime: Int64) -> Int64 {
         let effectiveDrift = useDrift ? drift : 0.0
         let numerator = Double(serverTime) - offset + effectiveDrift * Double(lastUpdate)
         let denominator = 1.0 + effectiveDrift
@@ -213,17 +213,17 @@ public struct SendspinTimeFilter: Sendable {
     // MARK: - Diagnostics
 
     /// Estimated error (1σ) of the offset in microseconds
-    public var estimatedError: Int64 {
+    var estimatedError: Int64 {
         Int64(offsetCovariance.squareRoot().rounded())
     }
 
     /// Whether the filter has received at least one measurement
-    public var isInitialized: Bool {
+    var isInitialized: Bool {
         count > 0
     }
 
     /// Reset the filter to its initial state
-    public mutating func reset() {
+    mutating func reset() {
         count = 0
         offset = 0.0
         drift = 0.0

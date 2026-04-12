@@ -16,8 +16,8 @@ public protocol SendspinTransport: Actor, Sendable {
     /// Whether the transport is currently connected
     var isConnected: Bool { get }
 
-    /// Send a JSON-encoded Sendspin message
-    func send<T: SendspinMessage>(_ message: T) async throws
+    /// Send a JSON-encoded message
+    func send<T: Codable & Sendable>(_ message: T) async throws
 
     /// Send raw binary data
     func sendBinary(_ data: Data) async throws

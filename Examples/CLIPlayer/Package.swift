@@ -40,7 +40,8 @@ let package = Package(
             dependencies: [
                 .product(name: "SendspinKit", package: "SendspinKit")
             ],
-            path: "Sources/FLACTest"
+            path: "Sources/FLACTest",
+            resources: [.copy("test_silence.flac")]
         )
     ]
 )

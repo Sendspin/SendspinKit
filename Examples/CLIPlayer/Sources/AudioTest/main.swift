@@ -2,7 +2,7 @@
 // ABOUTME: Plays a local PCM file to test basic audio output functionality
 
 import Foundation
-import SendspinKit
+@testable import SendspinKit
 
 @main
 struct AudioTest {

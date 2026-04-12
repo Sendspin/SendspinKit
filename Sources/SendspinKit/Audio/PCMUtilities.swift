@@ -4,17 +4,17 @@
 import Foundation
 
 /// PCM sample conversion utilities
-public enum PCMUtilities {
+enum PCMUtilities {
     /// 24-bit sample range constants
-    public static let max24Bit: Int32 = 8_388_607 // 2^23 - 1
-    public static let min24Bit: Int32 = -8_388_608 // -2^23
+    static let max24Bit: Int32 = 8_388_607 // 2^23 - 1
+    static let min24Bit: Int32 = -8_388_608 // -2^23
 
     /// Unpack 3-byte little-endian to Int32 with sign extension
     /// - Parameters:
     ///   - bytes: Source byte array
     ///   - offset: Starting offset in bytes array
     /// - Returns: Signed 24-bit value as Int32
-    public static func unpack24Bit(_ bytes: [UInt8], offset: Int) -> Int32 {
+    static func unpack24Bit(_ bytes: [UInt8], offset: Int) -> Int32 {
         let b0 = Int32(bytes[offset])
         let b1 = Int32(bytes[offset + 1])
         let b2 = Int32(bytes[offset + 2])
@@ -32,7 +32,7 @@ public enum PCMUtilities {
     /// Pack Int32 to 3-byte little-endian
     /// - Parameter sample: Signed 24-bit value as Int32
     /// - Returns: 3-byte array (little-endian)
-    public static func pack24Bit(_ sample: Int32) -> [UInt8] {
+    static func pack24Bit(_ sample: Int32) -> [UInt8] {
         return [
             UInt8(sample & 0xFF),
             UInt8((sample >> 8) & 0xFF),
@@ -44,7 +44,7 @@ public enum PCMUtilities {
     /// Used when downconverting 24-bit to 16-bit
     /// - Parameter sample: 24-bit sample as Int32
     /// - Returns: 16-bit sample
-    public static func convertTo16Bit(_ sample: Int32) -> Int16 {
+    static func convertTo16Bit(_ sample: Int32) -> Int16 {
         return Int16(sample >> 8)
     }
 
@@ -52,14 +52,14 @@ public enum PCMUtilities {
     /// Used when upconverting 16-bit to 24-bit
     /// - Parameter sample: 16-bit sample
     /// - Returns: 24-bit sample as Int32
-    public static func convertFrom16Bit(_ sample: Int16) -> Int32 {
+    static func convertFrom16Bit(_ sample: Int16) -> Int32 {
         return Int32(sample) << 8
     }
 
     /// Clamp Int32 value to 24-bit range
     /// - Parameter sample: Unclamped sample value
     /// - Returns: Clamped value within 24-bit range
-    public static func clamp24Bit(_ sample: Int32) -> Int32 {
+    static func clamp24Bit(_ sample: Int32) -> Int32 {
         if sample > max24Bit {
             return max24Bit
         } else if sample < min24Bit {

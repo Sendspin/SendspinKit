@@ -9,7 +9,7 @@ import Foundation
 /// Created by `ClockSynchronizer.snapshot()` and consumed by the audio callback
 /// to compute sync error with microsecond precision. The snapshot is cheap to copy
 /// (6 scalars) and can be stored under any lock the audio thread already holds.
-public struct TimeFilterSnapshot: Sendable {
+struct TimeFilterSnapshot: Sendable {
     /// Kalman filter offset estimate (μs): server_time ≈ client_time + offset
     let offset: Double
     /// Kalman filter drift estimate (μs/μs, dimensionless)
@@ -21,10 +21,10 @@ public struct TimeFilterSnapshot: Sendable {
     /// Unix epoch μs when the client process started — converts process-relative to absolute
     let clientProcessStartAbsolute: Int64
     /// Whether the filter has received at least one measurement
-    public let isValid: Bool
+    let isValid: Bool
 
     /// Sentinel value for "no sync data available yet"
-    public static let invalid = TimeFilterSnapshot(
+    static let invalid = TimeFilterSnapshot(
         offset: 0, drift: 0, lastUpdate: 0, useDrift: false,
         clientProcessStartAbsolute: 0, isValid: false
     )
@@ -33,7 +33,7 @@ public struct TimeFilterSnapshot: Sendable {
     ///
     /// This replicates the math from `ClockSynchronizer.serverTimeToLocal` and
     /// `SendspinTimeFilter.computeClientTime` without any actor isolation.
-    public func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
+    func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
         guard isValid else { return 0 }
 
         let effectiveDrift = useDrift ? drift : 0.0
@@ -47,7 +47,7 @@ public struct TimeFilterSnapshot: Sendable {
     ///
     /// This replicates the math from `ClockSynchronizer.localTimeToServer` and
     /// `SendspinTimeFilter.computeServerTime` without any actor isolation.
-    public func localToServerTime(_ localTime: Int64) -> Int64 {
+    func localToServerTime(_ localTime: Int64) -> Int64 {
         guard isValid else { return 0 }
 
         let clientRelative = localTime - clientProcessStartAbsolute

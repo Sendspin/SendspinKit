@@ -29,15 +29,20 @@ public final class SendspinClient {
     /// new-generation chunk arrives.
     private var pendingFormat: AudioFormatSpec?
     private var pendingCodecHeader: Data?
-    private var currentVolume: Float = 1.0
+    private var currentVolume: Int = 100
     private var currentMuted: Bool = false
-    private var staticDelayMs: Int = 0
+    /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
+    /// updated when the server sends a `set_static_delay` command.
+    public private(set) var staticDelayMs: Int
     private var artworkStreamActive = false
 
-    // Controller state (received from server)
-    public private(set) var controllerSupportedCommands: [String] = []
-    public private(set) var groupVolume: Int = 0
-    public private(set) var groupMuted: Bool = false
+    // Accumulated state (merged from server deltas per spec)
+    /// Current track metadata, accumulated from `server/state` deltas.
+    public private(set) var currentMetadata: TrackMetadata?
+    /// Current group info, accumulated from `group/update` deltas.
+    public private(set) var currentGroup: GroupInfo?
+    /// Current controller state from the server.
+    public private(set) var currentControllerState: ControllerState?
 
     // Multi-server state
     private var currentConnectionReason: ConnectionReason?
@@ -75,6 +80,7 @@ public final class SendspinClient {
         self.roles = roles
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
+        self.staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
 
         (events, eventsContinuation) = AsyncStream.makeStream()
 
@@ -170,7 +176,6 @@ public final class SendspinClient {
             self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
 
-            currentVolume = await audioPlayer.volume
             currentMuted = await audioPlayer.muted
         }
 
@@ -230,7 +235,7 @@ public final class SendspinClient {
 
         clientOperationalState = .synchronized
         isClockSynced = false
-        currentVolume = 1.0
+        currentVolume = 100
         currentMuted = false
         currentStreamFormat = nil
         pendingFormat = nil
@@ -238,8 +243,12 @@ public final class SendspinClient {
         artworkStreamActive = false
         currentConnectionReason = nil
         currentServerId = nil
+        currentMetadata = nil
+        currentControllerState = nil
+        // Don't clear currentGroup — spec says group membership persists across reconnections
 
         connectionState = .disconnected
+        eventsContinuation.yield(.disconnected(reason: .explicit(reason)))
     }
 
     // MARK: - Multi-server logic
@@ -347,9 +356,8 @@ public final class SendspinClient {
 
         var playerStateObject: PlayerStateObject?
         if roles.contains(.playerV1) {
-            let volumeInt = Int((currentVolume * 100).rounded())
             playerStateObject = PlayerStateObject(
-                volume: volumeInt,
+                volume: currentVolume,
                 muted: currentMuted,
                 staticDelayMs: staticDelayMs,
                 supportedCommands: ["set_static_delay"]
@@ -424,6 +432,16 @@ public final class SendspinClient {
                 for await data in binaryStream {
                     await self.handleBinaryMessage(data)
                 }
+            }
+        }
+
+        // Both streams ended — connection was lost (not an explicit disconnect,
+        // which cancels this task before streams end naturally)
+        await MainActor.run { [weak self] in
+            guard let self = self else { return }
+            if self.connectionState != .disconnected {
+                self.connectionState = .disconnected
+                self.eventsContinuation.yield(.disconnected(reason: .connectionLost))
             }
         }
     }
@@ -651,22 +669,42 @@ public final class SendspinClient {
     }
 
     private func handleServerState(_ message: ServerStateMessage) async {
+        // Per spec: "Only include fields that have changed. The client will merge
+        // these updates into existing state. Fields set to null should be cleared."
         if let metadata = message.payload.metadata {
-            let trackMetadata = TrackMetadata(
-                title: metadata.title,
-                artist: metadata.artist,
-                album: metadata.album,
-                albumArtist: metadata.albumArtist,
-                track: metadata.track,
-                year: metadata.year,
-                artworkUrl: metadata.artworkUrl
+            let prev = currentMetadata
+
+            // Build progress if present in this update
+            var progress: PlaybackProgress? = prev?.progress
+            if let p = metadata.progress {
+                progress = PlaybackProgress(
+                    trackProgressMs: p.trackProgress ?? 0,
+                    trackDurationMs: p.trackDuration ?? 0,
+                    playbackSpeed: p.playbackSpeed ?? 1000,
+                    timestamp: metadata.timestamp ?? 0
+                )
+            }
+
+            // Merge: incoming non-nil fields override, explicit null clears
+            let merged = TrackMetadata(
+                title: metadata.title ?? prev?.title,
+                artist: metadata.artist ?? prev?.artist,
+                album: metadata.album ?? prev?.album,
+                albumArtist: metadata.albumArtist ?? prev?.albumArtist,
+                track: metadata.track ?? prev?.track,
+                year: metadata.year ?? prev?.year,
+                artworkUrl: metadata.artworkUrl ?? prev?.artworkUrl,
+                progress: progress,
+                repeatMode: metadata.repeat.flatMap { RepeatMode(rawValue: $0) } ?? prev?.repeatMode,
+                shuffle: metadata.shuffle ?? prev?.shuffle
             )
-            eventsContinuation.yield(.metadataReceived(trackMetadata))
+            currentMetadata = merged
+            eventsContinuation.yield(.metadataReceived(merged))
         }
 
         if let player = message.payload.player {
             if let volume = player.volume {
-                await setVolume(Float(volume) / 100.0)
+                await setVolume(volume)
             }
             if let muted = player.muted {
                 await setMute(muted)
@@ -674,20 +712,19 @@ public final class SendspinClient {
         }
 
         if let controller = message.payload.controller {
-            if let cmds = controller.supportedCommands {
-                controllerSupportedCommands = cmds
-            }
-            if let vol = controller.volume {
-                groupVolume = vol
-            }
-            if let muted = controller.muted {
-                groupMuted = muted
-            }
-            eventsContinuation.yield(.controllerStateUpdated(ControllerState(
-                supportedCommands: controllerSupportedCommands,
-                volume: groupVolume,
-                muted: groupMuted
-            )))
+            let prev = currentControllerState
+            let cmds = controller.supportedCommands?.compactMap { ControllerCommandType(rawValue: $0) }
+                ?? prev?.supportedCommands ?? []
+            let vol = controller.volume ?? prev?.volume ?? 0
+            let muted = controller.muted ?? prev?.muted ?? false
+
+            let state = ControllerState(
+                supportedCommands: cmds,
+                volume: vol,
+                muted: muted
+            )
+            currentControllerState = state
+            eventsContinuation.yield(.controllerStateUpdated(state))
         }
     }
 
@@ -802,8 +839,7 @@ public final class SendspinClient {
         switch playerCmd.command {
         case "volume":
             if let volume = playerCmd.volume {
-                let clamped = max(0, min(100, volume))
-                await setVolume(Float(clamped) / 100.0)
+                await setVolume(volume)
             }
         case "mute":
             if let mute = playerCmd.mute {
@@ -845,15 +881,19 @@ public final class SendspinClient {
             Self.lastPlayedServerId = serverId
         }
 
-        if let groupId = message.payload.groupId,
-           let groupName = message.payload.groupName {
-            let info = GroupInfo(
-                groupId: groupId,
-                groupName: groupName,
-                playbackState: message.payload.playbackState
-            )
-            eventsContinuation.yield(.groupUpdated(info))
-        }
+        // Per spec: "Contains delta updates with only the changed fields.
+        // The client should merge these updates into existing state."
+        let prev = currentGroup
+        let playbackState = message.payload.playbackState.flatMap { PlaybackState(rawValue: $0) }
+            ?? prev?.playbackState
+
+        let info = GroupInfo(
+            groupId: message.payload.groupId ?? prev?.groupId ?? "",
+            groupName: message.payload.groupName ?? prev?.groupName ?? "",
+            playbackState: playbackState
+        )
+        currentGroup = info
+        eventsContinuation.yield(.groupUpdated(info))
     }
 
     // MARK: - Audio chunk handling
@@ -920,14 +960,14 @@ public final class SendspinClient {
         return Int64(elapsed * 1_000_000)
     }
 
-    /// Set playback volume (0.0 to 1.0)
+    /// Set playback volume (0-100, perceived loudness per spec)
     @MainActor
-    public func setVolume(_ volume: Float) async {
+    public func setVolume(_ volume: Int) async {
         guard let audioPlayer = audioPlayer else { return }
 
-        let clampedVolume = max(0.0, min(1.0, volume))
-        await audioPlayer.setVolume(clampedVolume)
-        currentVolume = await audioPlayer.volume
+        let clamped = max(0, min(100, volume))
+        currentVolume = clamped
+        await audioPlayer.setVolume(Float(clamped) / 100.0)
 
         try? await sendClientState()
     }
@@ -937,19 +977,21 @@ public final class SendspinClient {
     public func setMute(_ muted: Bool) async {
         guard let audioPlayer = audioPlayer else { return }
 
+        currentMuted = muted
         await audioPlayer.setMute(muted)
-        currentMuted = await audioPlayer.muted
 
         try? await sendClientState()
     }
 
     /// Set static delay in milliseconds (0-5000).
     /// Per spec: compensates for delay beyond the audio port (external speakers, amplifiers).
+    /// Emits `.staticDelayChanged` so the host app can persist the new value.
     @MainActor
     public func setStaticDelay(_ delayMs: Int) async {
         let clamped = max(0, min(5000, delayMs))
+        guard clamped != staticDelayMs else { return }
         staticDelayMs = clamped
-        // TODO: persist staticDelayMs across reboots (spec requires this)
+        eventsContinuation.yield(.staticDelayChanged(clamped))
         try? await sendClientState()
     }
 
@@ -1066,6 +1108,23 @@ public final class SendspinClient {
 
 // MARK: - Supporting types
 
+/// Playback state of a Sendspin group
+public enum PlaybackState: String, Sendable {
+    case playing
+    case stopped
+}
+
+/// Controller commands per spec
+public enum ControllerCommandType: String, Sendable {
+    case play, pause, stop, next, previous
+    case volume, mute
+    case repeatOff = "repeat_off"
+    case repeatOne = "repeat_one"
+    case repeatAll = "repeat_all"
+    case shuffle, unshuffle
+    case `switch`
+}
+
 public enum ClientEvent: Sendable {
     case serverConnected(ServerInfo)
     case streamStarted(AudioFormatSpec)
@@ -1078,7 +1137,20 @@ public enum ClientEvent: Sendable {
     case artworkStreamStarted([StreamArtworkChannelConfig])
     case artworkReceived(channel: Int, data: Data)
     case visualizerData(Data)
+    /// Server changed the static delay via `server/command`. The host app should
+    /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
+    case staticDelayChanged(Int)
+    /// Client disconnected from the server (connection lost or explicit disconnect)
+    case disconnected(reason: DisconnectReason)
     case error(String)
+}
+
+/// Why the client disconnected
+public enum DisconnectReason: Sendable {
+    /// Client explicitly disconnected (via `disconnect()`)
+    case explicit(GoodbyeReason)
+    /// Connection was lost (WebSocket dropped, network error)
+    case connectionLost
 }
 
 public struct ServerInfo: Sendable {
@@ -1091,7 +1163,32 @@ public struct ServerInfo: Sendable {
 public struct GroupInfo: Sendable {
     public let groupId: String
     public let groupName: String
-    public let playbackState: String?
+    public let playbackState: PlaybackState?
+}
+
+/// Playback progress information.
+/// Use `currentPositionMs` to get the real-time interpolated position.
+public struct PlaybackProgress: Sendable {
+    /// Playback position in milliseconds at the time of the metadata update
+    public let trackProgressMs: Int
+    /// Total track length in milliseconds (0 = unknown/unlimited, e.g. live radio)
+    public let trackDurationMs: Int
+    /// Playback speed multiplier x1000 (1000 = normal, 0 = paused)
+    public let playbackSpeed: Int
+    /// Server timestamp (microseconds) when this progress was valid
+    public let timestamp: Int64
+
+    /// Calculate the current playback position in milliseconds.
+    /// Interpolates from the last known position using the playback speed.
+    /// - Parameter currentTimeMicros: Current time in microseconds (same clock domain as `timestamp`)
+    public func currentPositionMs(at currentTimeMicros: Int64) -> Int {
+        let elapsed = currentTimeMicros - timestamp
+        let calculated = trackProgressMs + Int(elapsed * Int64(playbackSpeed) / 1_000_000)
+        if trackDurationMs != 0 {
+            return max(min(calculated, trackDurationMs), 0)
+        }
+        return max(calculated, 0)
+    }
 }
 
 public struct TrackMetadata: Sendable {
@@ -1102,10 +1199,20 @@ public struct TrackMetadata: Sendable {
     public let track: Int?
     public let year: Int?
     public let artworkUrl: String?
+    public let progress: PlaybackProgress?
+    public let repeatMode: RepeatMode?
+    public let shuffle: Bool?
+}
+
+/// Repeat mode per spec
+public enum RepeatMode: String, Sendable {
+    case off
+    case one
+    case all
 }
 
 public struct ControllerState: Sendable {
-    public let supportedCommands: [String]
+    public let supportedCommands: [ControllerCommandType]
     public let volume: Int
     public let muted: Bool
 }

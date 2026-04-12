@@ -28,10 +28,10 @@ public actor ClientAdvertiser {
     private let path: String
 
     private var listener: NWListener?
-    private var connectionsContinuation: AsyncStream<NWWebSocketTransport>.Continuation?
+    private var connectionsContinuation: AsyncStream<any SendspinTransport>.Continuation?
 
     /// Stream of incoming server connections, each as a ready-to-use transport.
-    public nonisolated let connections: AsyncStream<NWWebSocketTransport>
+    public nonisolated let connections: AsyncStream<any SendspinTransport>
 
     /// Whether the advertiser is currently running
     public var isRunning: Bool {
@@ -48,7 +48,7 @@ public actor ClientAdvertiser {
         self.port = port
         self.path = path
 
-        var continuation: AsyncStream<NWWebSocketTransport>.Continuation?
+        var continuation: AsyncStream<any SendspinTransport>.Continuation?
         connections = AsyncStream { continuation = $0 }
         connectionsContinuation = continuation
     }

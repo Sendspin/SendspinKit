@@ -6,7 +6,7 @@ import AVFoundation
 import Foundation
 
 /// Actor managing synchronized audio playback
-public actor AudioPlayer {
+actor AudioPlayer {
     private let bufferManager: BufferManager
     private let clockSync: ClockSynchronizer
 
@@ -62,11 +62,11 @@ public actor AudioPlayer {
     private var currentVolume: Float = 1.0
     private var isMuted: Bool = false
 
-    public var isPlaying: Bool { _isPlaying }
-    public var volume: Float { currentVolume }
-    public var muted: Bool { isMuted }
+    var isPlaying: Bool { _isPlaying }
+    var volume: Float { currentVolume }
+    var muted: Bool { isMuted }
 
-    public init(bufferManager: BufferManager, clockSync: ClockSynchronizer) {
+    init(bufferManager: BufferManager, clockSync: ClockSynchronizer) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
     }
@@ -77,7 +77,7 @@ public actor AudioPlayer {
     }
 
     /// Start playback with specified format
-    public func start(format: AudioFormatSpec, codecHeader: Data?) throws {
+    func start(format: AudioFormatSpec, codecHeader: Data?) throws {
         if _isPlaying, currentFormat == format { return }
 
         stop()
@@ -172,7 +172,7 @@ public actor AudioPlayer {
     }
 
     /// Stop playback and clean up
-    public func stop() {
+    func stop() {
         guard let queue = audioQueue else { return }
 
         AudioQueueStop(queue, true)
@@ -195,7 +195,7 @@ public actor AudioPlayer {
     /// Used for seamless mid-stream format transitions: the old AudioQueue
     /// keeps running with its existing ring buffer data while new incoming
     /// chunks get decoded by the new decoder.
-    public func swapDecoder(format: AudioFormatSpec, codecHeader: Data?) throws {
+    func swapDecoder(format: AudioFormatSpec, codecHeader: Data?) throws {
         decoder = try AudioDecoderFactory.create(
             codec: format.codec,
             sampleRate: format.sampleRate,
@@ -206,7 +206,7 @@ public actor AudioPlayer {
     }
 
     /// Decode compressed audio data to PCM
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         guard let decoder = decoder else {
             throw AudioPlayerError.notStarted
         }
@@ -214,7 +214,7 @@ public actor AudioPlayer {
     }
 
     /// Play PCM data with associated server timestamp
-    public func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
+    func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
         guard audioQueue != nil, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
@@ -224,18 +224,18 @@ public actor AudioPlayer {
             if framesConsumed == 0, cursorMicroseconds == 0 {
                 cursorMicroseconds = serverTimestamp
             }
-            pcmRingBuffer.write(pcmData)
+            _ = pcmRingBuffer.write(pcmData)
         }
     }
 
     /// Play PCM data directly (legacy path, no timestamp)
-    public func playPCM(_ pcmData: Data) async throws {
+    func playPCM(_ pcmData: Data) async throws {
         guard audioQueue != nil, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
 
         pcmBufferLock.withLock {
-            pcmRingBuffer.write(pcmData)
+            _ = pcmRingBuffer.write(pcmData)
         }
     }
 
@@ -243,14 +243,14 @@ public actor AudioPlayer {
 
     /// Push a new time filter snapshot for use by the audio callback.
     /// Called from the clock sync path whenever processServerTime updates the filter.
-    public func updateTimeSnapshot(_ snapshot: TimeFilterSnapshot) {
+    func updateTimeSnapshot(_ snapshot: TimeFilterSnapshot) {
         pcmBufferLock.withLock {
             timeSnapshot = snapshot
         }
     }
 
     /// Reanchor the playback cursor to a new server time position.
-    public func reanchorCursor(to serverTimeMicros: Int64) {
+    func reanchorCursor(to serverTimeMicros: Int64) {
         pcmBufferLock.withLock {
             cursorMicroseconds = serverTimeMicros
             cursorRemainder = 0
@@ -264,7 +264,7 @@ public actor AudioPlayer {
 
     /// Check if the audio callback requested a reanchor. Returns the target server time
     /// if so, and clears the flag. Called from the sync/telemetry loop.
-    public func pollReanchor() -> Int64? {
+    func pollReanchor() -> Int64? {
         pcmBufferLock.withLock {
             guard reanchorRequested else { return nil }
             reanchorRequested = false
@@ -273,15 +273,15 @@ public actor AudioPlayer {
     }
 
     /// Telemetry snapshot — read by the external telemetry loop for logging.
-    public struct TelemetrySnapshot: Sendable {
-        public let cursorMicroseconds: Int64
-        public let sampleRate: Int
-        public let syncErrorUs: Int64
-        public let correctionSchedule: CorrectionSchedule
+    struct TelemetrySnapshot: Sendable {
+        let cursorMicroseconds: Int64
+        let sampleRate: Int
+        let syncErrorUs: Int64
+        let correctionSchedule: CorrectionSchedule
     }
 
     /// Capture telemetry state atomically for the logging loop.
-    public var telemetrySnapshot: TelemetrySnapshot {
+    var telemetrySnapshot: TelemetrySnapshot {
         pcmBufferLock.withLock {
             TelemetrySnapshot(
                 cursorMicroseconds: cursorMicroseconds,
@@ -293,12 +293,12 @@ public actor AudioPlayer {
     }
 
     /// Current playback cursor in server time microseconds
-    public var playbackCursorMicroseconds: Int64 {
+    var playbackCursorMicroseconds: Int64 {
         pcmBufferLock.withLock { cursorMicroseconds }
     }
 
     /// Clear buffered PCM data (for seek/stream clear without stopping playback)
-    public func clearBuffer() {
+    func clearBuffer() {
         pcmBufferLock.withLock {
             pcmRingBuffer.reset()
         }
@@ -447,7 +447,7 @@ public actor AudioPlayer {
 
     /// Set volume (0.0 to 1.0)
     /// Set volume (0.0 to 1.0 linear, mapped to perceptual amplitude)
-    public func setVolume(_ volume: Float) {
+    func setVolume(_ volume: Float) {
         guard let queue = audioQueue else { return }
         let clampedVolume = max(0.0, min(1.0, volume))
         currentVolume = clampedVolume
@@ -456,7 +456,7 @@ public actor AudioPlayer {
     }
 
     /// Set mute state
-    public func setMute(_ muted: Bool) {
+    func setMute(_ muted: Bool) {
         guard let queue = audioQueue else { return }
         isMuted = muted
         let gain = muted ? Float(0.0) : Self.perceptualGain(currentVolume)
@@ -480,7 +480,7 @@ private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, bu
     player.fillBuffer(queue: queue, buffer: buffer)
 }
 
-public enum AudioPlayerError: Error {
+enum AudioPlayerError: Error {
     case queueCreationFailed
     case notStarted
     case decodingFailed

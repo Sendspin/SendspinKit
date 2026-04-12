@@ -10,7 +10,7 @@ import Foundation
 /// - 16-23: Visualizer role
 /// - 24-191: Reserved for future roles
 /// - 192-255: Application-specific roles
-public enum BinaryMessageType: UInt8, Sendable {
+enum BinaryMessageType: UInt8, Sendable {
     // Player role (4-7)
     case audioChunk = 4
 
@@ -25,18 +25,18 @@ public enum BinaryMessageType: UInt8, Sendable {
 }
 
 /// Binary message from server
-public struct BinaryMessage: Sendable {
+struct BinaryMessage: Sendable {
     /// Message type
-    public let type: BinaryMessageType
+    let type: BinaryMessageType
     /// Server timestamp in microseconds when this should be played/displayed
-    public let timestamp: Int64
+    let timestamp: Int64
     /// Message payload (audio data, image data, etc.)
-    public let data: Data
+    let data: Data
 
     /// Decode binary message from WebSocket data
     /// - Parameter data: Raw WebSocket binary frame
     /// - Returns: Decoded message or nil if invalid
-    public init?(data: Data) {
+    init?(data: Data) {
         guard data.count >= 9 else {
             return nil
         }

@@ -4,17 +4,17 @@
 import Foundation
 
 /// Quality of clock synchronization
-public enum SyncQuality: Sendable {
+enum SyncQuality: Sendable {
     case good
     case degraded
     case lost
 }
 
 /// Clock synchronization statistics
-public struct ClockStats: Sendable {
-    public let offset: Int64
-    public let rtt: Int64
-    public let quality: SyncQuality
+struct ClockStats: Sendable {
+    let offset: Int64
+    let rtt: Int64
+    let quality: SyncQuality
 }
 
 /// Synchronizes local clock with server clock using a 2D Kalman filter.
@@ -24,7 +24,7 @@ public struct ClockStats: Sendable {
 /// - RTT gating (rejects negative and >100ms samples)
 /// - Absolute time conversion (process-relative → Unix epoch for Date construction)
 /// - Quality tracking
-public actor ClockSynchronizer: ClockSyncProtocol {
+actor ClockSynchronizer: ClockSyncProtocol {
 
     private var filter = SendspinTimeFilter()
 
@@ -36,30 +36,30 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     // Absolute anchor: converts process-relative client timestamps to Unix epoch
     private let clientProcessStartAbsolute: Int64
 
-    public init() {
+    init() {
         clientProcessStartAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
     }
 
     // MARK: - Public interface
 
     /// Current clock offset in microseconds (server - client)
-    public var currentOffset: Int64 { Int64(filter.offset.rounded()) }
+    var currentOffset: Int64 { Int64(filter.offset.rounded()) }
 
     /// Current sync quality
-    public var currentQuality: SyncQuality { quality }
+    var currentQuality: SyncQuality { quality }
 
     /// Get sync statistics
-    public func getStats() -> ClockStats {
+    func getStats() -> ClockStats {
         ClockStats(offset: Int64(filter.offset.rounded()), rtt: latestRtt, quality: quality)
     }
 
     /// Individual stats for telemetry
-    public var statsOffset: Int64 { Int64(filter.offset.rounded()) }
-    public var statsRtt: Int64 { latestRtt }
-    public var statsQuality: SyncQuality { quality }
+    var statsOffset: Int64 { Int64(filter.offset.rounded()) }
+    var statsRtt: Int64 { latestRtt }
+    var statsQuality: SyncQuality { quality }
 
     /// Whether at least one sync sample has been accepted
-    public var hasSynced: Bool { filter.isInitialized }
+    var hasSynced: Bool { filter.isInitialized }
 
     /// Process a server/time response to update the clock model.
     ///
@@ -68,7 +68,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     /// - t2: server_received (server clock, μs)
     /// - t3: server_transmitted (server clock, μs)
     /// - t4: client_received (client clock, μs)
-    public func processServerTime(
+    func processServerTime(
         clientTransmitted: Int64,
         serverReceived: Int64,
         serverTransmitted: Int64,
@@ -100,7 +100,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     ///
     /// Server timestamps are in the server's monotonic domain (μs since server clock epoch).
     /// Returns absolute Unix epoch microseconds suitable for `Date(timeIntervalSince1970:)`.
-    public func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
+    func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
         guard filter.isInitialized else {
             // Pre-sync fallback: assume zero offset (will be wrong, but callers
             // should gate on hasSynced before using this for scheduling)
@@ -114,7 +114,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     }
 
     /// Convert a local absolute time (Unix epoch μs) to a server timestamp.
-    public func localTimeToServer(_ localTime: Int64) -> Int64 {
+    func localTimeToServer(_ localTime: Int64) -> Int64 {
         guard filter.isInitialized else {
             return localTime - clientProcessStartAbsolute
         }
@@ -125,7 +125,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
 
     /// Create an immutable snapshot of the current filter state for audio-thread use.
     /// The snapshot captures everything needed for time conversion without actor isolation.
-    public func snapshot() -> TimeFilterSnapshot {
+    func snapshot() -> TimeFilterSnapshot {
         guard filter.isInitialized else {
             return .invalid
         }
@@ -140,7 +140,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     }
 
     /// Check and update quality based on time since last sync
-    public func checkQuality() -> SyncQuality {
+    func checkQuality() -> SyncQuality {
         if let lastSync = lastSyncTime, Date().timeIntervalSince(lastSync) > 5.0 {
             quality = .lost
         }
@@ -148,7 +148,7 @@ public actor ClockSynchronizer: ClockSyncProtocol {
     }
 
     /// Reset clock synchronization (e.g., after reconnection)
-    public func reset() {
+    func reset() {
         filter.reset()
         latestRtt = 0
         quality = .lost

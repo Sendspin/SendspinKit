@@ -151,7 +151,7 @@ public actor WebSocketTransport: SendspinTransport {
     }
 
     /// Send a text message (JSON)
-    public func send<T: SendspinMessage>(_ message: T) async throws {
+    public func send<T: Codable & Sendable>(_ message: T) async throws {
         guard let webSocket = webSocket else {
             throw TransportError.notConnected
         }

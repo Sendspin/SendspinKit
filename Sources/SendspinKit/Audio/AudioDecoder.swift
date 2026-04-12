@@ -7,21 +7,21 @@ import Opus
 import FLAC
 
 /// Audio decoder protocol
-public protocol AudioDecoder {
+protocol AudioDecoder {
     func decode(_ data: Data) throws -> Data
 }
 
 /// PCM decoder supporting 16-bit and 24-bit formats
-public class PCMDecoder: AudioDecoder {
+class PCMDecoder: AudioDecoder {
     private let bitDepth: Int
     private let channels: Int
 
-    public init(bitDepth: Int, channels: Int) {
+    init(bitDepth: Int, channels: Int) {
         self.bitDepth = bitDepth
         self.channels = channels
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         switch bitDepth {
         case 16:
             // 16-bit PCM - pass through (already correct format)
@@ -68,11 +68,11 @@ public class PCMDecoder: AudioDecoder {
 }
 
 /// Opus decoder using libopus via swift-opus package
-public class OpusDecoder: AudioDecoder {
+class OpusDecoder: AudioDecoder {
     private let decoder: Opus.Decoder
     private let channels: Int
 
-    public init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
+    init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
         self.channels = channels
 
         // Create AVAudioFormat for Opus decoder
@@ -94,7 +94,7 @@ public class OpusDecoder: AudioDecoder {
         }
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         // Decode Opus packet to AVAudioPCMBuffer
         let pcmBuffer: AVAudioPCMBuffer
         do {
@@ -140,7 +140,7 @@ public class OpusDecoder: AudioDecoder {
 }
 
 /// FLAC decoder using libFLAC via flac-binary-xcframework
-public class FLACDecoder: AudioDecoder {
+class FLACDecoder: AudioDecoder {
     private var decoder: UnsafeMutablePointer<FLAC__StreamDecoder>?
     private let sampleRate: Int
     private let channels: Int
@@ -150,7 +150,7 @@ public class FLACDecoder: AudioDecoder {
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
-    public init(sampleRate: Int, channels: Int, bitDepth: Int, header: Data? = nil) throws {
+    init(sampleRate: Int, channels: Int, bitDepth: Int, header: Data? = nil) throws {
         self.sampleRate = sampleRate
         self.channels = channels
         self.bitDepth = bitDepth
@@ -207,7 +207,7 @@ public class FLACDecoder: AudioDecoder {
         }
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         // Append new data to pending buffer
         pendingData.append(data)
         decodedSamples.removeAll(keepingCapacity: true)
@@ -336,8 +336,8 @@ public class FLACDecoder: AudioDecoder {
 }
 
 /// Creates decoder for specified codec
-public enum AudioDecoderFactory {
-    public static func create(
+enum AudioDecoderFactory {
+    static func create(
         codec: AudioCodec,
         sampleRate: Int,
         channels: Int,
@@ -356,7 +356,7 @@ public enum AudioDecoderFactory {
 }
 
 /// Audio decoder errors
-public enum AudioDecoderError: Error {
+enum AudioDecoderError: Error {
     case unsupportedBitDepth(Int)
     case invalidDataSize(expected: String, actual: Int)
     case formatCreationFailed(String)

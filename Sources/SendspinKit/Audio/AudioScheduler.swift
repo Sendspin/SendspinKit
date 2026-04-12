@@ -4,19 +4,19 @@
 import Foundation
 
 /// Protocol for clock synchronization
-public protocol ClockSyncProtocol: Actor {
+protocol ClockSyncProtocol: Actor {
     func serverTimeToLocal(_ serverTime: Int64) -> Int64
 }
 
 /// Statistics tracked by the scheduler
-public struct SchedulerStats: Sendable {
-    public let received: Int
-    public let played: Int
-    public let dropped: Int
-    public let droppedLate: Int // Frames dropped because they were >50ms late
-    public let droppedOther: Int // Frames dropped due to queue overflow
+struct SchedulerStats: Sendable {
+    let received: Int
+    let played: Int
+    let dropped: Int
+    let droppedLate: Int // Frames dropped because they were >50ms late
+    let droppedOther: Int // Frames dropped due to queue overflow
 
-    public init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0, droppedOther: Int = 0) {
+    init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0, droppedOther: Int = 0) {
         self.received = received
         self.played = played
         self.dropped = dropped
@@ -26,16 +26,16 @@ public struct SchedulerStats: Sendable {
 }
 
 /// Detailed statistics including queue size and buffer metrics
-public struct DetailedSchedulerStats: Sendable {
-    public let received: Int
-    public let played: Int
-    public let dropped: Int
-    public let droppedLate: Int
-    public let droppedOther: Int
-    public let queueSize: Int
-    public let bufferFillMs: Double // Current buffer fill in milliseconds
+struct DetailedSchedulerStats: Sendable {
+    let received: Int
+    let played: Int
+    let dropped: Int
+    let droppedLate: Int
+    let droppedOther: Int
+    let queueSize: Int
+    let bufferFillMs: Double // Current buffer fill in milliseconds
 
-    public init(
+    init(
         received: Int = 0,
         played: Int = 0,
         dropped: Int = 0,
@@ -55,17 +55,17 @@ public struct DetailedSchedulerStats: Sendable {
 }
 
 /// A chunk scheduled for playback at a specific time
-public struct ScheduledChunk: Sendable {
-    public let pcmData: Data
-    public let playTime: Date
-    public let originalTimestamp: Int64
+struct ScheduledChunk: Sendable {
+    let pcmData: Data
+    let playTime: Date
+    let originalTimestamp: Int64
     /// Stream generation — incremented on format changes so the output loop
     /// can distinguish old-format from new-format chunks.
-    public let generation: UInt64
+    let generation: UInt64
 }
 
 /// Actor managing timestamp-based audio playback scheduling
-public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
+actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     private let clockSync: ClockSync
     private let playbackWindow: TimeInterval
     private var queue: [ScheduledChunk] = []
@@ -74,9 +74,9 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     // AsyncStream for output
     private let chunkContinuation: AsyncStream<ScheduledChunk>.Continuation
-    public let scheduledChunks: AsyncStream<ScheduledChunk>
+    let scheduledChunks: AsyncStream<ScheduledChunk>
 
-    public init(
+    init(
         clockSync: ClockSync,
         playbackWindow: TimeInterval = 0.05
     ) {
@@ -89,9 +89,7 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Schedule a PCM chunk for playback
-    public func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
-        let receivedCount = schedulerStats.received
-
+    func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
         // Convert server timestamp to local playback time
         let localTimeMicros = await clockSync.serverTimeToLocal(serverTimestamp)
         let localTimeSeconds = Double(localTimeMicros) / 1_000_000.0
@@ -141,17 +139,17 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Get queued chunks (for testing)
-    public func getQueuedChunks() -> [ScheduledChunk] {
+    func getQueuedChunks() -> [ScheduledChunk] {
         return queue
     }
 
     /// Get current statistics
-    public var stats: SchedulerStats {
+    var stats: SchedulerStats {
         return schedulerStats
     }
 
     /// Get detailed statistics including queue size and buffer metrics
-    public func getDetailedStats() -> DetailedSchedulerStats {
+    func getDetailedStats() -> DetailedSchedulerStats {
         // Calculate buffer fill: time until next chunk should play
         let now = Date()
         let bufferFillMs: Double
@@ -173,7 +171,7 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Start the scheduling timer loop
-    public func startScheduling() {
+    func startScheduling() {
         guard timerTask == nil else { return }
 
         timerTask = Task {
@@ -205,7 +203,7 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Stop the scheduler timer (but keep stream alive for next start)
-    public func stop() {
+    func stop() {
         timerTask?.cancel()
         timerTask = nil
         // Don't call chunkContinuation.finish() here - that would permanently
@@ -213,13 +211,13 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Permanently finish the scheduler (call on disconnect only)
-    public func finish() {
+    func finish() {
         stop()
         chunkContinuation.finish()
     }
 
     /// Clear all queued chunks
-    public func clear() {
+    func clear() {
         queue.removeAll()
     }
 

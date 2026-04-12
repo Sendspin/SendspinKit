@@ -2,7 +2,7 @@
 // ABOUTME: Connects and runs for a specified duration without requiring user input
 
 import Foundation
-import SendspinKit
+@testable import SendspinKit
 
 @main
 struct SimpleTest {

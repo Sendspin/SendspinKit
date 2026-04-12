@@ -144,7 +144,7 @@ final class CLIPlayer {
 
             case let .groupUpdated(info):
                 if !useTUI {
-                    print("[EVENT] Group updated: \(info.groupName) (\(info.playbackState ?? "unknown"))")
+                    print("[EVENT] Group updated: \(info.groupName) (\(info.playbackState?.rawValue ?? "unknown"))")
                 }
 
             case let .metadataReceived(metadata):
@@ -166,7 +166,8 @@ final class CLIPlayer {
 
             case let .controllerStateUpdated(state):
                 if !useTUI {
-                    print("[CONTROLLER] commands=\(state.supportedCommands.joined(separator: ",")) volume=\(state.volume) muted=\(state.muted)")
+                    let cmds = state.supportedCommands.map(\.rawValue).joined(separator: ",")
+                    print("[CONTROLLER] commands=\(cmds) volume=\(state.volume) muted=\(state.muted)")
                 }
 
             case let .artworkStreamStarted(channels):
@@ -187,6 +188,16 @@ final class CLIPlayer {
             case let .visualizerData(data):
                 if !useTUI {
                     print("[EVENT] Visualizer data: \(data.count) bytes")
+                }
+
+            case let .staticDelayChanged(delayMs):
+                if !useTUI {
+                    print("[EVENT] Static delay changed: \(delayMs)ms")
+                }
+
+            case let .disconnected(reason):
+                if !useTUI {
+                    print("[EVENT] Disconnected: \(reason)")
                 }
 
             case let .error(message):
@@ -217,11 +228,11 @@ final class CLIPlayer {
                 fputs("Format:   f flac | f flac 48000 | f pcm 44100 16 | f opus\n", stderr)
 
             case "v", "volume":
-                guard parts.count > 1, let volume = Float(parts[1]) else {
+                guard parts.count > 1, let volume = Int(parts[1]) else {
                     continue
                 }
-                await client.setVolume(volume / 100.0)
-                await display?.updateVolume(Int(volume), muted: false)
+                await client.setVolume(volume)
+                await display?.updateVolume(volume, muted: false)
 
             case "m", "mute":
                 await client.setMute(true)
@@ -444,7 +455,7 @@ actor StatusDisplay {
 
         displayTask = Task {
             while !Task.isCancelled && isRunning {
-                await render()
+                render()
                 try? await Task.sleep(for: .milliseconds(100))
             }
         }

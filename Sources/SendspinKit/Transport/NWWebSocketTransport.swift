@@ -38,7 +38,7 @@ public actor NWWebSocketTransport: SendspinTransport {
         connection?.state == .ready
     }
 
-    public func send<T: SendspinMessage>(_ message: T) async throws {
+    public func send<T: Codable & Sendable>(_ message: T) async throws {
         guard let connection = connection else {
             throw TransportError.notConnected
         }
