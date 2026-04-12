@@ -48,12 +48,14 @@ public actor ServerDiscovery {
         browser.start(queue: .global(qos: .userInitiated))
     }
 
-    /// Stop discovering servers
+    /// Stop discovering servers.
+    /// Finishes the `servers` stream — any `for await` loop consuming it will exit.
     public func stopDiscovery() {
         browser?.cancel()
         browser = nil
         discoveries.removeAll()
-        updateContinuation?.yield([])
+        updateContinuation?.finish()
+        updateContinuation = nil
     }
 
     private func handleStateChange(_ state: NWBrowser.State) {

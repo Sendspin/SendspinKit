@@ -96,12 +96,36 @@ public final class SendspinClient {
         eventsContinuation.finish()
     }
 
-    /// Discover Sendspin servers on the local network
+    /// Continuously discover Sendspin servers on the local network.
+    ///
+    /// Returns a `ServerDiscovery` whose `servers` stream emits an updated list
+    /// whenever servers appear or disappear. The caller owns the lifecycle —
+    /// call `stopDiscovery()` when done.
+    ///
+    /// ```swift
+    /// let discovery = await SendspinClient.discoverServers()
+    /// for await servers in discovery.servers {
+    ///     print("Found \(servers.count) server(s)")
+    /// }
+    /// // Later:
+    /// await discovery.stopDiscovery()
+    /// ```
+    public nonisolated static func discoverServers() async -> ServerDiscovery {
+        let discovery = ServerDiscovery()
+        await discovery.startDiscovery()
+        return discovery
+    }
+
+    /// Discover Sendspin servers on the local network (one-shot with timeout).
+    ///
+    /// Convenience wrapper that browses for `timeout`, then returns whatever was found.
+    /// For continuous discovery (live-updating server list), use `discoverServers()`
+    /// which returns a `ServerDiscovery` with an async stream.
+    ///
     /// - Parameter timeout: How long to search for servers (default: 3 seconds)
     /// - Returns: Array of discovered servers
     public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async -> [DiscoveredServer] {
-        let discovery = ServerDiscovery()
-        await discovery.startDiscovery()
+        let discovery = await discoverServers()
 
         return await withTaskGroup(of: [DiscoveredServer].self) { group in
             var latestServers: [DiscoveredServer] = []
