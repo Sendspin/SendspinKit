@@ -208,7 +208,7 @@ public final class SendspinClient {
             // when decoded, but we only need ~2-3s of headroom. Use half the compressed
             // capacity as a reasonable default (512KB for a typical 1MB buffer).
             let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
-            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity, volumeControl: volumeControl)
+            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync, pcmBufferCapacity: pcmBufferCapacity, volumeControl: volumeControl, processCallback: playerConfig.processCallback)
 
             self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer

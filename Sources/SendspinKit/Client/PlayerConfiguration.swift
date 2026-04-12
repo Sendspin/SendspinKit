@@ -47,11 +47,19 @@ public struct PlayerConfiguration: Sendable {
     /// volume/mute support to the server.
     public let volumeMode: VolumeMode
 
+    /// Optional callback invoked on the audio thread with the final PCM buffer
+    /// before each chunk is played. Use this for local visualization (VU meters,
+    /// waveform displays) or to apply real-time audio effects.
+    ///
+    /// See ``AudioProcessCallback`` for threading constraints and parameter details.
+    public let processCallback: AudioProcessCallback?
+
     public init(
         bufferCapacity: Int,
         supportedFormats: [AudioFormatSpec],
         initialStaticDelayMs: Int = 0,
-        volumeMode: VolumeMode = .software
+        volumeMode: VolumeMode = .software,
+        processCallback: AudioProcessCallback? = nil
     ) {
         precondition(bufferCapacity > 0, "Buffer capacity must be positive")
         precondition(!supportedFormats.isEmpty, "Must support at least one audio format")
@@ -62,5 +70,6 @@ public struct PlayerConfiguration: Sendable {
         self.supportedFormats = supportedFormats
         self.initialStaticDelayMs = initialStaticDelayMs
         self.volumeMode = volumeMode
+        self.processCallback = processCallback
     }
 }

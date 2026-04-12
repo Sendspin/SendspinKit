@@ -5,6 +5,31 @@ import AudioToolbox
 import AVFoundation
 import Foundation
 
+/// Callback invoked on the audio thread with the buffer about to be played.
+///
+/// Called on every audio callback — including silence — so that consumers (e.g. VU
+/// meters) observe silence rather than missing callbacks. The buffer contains
+/// interleaved integer PCM samples (Int16 or Int32 depending on the stream's
+/// effective bit depth) at full amplitude. Volume and mute are applied downstream
+/// by either AudioQueue (software mode) or the hardware device (hardware mode),
+/// so these samples always represent the full-scale signal.
+///
+/// > Note: Unlike the Rust reference implementation, which applies gain to the buffer
+/// > before invoking its process callback, our volume is handled outside the sample
+/// > buffer. If you need volume-adjusted levels for a VU meter, apply
+/// > ``AudioPlayer/perceptualGain(_:)`` to the current volume yourself.
+///
+/// - Parameters:
+///   - samples: Mutable pointer to the interleaved PCM sample buffer. Modify in
+///     place to apply effects before playback. The byte count covers the entire
+///     AudioQueue buffer including any silence padding at the end.
+///   - format: Current audio format (sample rate, channels, bit depth). Use this to
+///     interpret the sample data correctly.
+///
+/// **Audio thread contract:** Must not block, allocate memory, acquire locks, or
+/// call into Objective-C/Swift runtime. Keep processing O(n) in sample count.
+public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer, AudioFormatSpec) -> Void
+
 /// Actor managing synchronized audio playback
 actor AudioPlayer {
     private let bufferManager: BufferManager
@@ -66,6 +91,11 @@ actor AudioPlayer {
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
 
+    // Process callback for local visualization / audio effects.
+    // Accessed from the audio thread under pcmBufferLock alongside the format snapshot.
+    private nonisolated(unsafe) var processCallback: AudioProcessCallback?
+    private nonisolated(unsafe) var processCallbackFormat: AudioFormatSpec?
+
     var isPlaying: Bool { _isPlaying }
     var volume: Float { currentVolume }
     var muted: Bool { isMuted }
@@ -74,11 +104,20 @@ actor AudioPlayer {
     ///   Defaults to 524_288 (512KB ≈ 2.7s at 48kHz/stereo/16-bit).
     /// - Parameter volumeControl: How volume/mute commands are applied.
     ///   Defaults to `SoftwareVolumeControl` (AudioQueue gain).
-    init(bufferManager: BufferManager, clockSync: ClockSynchronizer, pcmBufferCapacity: Int = 524_288, volumeControl: VolumeControl = SoftwareVolumeControl()) {
+    /// - Parameter processCallback: Optional callback invoked on the audio thread
+    ///   with the final buffer contents before playback. See ``AudioProcessCallback``.
+    init(
+        bufferManager: BufferManager,
+        clockSync: ClockSynchronizer,
+        pcmBufferCapacity: Int = 524_288,
+        volumeControl: VolumeControl = SoftwareVolumeControl(),
+        processCallback: AudioProcessCallback? = nil
+    ) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
         self.pcmRingBuffer = PCMRingBuffer(capacity: pcmBufferCapacity)
         self.volumeControl = volumeControl
+        self.processCallback = processCallback
     }
 
     deinit {
@@ -135,10 +174,21 @@ actor AudioPlayer {
         audioQueue = queue
         currentFormat = format
 
+        // Build the effective format for the process callback — uses the actual
+        // output bit depth (e.g. 32 for 24-bit sources) so consumers interpret
+        // samples correctly.
+        let effectiveFormat = AudioFormatSpec(
+            codec: .pcm,
+            channels: format.channels,
+            sampleRate: format.sampleRate,
+            bitDepth: effectiveBitDepth
+        )
+
         // Initialize frame-level state
         let computedFrameSize = format.channels * bytesPerSample
         pcmBufferLock.withLock {
             frameSize = computedFrameSize
+            processCallbackFormat = effectiveFormat
             lastFrameValid = false
             memset(lastFrameStorage.baseAddress!, 0, lastFrameStorage.count)
             pcmRingBuffer.reset()
@@ -421,6 +471,17 @@ actor AudioPlayer {
         // Fill remaining space with silence
         if outOffset < capacity {
             memset(dest + outOffset, 0, capacity - outOffset)
+        }
+
+        // Invoke process callback with the final buffer contents (including silence).
+        // This runs after the lock is released — the buffer is fully assembled and
+        // won't be touched again before enqueue.
+        if let callback = processCallback, let format = processCallbackFormat {
+            let mutableBuffer = UnsafeMutableRawBufferPointer(
+                start: buffer.pointee.mAudioData,
+                count: capacity
+            )
+            callback(mutableBuffer, format)
         }
 
         buffer.pointee.mAudioDataByteSize = UInt32(capacity)
