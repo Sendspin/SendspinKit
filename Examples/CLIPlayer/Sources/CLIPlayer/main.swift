@@ -37,6 +37,22 @@ while argIndex < args.count {
 
 let player = CLIPlayer()
 
+// Catch SIGINT (Ctrl-C) for graceful shutdown — sends client/goodbye
+// so the server knows we're shutting down and won't keep retrying.
+signal(SIGINT) { _ in
+    fputs("\n[SHUTDOWN] Caught SIGINT, shutting down...\n", stderr)
+    // Schedule async disconnect on the main actor, then exit
+    Task { @MainActor in
+        await player.gracefulShutdown()
+        exit(0)
+    }
+    // Give the async work a moment, then force-exit as a fallback
+    DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
+        fputs("[SHUTDOWN] Timed out waiting for graceful disconnect\n", stderr)
+        exit(1)
+    }
+}
+
 do {
     if listenMode {
         // Server-initiated: advertise via mDNS and wait for servers to connect

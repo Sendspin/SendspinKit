@@ -300,6 +300,12 @@ public class FLACDecoder: AudioDecoder {
         }
 
         let blocksize = Int(frame.pointee.header.blocksize)
+        // Use the frame's actual bit depth, not the init parameter.
+        // During format transitions, old FLAC frames may be decoded by a
+        // new decoder initialized with a different bit depth. The frame
+        // header always has the correct value.
+        let frameBitsPerSample = Int(frame.pointee.header.bits_per_sample)
+        let shift = 32 - frameBitsPerSample
 
         // FLAC outputs int32 samples per channel
         // Interleave channels if stereo
@@ -312,14 +318,7 @@ public class FLACDecoder: AudioDecoder {
 
                 // FLAC outputs right-aligned samples in Int32.
                 // Shift left to fill the full 32-bit range for AudioQueue.
-                let normalizedSample: Int32
-                if bitDepth == 16 {
-                    normalizedSample = sample << 16
-                } else if bitDepth == 24 {
-                    normalizedSample = sample << 8
-                } else {
-                    normalizedSample = sample
-                }
+                let normalizedSample = shift > 0 ? sample << Int32(shift) : sample
 
                 decodedSamples.append(normalizedSample)
             }

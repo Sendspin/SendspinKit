@@ -17,9 +17,18 @@ public final class SendspinClient {
 
     // State
     public private(set) var connectionState: ConnectionState = .disconnected
+    /// The audio format currently being streamed by the server, or nil if no stream is active.
+    public private(set) var currentStreamFormat: AudioFormatSpec?
     private var clientOperationalState: ClientOperationalState = .synchronized
     private var isAutoStarting = false
     private var isClockSynced = false
+    /// Incremented on format changes so the scheduler output loop can detect the boundary.
+    private var streamGeneration: UInt64 = 0
+    /// Deferred format + codec header for seamless mid-stream format transitions.
+    /// Set in handleStreamStart; consumed by runSchedulerOutput when the first
+    /// new-generation chunk arrives.
+    private var pendingFormat: AudioFormatSpec?
+    private var pendingCodecHeader: Data?
     private var currentVolume: Float = 1.0
     private var currentMuted: Bool = false
     private var staticDelayMs: Int = 0
@@ -223,6 +232,9 @@ public final class SendspinClient {
         isClockSynced = false
         currentVolume = 1.0
         currentMuted = false
+        currentStreamFormat = nil
+        pendingFormat = nil
+        pendingCodecHeader = nil
         artworkStreamActive = false
         currentConnectionReason = nil
         currentServerId = nil
@@ -418,12 +430,67 @@ public final class SendspinClient {
 
     // MARK: - Scheduler output
 
+    /// Number of chunks to pre-buffer before rebuilding the AudioQueue during
+    /// a format transition. This gives the AudioQueue headroom so the sync
+    /// correction doesn't engage aggressively on the first few samples.
+    /// 2 chunks ≈ 200ms — enough headroom without overshooting.
+    private nonisolated static let formatTransitionPreBuffer = 2
+
     private nonisolated func runSchedulerOutput() async {
         guard let audioScheduler = await audioScheduler,
               let audioPlayer = await audioPlayer
         else { return }
 
+        var activeGeneration: UInt64 = await streamGeneration
+
         for await chunk in audioScheduler.scheduledChunks {
+            if chunk.generation != activeGeneration {
+                if chunk.generation < activeGeneration {
+                    // Old-generation chunk after a format change already happened.
+                    // This shouldn't occur since old chunks have earlier timestamps,
+                    // but discard just in case.
+                    continue
+                }
+
+                // New generation — first chunk decoded in the new format.
+                // Accumulate a few chunks before rebuilding the AudioQueue
+                // so we have buffer headroom for clean sync convergence.
+                let pending = await MainActor.run { () -> (AudioFormatSpec?, Data?) in
+                    let fmt = self.pendingFormat
+                    let hdr = self.pendingCodecHeader
+                    self.pendingFormat = nil
+                    self.pendingCodecHeader = nil
+                    return (fmt, hdr)
+                }
+
+                activeGeneration = chunk.generation
+
+                guard let format = pending.0 else {
+                    try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+                    continue
+                }
+
+                // Pre-buffer: collect this chunk + one more before switching
+                var preBuffer: [(pcm: Data, timestamp: Int64)] = [
+                    (chunk.pcmData, chunk.originalTimestamp)
+                ]
+
+                for await nextChunk in audioScheduler.scheduledChunks {
+                    preBuffer.append((nextChunk.pcmData, nextChunk.originalTimestamp))
+                    if preBuffer.count >= Self.formatTransitionPreBuffer {
+                        break
+                    }
+                }
+
+                // Rebuild AudioQueue and feed pre-buffered chunks
+                fputs("[CLIENT] Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)\n", stderr)
+                try? await audioPlayer.start(format: format, codecHeader: pending.1)
+
+                for buffered in preBuffer {
+                    try? await audioPlayer.playPCM(buffered.pcm, serverTimestamp: buffered.timestamp)
+                }
+                continue
+            }
             try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
         }
     }
@@ -662,9 +729,47 @@ public final class SendspinClient {
         }
 
         let wasPlaying = await audioPlayer.isPlaying
+        let previousFormat = currentStreamFormat
+        let isFormatChange = wasPlaying && previousFormat != nil && previousFormat != format
+
+        if isFormatChange {
+            // Seamless mid-stream format transition.
+            //
+            // 1. Bump generation — chunks are tagged at scheduling time, so
+            //    runSchedulerOutput can tell old-format from new-format chunks
+            // 2. Swap decoder — new binary chunks get decoded at the new rate
+            // 3. Store pending format for deferred AudioQueue rebuild
+            // 4. DON'T clear scheduler — old chunks continue playing through
+            //    the old AudioQueue, providing seamless audio coverage
+            // 5. DON'T stop AudioQueue — it keeps running from its ring buffer
+            //
+            // When runSchedulerOutput sees the first chunk with the new generation,
+            // it rebuilds the AudioQueue at the new sample rate. Old-gen chunks
+            // play through the old AudioQueue until that point.
+            streamGeneration &+= 1
+            pendingFormat = format
+            pendingCodecHeader = codecHeader
+            currentStreamFormat = format
+
+            // Swap decoder for new incoming chunks
+            do {
+                try await audioPlayer.swapDecoder(format: format, codecHeader: codecHeader)
+            } catch {
+                fputs("[CLIENT] Decoder swap failed, falling back to full restart: \(error)\n", stderr)
+                pendingFormat = nil
+                pendingCodecHeader = nil
+                try? await audioPlayer.start(format: format, codecHeader: codecHeader)
+            }
+
+            fputs("[CLIENT] Format change: seamless transition (\(previousFormat!.sampleRate)Hz → \(format.sampleRate)Hz), old audio continues\n", stderr)
+            eventsContinuation.yield(.streamFormatChanged(format))
+            try? await sendClientState()
+            return
+        }
 
         do {
             try await audioPlayer.start(format: format, codecHeader: codecHeader)
+            currentStreamFormat = format
             clientOperationalState = .synchronized
             await audioScheduler?.startScheduling()
 
@@ -723,6 +828,7 @@ public final class SendspinClient {
                 await audioScheduler?.clear()
                 await audioPlayer.stop()
             }
+            currentStreamFormat = nil
         }
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
@@ -799,7 +905,7 @@ public final class SendspinClient {
             let pcmData = try await audioPlayer.decode(message.data)
             // Per spec: subtract static_delay_ms from server timestamp before scheduling
             let adjustedTimestamp = message.timestamp - Int64(staticDelayMs) * 1000
-            await audioScheduler.schedule(pcm: pcmData, serverTimestamp: adjustedTimestamp)
+            await audioScheduler.schedule(pcm: pcmData, serverTimestamp: adjustedTimestamp, generation: streamGeneration)
         } catch {
             // Decode/schedule failure — drop this chunk
         }
@@ -845,6 +951,56 @@ public final class SendspinClient {
         staticDelayMs = clamped
         // TODO: persist staticDelayMs across reboots (spec requires this)
         try? await sendClientState()
+    }
+
+    // MARK: - Player format negotiation
+
+    /// Request the server to change the audio stream format.
+    ///
+    /// Per spec, the server responds with `stream/start` containing the new format.
+    /// All parameters are optional — omitted fields are filled in by the server
+    /// (typically from the current format or the client's first supported format).
+    ///
+    /// **Important:** The requested combination must exist in the client's
+    /// `supported_formats` list from `client/hello`, otherwise the server
+    /// falls back to the current format.
+    ///
+    /// Use cases:
+    /// - Switch codec: `requestPlayerFormat(codec: .flac)`
+    /// - Match source rate: `requestPlayerFormat(sampleRate: 48000)`
+    /// - Full format change: `requestPlayerFormat(codec: .flac, sampleRate: 48000, bitDepth: 24)`
+    /// - Downgrade under load: `requestPlayerFormat(codec: .opus)`
+    @MainActor
+    public func requestPlayerFormat(
+        codec: AudioCodec? = nil,
+        channels: Int? = nil,
+        sampleRate: Int? = nil,
+        bitDepth: Int? = nil
+    ) async {
+        guard let transport = transport else { return }
+
+        let request = PlayerFormatRequest(
+            codec: codec?.rawValue,
+            channels: channels,
+            sampleRate: sampleRate,
+            bitDepth: bitDepth
+        )
+        let message = StreamRequestFormatMessage(
+            payload: StreamRequestFormatPayload(player: request)
+        )
+        try? await transport.send(message)
+    }
+
+    /// Request a specific format from the `supportedFormats` list by exact match.
+    /// This is a convenience that sends all fields, avoiding server-side fill-in ambiguity.
+    @MainActor
+    public func requestPlayerFormat(_ format: AudioFormatSpec) async {
+        await requestPlayerFormat(
+            codec: format.codec,
+            channels: format.channels,
+            sampleRate: format.sampleRate,
+            bitDepth: format.bitDepth
+        )
     }
 
     // MARK: - Artwork commands
@@ -913,6 +1069,8 @@ public final class SendspinClient {
 public enum ClientEvent: Sendable {
     case serverConnected(ServerInfo)
     case streamStarted(AudioFormatSpec)
+    /// Format changed mid-stream (e.g. after a `stream/request-format` request)
+    case streamFormatChanged(AudioFormatSpec)
     case streamEnded
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)

@@ -95,14 +95,14 @@ final class CLIPlayer {
             // Clean up TUI
             await display.stop()
         } else {
-            // No TUI mode - just wait forever and log events
-            print("✅ Connected! Logging mode (press Ctrl-C to exit)")
+            // No TUI mode — log events, but still accept commands from stdin
+            print("✅ Connected! Logging mode (type 'help' for commands, Ctrl-C to exit)")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
-            // Wait forever (sleep in a loop to avoid Duration overflow)
-            while true {
-                try? await Task.sleep(for: .seconds(3600)) // 1 hour at a time
+            let commandTask = Task.detached {
+                await CLIPlayer.runCommandLoopStatic(client: client, display: nil)
             }
+            await commandTask.value
         }
     }
 
@@ -124,6 +124,15 @@ final class CLIPlayer {
                     await display.updateStream(format: formatStr)
                 } else {
                     print("[EVENT] Stream started: \(formatStr)")
+                }
+
+            case let .streamFormatChanged(format):
+                let formatStr = "\(format.codec.rawValue) \(format.sampleRate)Hz " +
+                    "\(format.channels)ch \(format.bitDepth)bit"
+                if useTUI {
+                    await display.updateStream(format: formatStr)
+                } else {
+                    print("[EVENT] Format changed: \(formatStr)")
                 }
 
             case .streamEnded:
@@ -188,7 +197,7 @@ final class CLIPlayer {
         }
     }
 
-    private nonisolated static func runCommandLoopStatic(client: SendspinClient, display: StatusDisplay) async {
+    private nonisolated static func runCommandLoopStatic(client: SendspinClient, display: StatusDisplay?) async {
         while let line = readLine() {
             let trimmedLine = line.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmedLine.isEmpty else {
@@ -203,20 +212,24 @@ final class CLIPlayer {
                 await client.disconnect()
                 return
 
+            case "?", "h", "help":
+                fputs("Commands: [p]lay [pause] [n]ext [b]ack [s]top [v 0-100] [m]ute [u]nmute [f codec rate bits] [q]uit\n", stderr)
+                fputs("Format:   f flac | f flac 48000 | f pcm 44100 16 | f opus\n", stderr)
+
             case "v", "volume":
                 guard parts.count > 1, let volume = Float(parts[1]) else {
                     continue
                 }
                 await client.setVolume(volume / 100.0)
-                await display.updateVolume(Int(volume), muted: false)
+                await display?.updateVolume(Int(volume), muted: false)
 
             case "m", "mute":
                 await client.setMute(true)
-                await display.updateVolume(100, muted: true)
+                await display?.updateVolume(100, muted: true)
 
             case "u", "unmute":
                 await client.setMute(false)
-                await display.updateVolume(100, muted: false)
+                await display?.updateVolume(100, muted: false)
 
             // Controller commands
             case "p", "play":
@@ -237,10 +250,53 @@ final class CLIPlayer {
             case "gu":
                 await client.setGroupMute(false)
 
+            // Format request: "f flac 48000 24" or partial: "f flac" or "f pcm 44100"
+            case "f", "format":
+                await handleFormatRequest(parts: parts, client: client)
+
             default:
                 break // Ignore unknown commands
             }
         }
+    }
+
+    /// Parse and send a format request from CLI input.
+    /// Syntax: `f [codec] [sampleRate] [bitDepth]` — all optional.
+    /// Examples: `f flac`, `f flac 48000`, `f pcm 44100 16`, `f opus`
+    private nonisolated static func handleFormatRequest(
+        parts: [Substring],
+        client: SendspinClient
+    ) async {
+        var codec: AudioCodec?
+        var sampleRate: Int?
+        var bitDepth: Int?
+
+        for part in parts.dropFirst() {
+            let str = String(part).lowercased()
+            if let c = AudioCodec(rawValue: str) {
+                codec = c
+            } else if let n = Int(str) {
+                // Heuristic: sample rates are > 1000, bit depths are <= 32
+                if n > 32 {
+                    sampleRate = n
+                } else {
+                    bitDepth = n
+                }
+            }
+        }
+
+        if codec == nil && sampleRate == nil && bitDepth == nil {
+            fputs("[FORMAT] Usage: f [codec] [sampleRate] [bitDepth]\n", stderr)
+            fputs("[FORMAT] Examples: f flac, f flac 48000, f pcm 44100 16\n", stderr)
+            return
+        }
+
+        fputs("[FORMAT] Requesting: codec=\(codec?.rawValue ?? "auto") rate=\(sampleRate.map(String.init) ?? "auto") bits=\(bitDepth.map(String.init) ?? "auto")\n", stderr)
+        await client.requestPlayerFormat(
+            codec: codec,
+            sampleRate: sampleRate,
+            bitDepth: bitDepth
+        )
     }
 
     /// Listen for incoming server connections (server-initiated path).
@@ -271,7 +327,18 @@ final class CLIPlayer {
 
         print("✅ Advertising as '\(clientName)' on port \(port)")
         print("   Waiting for servers to connect...")
+        if !useTUI {
+            print("   Type 'help' for commands, Ctrl-C to exit")
+        }
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+
+        // Run command loop concurrently with connection acceptance
+        if useTUI {
+            await display.start()
+        }
+        let commandTask = Task.detached { [display] in
+            await CLIPlayer.runCommandLoopStatic(client: client, display: useTUI ? display : nil)
+        }
 
         // Accept incoming server connections
         for await transport in advertiser.connections {
@@ -283,6 +350,21 @@ final class CLIPlayer {
                 fputs("[LISTEN] Connection failed: \(error)\n", stderr)
             }
         }
+
+        commandTask.cancel()
+        if useTUI {
+            await display.stop()
+        }
+    }
+
+    /// Graceful shutdown: disconnect with reason, clean up resources.
+    /// Called from the SIGINT handler for clean Ctrl-C behavior.
+    @MainActor
+    func gracefulShutdown() async {
+        if let client = client {
+            await client.disconnect(reason: .shutdown)
+        }
+        eventTask?.cancel()
     }
 
     deinit {
@@ -472,7 +554,7 @@ actor StatusDisplay {
 
         // Commands
         output += "\(ANSI.dim)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\(ANSI.reset)\n"
-        output += "\(ANSI.dim)Commands: [p]lay [pause] [n]ext [b]ack [s]top  [v <0-100>] vol [m]ute [u]nmute [q]uit\(ANSI.reset)\n"
+        output += "\(ANSI.dim)Commands: [p]lay [pause] [n]ext [b]ack [s]top  [v <0-100>] [m]ute [u]nmute [f]ormat [q]uit\(ANSI.reset)\n"
         output += "\(ANSI.dim)━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\(ANSI.reset)\n"
         output += "> "
 

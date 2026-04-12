@@ -46,6 +46,10 @@ public actor AudioPlayer {
     // Whether a reanchor was requested by the callback (handled by the actor method)
     private nonisolated(unsafe) var pendingReanchorServerTime: Int64 = 0
     private nonisolated(unsafe) var reanchorRequested: Bool = false
+    // Grace period: suppress sync correction after AudioQueue rebuild to avoid
+    // audible pitch shifts from transient sync error. Frames-based countdown
+    // (decremented in the callback). At 48kHz, 48000 frames = 1 second.
+    private nonisolated(unsafe) var correctionGraceFrames: Int64 = 0
 
     // Playback cursor: tracks server-time position of what's being output.
     // Advanced by 1_000_000/sampleRate per frame consumed. Accessed under pcmBufferLock.
@@ -138,6 +142,10 @@ public actor AudioPlayer {
             lastSyncErrorUs = 0
             reanchorRequested = false
             pendingReanchorServerTime = 0
+            // Suppress sync correction for ~1 second after rebuild.
+            // The transient sync error from the AudioQueue rebuild settles
+            // naturally; correcting during this period causes audible artifacts.
+            correctionGraceFrames = Int64(format.sampleRate)
         }
 
         // Allocate and prime buffers.
@@ -181,6 +189,20 @@ public actor AudioPlayer {
             cursorRemainder = 0
             framesConsumed = 0
         }
+    }
+
+    /// Replace the decoder without stopping playback.
+    /// Used for seamless mid-stream format transitions: the old AudioQueue
+    /// keeps running with its existing ring buffer data while new incoming
+    /// chunks get decoded by the new decoder.
+    public func swapDecoder(format: AudioFormatSpec, codecHeader: Data?) throws {
+        decoder = try AudioDecoderFactory.create(
+            codec: format.codec,
+            sampleRate: format.sampleRate,
+            channels: format.channels,
+            bitDepth: format.bitDepth,
+            header: codecHeader
+        )
     }
 
     /// Decode compressed audio data to PCM
@@ -315,11 +337,24 @@ public actor AudioPlayer {
             let syncErrorUs = (expectedServerTime - cursorMicroseconds) - aqLatencyUs
             lastSyncErrorUs = syncErrorUs
 
-            let newSchedule = syncPlanner.plan(
-                errorMicroseconds: syncErrorUs,
-                sampleRate: UInt32(sr),
-                currentlyCorrecting: correctionSchedule.isCorrecting
-            )
+            // During grace period after AudioQueue rebuild, measure sync error
+            // (for telemetry) but don't engage correction. The transient error
+            // from the rebuild settles naturally without pitch-shifting the audio.
+            let framesInBuffer = capacity / fs
+            if correctionGraceFrames > 0 {
+                correctionGraceFrames -= Int64(framesInBuffer)
+            }
+
+            let newSchedule: CorrectionSchedule
+            if correctionGraceFrames > 0 {
+                newSchedule = CorrectionSchedule() // no correction during grace period
+            } else {
+                newSchedule = syncPlanner.plan(
+                    errorMicroseconds: syncErrorUs,
+                    sampleRate: UInt32(sr),
+                    currentlyCorrecting: correctionSchedule.isCorrecting
+                )
+            }
 
             if newSchedule.reanchor {
                 // Can't reset the ring buffer and cursor here safely while iterating,

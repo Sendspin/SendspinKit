@@ -59,6 +59,9 @@ public struct ScheduledChunk: Sendable {
     public let pcmData: Data
     public let playTime: Date
     public let originalTimestamp: Int64
+    /// Stream generation — incremented on format changes so the output loop
+    /// can distinguish old-format from new-format chunks.
+    public let generation: UInt64
 }
 
 /// Actor managing timestamp-based audio playback scheduling
@@ -86,7 +89,7 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Schedule a PCM chunk for playback
-    public func schedule(pcm: Data, serverTimestamp: Int64) async {
+    public func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
         let receivedCount = schedulerStats.received
 
         // Convert server timestamp to local playback time
@@ -97,7 +100,8 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         let chunk = ScheduledChunk(
             pcmData: pcm,
             playTime: playTime,
-            originalTimestamp: serverTimestamp
+            originalTimestamp: serverTimestamp,
+            generation: generation
         )
 
         // No queue size limit: the server already respects our buffer_capacity
