@@ -15,11 +15,14 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// Latest raw measurements for telemetry
     private var latestRtt: Int64 = 0
 
-    /// Absolute anchor: converts process-relative client timestamps to Unix epoch
+    /// Absolute anchor: converts process-relative client timestamps to Unix epoch.
+    /// Captured once from `MonotonicClock` at init — immune to NTP slew after startup.
     private let clientProcessStartAbsolute: Int64
 
     init() {
-        clientProcessStartAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
+        // Snapshot the epoch anchor once. All subsequent time reads use
+        // MonotonicClock.nowMicroseconds() (process-relative, NTP-immune).
+        clientProcessStartAbsolute = MonotonicClock.absoluteMicroseconds() - MonotonicClock.nowMicroseconds()
     }
 
     // MARK: - Public interface

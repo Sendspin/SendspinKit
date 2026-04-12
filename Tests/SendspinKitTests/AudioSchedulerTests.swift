@@ -30,10 +30,8 @@ final class AudioSchedulerTests: XCTestCase {
         let chunks = await scheduler.getQueuedChunks()
         XCTAssertEqual(chunks.count, 1)
 
-        // Expected: serverTime - offset = 2_000_000 - 1_000_000 = 1_000_000 microseconds = 1 second
-        let expectedPlayTime = Date(timeIntervalSince1970: 1.0)
-        let actualPlayTime = chunks[0].playTime
-        XCTAssertEqual(actualPlayTime.timeIntervalSince1970, expectedPlayTime.timeIntervalSince1970, accuracy: 0.001)
+        // Expected: serverTime - offset = 2_000_000 - 1_000_000 = 1_000_000 microseconds
+        XCTAssertEqual(chunks[0].playTimeMicroseconds, 1_000_000)
     }
 
     func testSchedulerMaintainsSortedQueue() async {
@@ -49,8 +47,8 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(chunks.count, 3)
 
         // Should be sorted by playTime
-        XCTAssertLessThan(chunks[0].playTime, chunks[1].playTime)
-        XCTAssertLessThan(chunks[1].playTime, chunks[2].playTime)
+        XCTAssertLessThan(chunks[0].playTimeMicroseconds, chunks[1].playTimeMicroseconds)
+        XCTAssertLessThan(chunks[1].playTimeMicroseconds, chunks[2].playTimeMicroseconds)
     }
 
     func testSchedulerOutputsReadyChunks() async throws {
@@ -58,8 +56,7 @@ final class AudioSchedulerTests: XCTestCase {
         let scheduler = AudioScheduler(clockSync: clockSync)
 
         // Schedule chunk for immediate playback (current time)
-        let now = Date()
-        let nowMicros = Int64(now.timeIntervalSince1970 * 1_000_000)
+        let nowMicros = MonotonicClock.absoluteMicroseconds()
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: nowMicros)
         await scheduler.startScheduling()
@@ -90,8 +87,7 @@ final class AudioSchedulerTests: XCTestCase {
         let scheduler = AudioScheduler(clockSync: clockSync)
 
         // Schedule chunk 100ms in the past
-        let now = Date()
-        let pastMicros = Int64((now.timeIntervalSince1970 - 0.1) * 1_000_000)
+        let pastMicros = MonotonicClock.absoluteMicroseconds() - 100_000
 
         await scheduler.schedule(pcm: Data([0xFF]), serverTimestamp: pastMicros)
         await scheduler.startScheduling()
@@ -108,8 +104,7 @@ final class AudioSchedulerTests: XCTestCase {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
-        let future = Date().addingTimeInterval(10) // 10 seconds in future
-        let futureMicros = Int64(future.timeIntervalSince1970 * 1_000_000)
+        let futureMicros = MonotonicClock.absoluteMicroseconds() + 10_000_000 // 10 seconds ahead
 
         // Schedule 10 chunks — all should be kept (no queue size limit)
         for chunkIndex in 0 ..< 10 {
@@ -131,8 +126,7 @@ final class AudioSchedulerTests: XCTestCase {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
-        let future = Date().addingTimeInterval(10)
-        let futureMicros = Int64(future.timeIntervalSince1970 * 1_000_000)
+        let futureMicros = MonotonicClock.absoluteMicroseconds() + 10_000_000
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: futureMicros)
         await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1_000)
@@ -158,8 +152,7 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(detailedStats.dropped, 0)
 
         // Schedule 3 chunks for future playback
-        let future = Date().addingTimeInterval(10)
-        let futureMicros = Int64(future.timeIntervalSince1970 * 1_000_000)
+        let futureMicros = MonotonicClock.absoluteMicroseconds() + 10_000_000
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: futureMicros)
         await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1_000)
@@ -178,8 +171,7 @@ final class AudioSchedulerTests: XCTestCase {
         let scheduler = AudioScheduler(clockSync: clockSync)
 
         // Schedule chunk for immediate playback
-        let now = Date()
-        let nowMicros = Int64(now.timeIntervalSince1970 * 1_000_000)
+        let nowMicros = MonotonicClock.absoluteMicroseconds()
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: nowMicros)
         await scheduler.startScheduling()

@@ -988,11 +988,8 @@ public final class SendspinClient {
 
     // MARK: - Utilities
 
-    private nonisolated static let processStartTime = Date()
-
     private nonisolated func getCurrentMicroseconds() -> Int64 {
-        let elapsed = Date().timeIntervalSince(SendspinClient.processStartTime)
-        return Int64(elapsed * 1_000_000)
+        MonotonicClock.nowMicroseconds()
     }
 
     /// Set playback volume (0-100, perceived loudness per spec)

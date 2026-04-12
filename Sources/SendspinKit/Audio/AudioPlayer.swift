@@ -85,13 +85,16 @@ actor AudioPlayer {
     private nonisolated(unsafe) var sampleRate: Int = 0
     /// Total frames consumed (for diagnostics)
     private nonisolated(unsafe) var framesConsumed: Int64 = 0
+    /// Number of buffer underruns (ring buffer empty when callback needs frames)
+    private nonisolated(unsafe) var underrunCount: Int64 = 0
 
     private var currentVolume: Float = 1.0
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
 
     // Process callback for local visualization / audio effects.
-    // Accessed from the audio thread under pcmBufferLock alongside the format snapshot.
+    // Set once in init, read from audio thread under pcmBufferLock.
+    // processCallbackFormat is set in start() under the lock.
     private nonisolated(unsafe) var processCallback: AudioProcessCallback?
     private nonisolated(unsafe) var processCallbackFormat: AudioFormatSpec?
 
@@ -133,6 +136,14 @@ actor AudioPlayer {
     }
 
     /// Start playback with specified format
+    ///
+    /// **Unmanaged safety:** `passUnretained(self)` is used to pass `self` as the
+    /// AudioQueue callback client data. This is safe because:
+    /// - `audioQueue` is set immediately after `AudioQueueNewOutput` (no throwing
+    ///   calls between creation and assignment)
+    /// - `stop()` disposes the queue before releasing `self`
+    /// - `deinit` calls `stop()` implicitly via cleanup
+    /// Do not insert throwing calls between `AudioQueueNewOutput` and `audioQueue = queue`.
     func start(format: AudioFormatSpec, codecHeader: Data?) throws {
         if _isPlaying, currentFormat == format { return }
 
@@ -153,12 +164,7 @@ actor AudioPlayer {
         audioFormat.mFramesPerPacket = 1
         audioFormat.mChannelsPerFrame = UInt32(format.channels)
 
-        // Both 24-bit PCM and FLAC decoders output Int32 (4 bytes per sample):
-        // - 24-bit PCM: unpacked from 3 bytes to 4 bytes, left-shifted 8 bits
-        // - FLAC: libFLAC always outputs Int32, shifted to fill 32-bit range
-        // - Opus: also outputs Int32 (converted from float32)
-        let decoderOutputs32Bit = (format.bitDepth == 24 || format.codec == .flac || format.codec == .opus)
-        let effectiveBitDepth = decoderOutputs32Bit ? 32 : format.bitDepth
+        let effectiveBitDepth = format.effectiveOutputBitDepth
         let bytesPerSample = effectiveBitDepth / 8
 
         audioFormat.mBytesPerPacket = UInt32(format.channels * bytesPerSample)
@@ -166,6 +172,8 @@ actor AudioPlayer {
         audioFormat.mBitsPerChannel = UInt32(effectiveBitDepth)
 
         var queue: AudioQueueRef?
+        // IMPORTANT: No throwing calls between AudioQueueNewOutput and audioQueue = queue.
+        // See the Unmanaged safety note on this method.
         let status = AudioQueueNewOutput(
             &audioFormat,
             audioQueueCallback,
@@ -175,7 +183,7 @@ actor AudioPlayer {
         )
 
         guard status == noErr, let queue else {
-            throw AudioPlayerError.queueCreationFailed
+            throw AudioPlayerError.queueAllocationFailed(status)
         }
 
         audioQueue = queue
@@ -193,6 +201,10 @@ actor AudioPlayer {
 
         // Initialize frame-level state
         let computedFrameSize = format.channels * bytesPerSample
+        precondition(
+            computedFrameSize <= lastFrameStorage.count,
+            "Frame size \(computedFrameSize) exceeds lastFrameStorage capacity \(lastFrameStorage.count)"
+        )
         pcmBufferLock.withLock {
             frameSize = computedFrameSize
             processCallbackFormat = effectiveFormat
@@ -203,6 +215,7 @@ actor AudioPlayer {
             cursorMicroseconds = 0
             cursorRemainder = 0
             framesConsumed = 0
+            underrunCount = 0
             correctionSchedule = CorrectionSchedule()
             dropCounter = 0
             insertCounter = 0
@@ -231,8 +244,12 @@ actor AudioPlayer {
 
         let startStatus = AudioQueueStart(queue, nil)
         if startStatus != noErr {
-            fputs("[AUDIO] AudioQueueStart failed with status: \(startStatus)\n", stderr)
-            throw AudioPlayerError.queueCreationFailed
+            // Clean up the allocated-but-not-started queue to prevent resource leak
+            AudioQueueDispose(queue, true)
+            audioQueue = nil
+            currentFormat = nil
+            decoder = nil
+            throw AudioPlayerError.queueStartFailed(startStatus)
         }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)"
@@ -283,7 +300,7 @@ actor AudioPlayer {
     }
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
-    func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
+    func playPCM(_ pcmData: Data, serverTimestamp: Int64) throws {
         guard audioQueue != nil, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
@@ -336,6 +353,7 @@ actor AudioPlayer {
         let sampleRate: Int
         let syncErrorUs: Int64
         let correctionSchedule: CorrectionSchedule
+        let underrunCount: Int64
     }
 
     /// Capture telemetry state atomically for the logging loop.
@@ -345,7 +363,8 @@ actor AudioPlayer {
                 cursorMicroseconds: cursorMicroseconds,
                 sampleRate: sampleRate,
                 syncErrorUs: lastSyncErrorUs,
-                correctionSchedule: correctionSchedule
+                correctionSchedule: correctionSchedule,
+                underrunCount: underrunCount
             )
         }
     }
@@ -370,10 +389,10 @@ actor AudioPlayer {
         var outOffset = 0
 
         pcmBufferLock.lock()
+        defer { pcmBufferLock.unlock() }
 
         let fs = frameSize
         guard fs > 0 else {
-            pcmBufferLock.unlock()
             memset(buffer.pointee.mAudioData, 0, capacity)
             buffer.pointee.mAudioDataByteSize = UInt32(capacity)
             AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
@@ -382,10 +401,14 @@ actor AudioPlayer {
 
         let sr = sampleRate
 
+        // Snapshot callback + format under the lock so reads are race-free.
+        let cb = processCallback
+        let cbFormat = processCallbackFormat
+
         // --- Compute sync error and update correction schedule (in the callback!) ---
-        // Wall clock and cursor are read in the same lock scope = zero jitter.
+        // Monotonic clock and cursor are read in the same lock scope = zero jitter.
         if cursorMicroseconds > 0, timeSnapshot.isValid {
-            let nowAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
+            let nowAbsolute = MonotonicClock.absoluteMicroseconds()
             let expectedServerTime = timeSnapshot.localToServerTime(nowAbsolute)
 
             // AQ pipeline latency: ~2 buffers active (1 playing + 1 queued).
@@ -469,26 +492,25 @@ actor AudioPlayer {
                 advanceCursor(sampleRate: sr)
                 outOffset += fs
             } else {
-                break // underrun
+                underrunCount += 1
+                break
             }
         }
 
-        pcmBufferLock.unlock()
-
-        // Fill remaining space with silence
+        // Fill remaining space with silence (still under the lock — defer handles unlock)
         if outOffset < capacity {
             memset(dest + outOffset, 0, capacity - outOffset)
         }
 
         // Invoke process callback with the final buffer contents (including silence).
-        // This runs after the lock is released — the buffer is fully assembled and
-        // won't be touched again before enqueue.
-        if let callback = processCallback, let format = processCallbackFormat {
+        // cb/cbFormat were captured under the lock above; the buffer is fully assembled
+        // and won't be touched again before enqueue.
+        if let cb, let cbFormat {
             let mutableBuffer = UnsafeMutableRawBufferPointer(
                 start: buffer.pointee.mAudioData,
                 count: capacity
             )
-            callback(mutableBuffer, format)
+            cb(mutableBuffer, cbFormat)
         }
 
         buffer.pointee.mAudioDataByteSize = UInt32(capacity)
@@ -545,7 +567,19 @@ private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, bu
     player.fillBuffer(queue: queue, buffer: buffer)
 }
 
-enum AudioPlayerError: Error {
-    case queueCreationFailed
+enum AudioPlayerError: Error, LocalizedError {
+    case queueAllocationFailed(OSStatus)
+    case queueStartFailed(OSStatus)
     case notStarted
+
+    var errorDescription: String? {
+        switch self {
+        case let .queueAllocationFailed(status):
+            "AudioQueue allocation failed (OSStatus \(status))"
+        case let .queueStartFailed(status):
+            "AudioQueue start failed (OSStatus \(status))"
+        case .notStarted:
+            "Audio player not started"
+        }
+    }
 }

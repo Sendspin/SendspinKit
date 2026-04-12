@@ -22,4 +22,15 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
         self.sampleRate = sampleRate
         self.bitDepth = bitDepth
     }
+
+    /// The actual bit depth after decoding to PCM for AudioQueue output.
+    ///
+    /// All decoders except 16-bit/32-bit PCM passthrough produce Int32 output:
+    /// - 24-bit PCM: unpacked from 3 bytes to 4 bytes, left-shifted 8 bits
+    /// - FLAC: libFLAC always outputs Int32, shifted to fill 32-bit range
+    /// - Opus: decoded to float32, then converted to Int32
+    var effectiveOutputBitDepth: Int {
+        let decoderOutputs32Bit = (bitDepth == 24 || codec == .flac || codec == .opus)
+        return decoderOutputs32Bit ? 32 : bitDepth
+    }
 }

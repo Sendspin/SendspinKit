@@ -52,7 +52,8 @@ struct DetailedSchedulerStats {
 /// A chunk scheduled for playback at a specific time
 struct ScheduledChunk {
     let pcmData: Data
-    let playTime: Date
+    /// Local absolute time in microseconds (from MonotonicClock) when this chunk should play
+    let playTimeMicroseconds: Int64
     let originalTimestamp: Int64
     /// Stream generation — incremented on format changes so the output loop
     /// can distinguish old-format from new-format chunks.
@@ -62,7 +63,8 @@ struct ScheduledChunk {
 /// Actor managing timestamp-based audio playback scheduling
 actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     private let clockSync: ClockSync
-    private let playbackWindow: TimeInterval
+    /// Playback window in microseconds — chunks within ±this window of "now" are played
+    private let playbackWindowUs: Int64
     private var queue: [ScheduledChunk] = []
     private var schedulerStats: SchedulerStats
     private var timerTask: Task<Void, Never>?
@@ -76,7 +78,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         playbackWindow: TimeInterval = 0.05
     ) {
         self.clockSync = clockSync
-        self.playbackWindow = playbackWindow
+        playbackWindowUs = Int64(playbackWindow * 1_000_000)
         schedulerStats = SchedulerStats()
 
         // Create AsyncStream
@@ -85,14 +87,12 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     /// Schedule a PCM chunk for playback
     func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
-        // Convert server timestamp to local playback time
+        // Convert server timestamp to local playback time (absolute µs from MonotonicClock)
         let localTimeMicros = await clockSync.serverTimeToLocal(serverTimestamp)
-        let localTimeSeconds = Double(localTimeMicros) / 1_000_000.0
-        let playTime = Date(timeIntervalSince1970: localTimeSeconds)
 
         let chunk = ScheduledChunk(
             pcmData: pcm,
-            playTime: playTime,
+            playTimeMicroseconds: localTimeMicros,
             originalTimestamp: serverTimestamp,
             generation: generation
         )
@@ -122,7 +122,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
         while low < high {
             let mid = (low + high) / 2
-            if queue[mid].playTime < chunk.playTime {
+            if queue[mid].playTimeMicroseconds < chunk.playTimeMicroseconds {
                 low = mid + 1
             } else {
                 high = mid
@@ -144,10 +144,9 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     /// Get detailed statistics including queue size and buffer metrics
     func getDetailedStats() -> DetailedSchedulerStats {
-        // Calculate buffer fill: time until next chunk should play
-        let now = Date()
+        let nowUs = MonotonicClock.absoluteMicroseconds()
         let bufferFillMs: Double = if let nextChunk = queue.first {
-            max(0, nextChunk.playTime.timeIntervalSince(now) * 1_000.0)
+            max(0, Double(nextChunk.playTimeMicroseconds - nowUs) / 1_000.0)
         } else {
             0.0
         }
@@ -174,11 +173,12 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                 // polling at a fixed interval.
                 let sleepDuration: Duration
                 if let next = queue.first {
-                    let delay = next.playTime.timeIntervalSince(Date()) - playbackWindow
-                    if delay > 0 {
+                    let nowUs = MonotonicClock.absoluteMicroseconds()
+                    let delayUs = next.playTimeMicroseconds - nowUs - playbackWindowUs
+                    if delayUs > 0 {
                         // Cap at playbackWindow so new arrivals aren't delayed too long
-                        let cappedDelay = min(delay, playbackWindow)
-                        sleepDuration = .nanoseconds(Int64(cappedDelay * 1_000_000_000))
+                        let cappedDelayUs = min(delayUs, playbackWindowUs)
+                        sleepDuration = .microseconds(cappedDelayUs)
                     } else {
                         // Chunk is due now or overdue — tight loop briefly to drain
                         sleepDuration = .milliseconds(1)
@@ -214,15 +214,15 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     /// Check queue and output ready chunks
     private func checkQueue() {
-        let now = Date()
+        let nowUs = MonotonicClock.absoluteMicroseconds()
 
         while let next = queue.first {
-            let delay = next.playTime.timeIntervalSince(now)
+            let delayUs = next.playTimeMicroseconds - nowUs
 
-            if delay > playbackWindow {
+            if delayUs > playbackWindowUs {
                 // Too early, wait
                 break
-            } else if delay < -playbackWindow {
+            } else if delayUs < -playbackWindowUs {
                 // Too late, drop
                 queue.removeFirst()
                 schedulerStats = SchedulerStats(
@@ -232,7 +232,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
                     droppedLate: schedulerStats.droppedLate + 1
                 )
             } else {
-                // Ready to play (within ±50ms window)
+                // Ready to play (within ±window)
                 let chunk = queue.removeFirst()
                 chunkContinuation.yield(chunk)
 
