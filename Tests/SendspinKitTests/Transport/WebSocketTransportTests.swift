@@ -2,11 +2,10 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("WebSocket Transport Tests")
 struct WebSocketTransportTests {
-    @Test("Creates AsyncStreams for messages")
-    func streamCreation() async {
-        let url = URL(string: "ws://localhost:8927/sendspin")!
+    @Test
+    func `Creates AsyncStreams for messages`() throws {
+        let url = try #require(URL(string: "ws://localhost:8927/sendspin"))
         let transport = WebSocketTransport(url: url)
 
         // Verify streams exist

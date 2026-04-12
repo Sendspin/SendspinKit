@@ -2,14 +2,12 @@
 // ABOUTME: Validates wrap-around, partial writes, skip, peek, and capacity behavior
 
 import Foundation
-import Testing
 @testable import SendspinKit
+import Testing
 
-@Suite("PCM Ring Buffer")
 struct PCMRingBufferTests {
-
-    @Test("Capacity rounds up to power of 2")
-    func capacityRoundsUp() {
+    @Test
+    func `Capacity rounds up to power of 2`() {
         var buf = PCMRingBuffer(capacity: 100)
         #expect(buf.capacity == 128)
         #expect(buf.availableToRead == 0)
@@ -21,8 +19,8 @@ struct PCMRingBufferTests {
         buf2.deallocate()
     }
 
-    @Test("Basic write and read")
-    func basicWriteRead() {
+    @Test
+    func `Basic write and read`() {
         var buf = PCMRingBuffer(capacity: 64)
         defer { buf.deallocate() }
 
@@ -43,8 +41,8 @@ struct PCMRingBufferTests {
         #expect(buf.availableToRead == 0)
     }
 
-    @Test("Write wraps around the boundary")
-    func wrapAround() {
+    @Test
+    func `Write wraps around the boundary`() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -74,8 +72,8 @@ struct PCMRingBufferTests {
         #expect(dest == source)
     }
 
-    @Test("Write truncates when buffer is full")
-    func writeTruncatesWhenFull() {
+    @Test
+    func `Write truncates when buffer is full`() {
         var buf = PCMRingBuffer(capacity: 8) // rounds to 8
         defer { buf.deallocate() }
 
@@ -86,8 +84,8 @@ struct PCMRingBufferTests {
         #expect(buf.availableToWrite == 0)
     }
 
-    @Test("Skip discards bytes without copying")
-    func skipDiscardsBytes() {
+    @Test
+    func `Skip discards bytes without copying`() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -107,8 +105,8 @@ struct PCMRingBufferTests {
         #expect(dest == [50, 60])
     }
 
-    @Test("Reset clears the buffer")
-    func resetClears() {
+    @Test
+    func `Reset clears the buffer`() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -120,8 +118,8 @@ struct PCMRingBufferTests {
         #expect(buf.availableToWrite == 32)
     }
 
-    @Test("Write from Data convenience method")
-    func writeFromData() {
+    @Test
+    func `Write from Data convenience method`() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -136,8 +134,8 @@ struct PCMRingBufferTests {
         #expect(dest == [10, 20, 30, 40])
     }
 
-    @Test("Repeated wrap-around cycles maintain data integrity")
-    func repeatedWrapAroundCycles() {
+    @Test
+    func `Repeated wrap-around cycles maintain data integrity`() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -158,8 +156,8 @@ struct PCMRingBufferTests {
         }
     }
 
-    @Test("Partial read returns only available bytes")
-    func partialRead() {
+    @Test
+    func `Partial read returns only available bytes`() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -169,6 +167,6 @@ struct PCMRingBufferTests {
             buf.read(into: ptr.baseAddress!, count: 10)
         }
         #expect(readCount == 3)
-        #expect(dest[0...2] == [1, 2, 3])
+        #expect(dest[0 ... 2] == [1, 2, 3])
     }
 }

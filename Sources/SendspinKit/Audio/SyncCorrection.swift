@@ -4,7 +4,7 @@
 import Foundation
 
 /// Correction schedule for drop/insert cadence
-struct CorrectionSchedule: Equatable, Sendable {
+struct CorrectionSchedule: Equatable {
     /// Insert one frame every N frames (0 = disabled)
     var insertEveryNFrames: UInt32
     /// Drop one frame every N frames (0 = disabled)
@@ -28,7 +28,7 @@ struct CorrectionSchedule: Equatable, Sendable {
 ///
 /// Uses hysteresis to prevent oscillation at the deadband boundary:
 /// correction engages at `engageMicroseconds` and disengages at `deadbandMicroseconds`.
-struct CorrectionPlanner: Sendable {
+struct CorrectionPlanner {
     private let deadbandMicroseconds: Int64
     private let engageMicroseconds: Int64
     private let reanchorThresholdMicroseconds: Int64
@@ -56,11 +56,10 @@ struct CorrectionPlanner: Sendable {
     ///   - sampleRate: Audio sample rate in Hz
     ///   - currentlyCorrecting: Controls hysteresis; when true, the lower deadband threshold is used
     func plan(errorMicroseconds: Int64, sampleRate: UInt32, currentlyCorrecting: Bool) -> CorrectionSchedule {
-        let absError: Int64
-        if errorMicroseconds == Int64.min {
-            absError = Int64.max
+        let absError: Int64 = if errorMicroseconds == Int64.min {
+            Int64.max
         } else {
-            absError = abs(errorMicroseconds)
+            abs(errorMicroseconds)
         }
 
         // Hysteresis: use lower threshold to keep correcting, higher to start

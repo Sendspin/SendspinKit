@@ -2,16 +2,14 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("AudioProcessCallback")
 struct AudioProcessCallbackTests {
-
-    // Standard test format used across all tests in this suite
-    private static let stereo16 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+    /// Standard test format used across all tests in this suite
+    private static let stereo16 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
 
     // MARK: - Callback invocation
 
-    @Test("Callback is invoked during playback")
-    func callbackInvoked() async throws {
+    @Test
+    func `Callback is invoked during playback`() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -40,8 +38,8 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test("Callback receives correct format for 16-bit stereo")
-    func callbackFormat16Bit() async throws {
+    @Test
+    func `Callback receives correct format for 16-bit stereo`() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -54,7 +52,7 @@ struct AudioProcessCallbackTests {
 
         try await player.start(format: Self.stereo16, codecHeader: nil)
 
-        let pcmData = Data(repeating: 0, count: 48000 * 4)
+        let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
         try await Task.sleep(for: .milliseconds(500))
 
@@ -64,7 +62,7 @@ struct AudioProcessCallbackTests {
         if let format = formats.first {
             #expect(format.codec == .pcm)
             #expect(format.channels == 2)
-            #expect(format.sampleRate == 48000)
+            #expect(format.sampleRate == 48_000)
             // 16-bit PCM stays 16-bit (no expansion)
             #expect(format.bitDepth == 16)
         }
@@ -72,11 +70,11 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test("Callback receives 32-bit effective format for 24-bit source")
-    func callbackFormat24BitExpanded() async throws {
+    @Test
+    func `Callback receives 32-bit effective format for 24-bit source`() async throws {
         let invoked = CallbackRecorder()
 
-        let format24 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 24)
+        let format24 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
 
         let player = AudioPlayer(
             bufferManager: BufferManager(capacity: 1_048_576),
@@ -90,7 +88,7 @@ struct AudioProcessCallbackTests {
 
         // 24-bit PCM is unpacked to 32-bit (4 bytes per sample)
         let bytesPerFrame = 2 * 4 // channels * 4 bytes (32-bit effective)
-        let pcmData = Data(repeating: 0, count: 48000 * bytesPerFrame)
+        let pcmData = Data(repeating: 0, count: 48_000 * bytesPerFrame)
         try await player.playPCM(pcmData, serverTimestamp: 0)
         try await Task.sleep(for: .milliseconds(500))
 
@@ -104,8 +102,8 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test("Callback receives mutable buffer")
-    func callbackCanModifyBuffer() async throws {
+    @Test
+    func `Callback receives mutable buffer`() async throws {
         let modified = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -114,7 +112,7 @@ struct AudioProcessCallbackTests {
             processCallback: { samples, _ in
                 // Write a known pattern to verify mutability
                 if samples.count >= 4 {
-                    samples.storeBytes(of: UInt32(0xDEADBEEF), toByteOffset: 0, as: UInt32.self)
+                    samples.storeBytes(of: UInt32(0xDEAD_BEEF), toByteOffset: 0, as: UInt32.self)
                 }
                 modified.record(byteCount: samples.count, format: Self.stereo16)
             }
@@ -122,7 +120,7 @@ struct AudioProcessCallbackTests {
 
         try await player.start(format: Self.stereo16, codecHeader: nil)
 
-        let pcmData = Data(repeating: 0, count: 48000 * 4)
+        let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
         try await Task.sleep(for: .milliseconds(500))
 
@@ -132,8 +130,8 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test("Callback fires even with empty ring buffer (silence)")
-    func callbackFiresDuringSilence() async throws {
+    @Test
+    func `Callback fires even with empty ring buffer (silence)`() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -154,8 +152,8 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test("Buffer byte count matches AudioQueue buffer size")
-    func callbackBufferSize() async throws {
+    @Test
+    func `Buffer byte count matches AudioQueue buffer size`() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -168,7 +166,7 @@ struct AudioProcessCallbackTests {
 
         try await player.start(format: Self.stereo16, codecHeader: nil)
 
-        let pcmData = Data(repeating: 0, count: 48000 * 4)
+        let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
         try await Task.sleep(for: .milliseconds(500))
 
@@ -176,10 +174,12 @@ struct AudioProcessCallbackTests {
         #expect(!byteCounts.isEmpty)
 
         // AudioPlayer uses 16384-byte buffers
-        let expectedBufferSize = 16384
+        let expectedBufferSize = 16_384
         for byteCount in byteCounts {
-            #expect(byteCount == expectedBufferSize,
-                    "Callback buffer should be \(expectedBufferSize) bytes, got \(byteCount)")
+            #expect(
+                byteCount == expectedBufferSize,
+                "Callback buffer should be \(expectedBufferSize) bytes, got \(byteCount)"
+            )
         }
 
         await player.stop()
@@ -187,8 +187,8 @@ struct AudioProcessCallbackTests {
 
     // MARK: - No callback configured
 
-    @Test("Player works fine without a process callback")
-    func noCallbackConfigured() async throws {
+    @Test
+    func `Player works fine without a process callback`() async throws {
         let player = AudioPlayer(
             bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer()
@@ -197,7 +197,7 @@ struct AudioProcessCallbackTests {
 
         try await player.start(format: Self.stereo16, codecHeader: nil)
 
-        let pcmData = Data(repeating: 0, count: 48000 * 4)
+        let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
         try await Task.sleep(for: .milliseconds(200))
 
@@ -209,20 +209,20 @@ struct AudioProcessCallbackTests {
 
     // MARK: - PlayerConfiguration integration
 
-    @Test("PlayerConfiguration defaults to nil processCallback")
-    func configDefaultsToNil() {
+    @Test
+    func `PlayerConfiguration defaults to nil processCallback`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [Self.stereo16]
         )
         #expect(config.processCallback == nil)
     }
 
-    @Test("PlayerConfiguration stores processCallback")
-    func configStoresCallback() {
+    @Test
+    func `PlayerConfiguration stores processCallback`() {
         let recorder = CallbackRecorder()
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [Self.stereo16],
             processCallback: { _, format in recorder.record(byteCount: 0, format: format) }
         )
@@ -251,7 +251,15 @@ private final class CallbackRecorder: @unchecked Sendable {
         }
     }
 
-    var count: Int { lock.withLock { _formats.count } }
-    var formats: [AudioFormatSpec] { lock.withLock { _formats } }
-    var byteCounts: [Int] { lock.withLock { _byteCounts } }
+    var count: Int {
+        lock.withLock { _formats.count }
+    }
+
+    var formats: [AudioFormatSpec] {
+        lock.withLock { _formats }
+    }
+
+    var byteCounts: [Int] {
+        lock.withLock { _byteCounts }
+    }
 }

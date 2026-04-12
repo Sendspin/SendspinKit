@@ -5,10 +5,9 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("Clock Sync Integration Tests")
 struct ClockSyncIntegrationTests {
-    @Test("Sync converges over multiple rounds with network jitter")
-    func syncConvergence() async {
+    @Test
+    func `Sync converges over multiple rounds with network jitter`() async throws {
         let sync = ClockSynchronizer()
 
         // Simulate 10 rounds of clock sync with varying network conditions
@@ -18,7 +17,7 @@ struct ClockSyncIntegrationTests {
         var offsets: [Int64] = []
 
         for round in 0 ..< 10 {
-            let baseTime = Int64(round * 10000)
+            let baseTime = Int64(round * 10_000)
 
             // Simulate symmetric network delay with jitter
             let networkDelay: Int64 = 100
@@ -41,28 +40,28 @@ struct ClockSyncIntegrationTests {
         }
 
         // After multiple rounds, offset should be reasonably close to true offset
-        let finalOffset = offsets.last!
+        let finalOffset = try #require(offsets.last)
         #expect(finalOffset > 0 && finalOffset < 150) // Should detect some offset
 
         // Verify median filtering is working (offsets should be relatively stable)
         let lastFive = Array(offsets.suffix(5))
-        let maxVariation = lastFive.max()! - lastFive.min()!
+        let maxVariation = try #require(lastFive.max()) - lastFive.min()!
         #expect(maxVariation < 200) // Low variation indicates good filtering
     }
 
-    @Test("Time conversion maintains bidirectional accuracy")
-    func bidirectionalTimeConversion() async {
+    @Test
+    func `Time conversion maintains bidirectional accuracy`() async {
         let sync = ClockSynchronizer()
 
         // Initialize with known offset
         await sync.processServerTime(
-            clientTransmitted: 1000,
-            serverReceived: 1500,
-            serverTransmitted: 1505,
-            clientReceived: 2005
+            clientTransmitted: 1_000,
+            serverReceived: 1_500,
+            serverTransmitted: 1_505,
+            clientReceived: 2_005
         )
 
-        let testServerTime: Int64 = 10000
+        let testServerTime: Int64 = 10_000
 
         // Convert server time to local
         let localTime = await sync.serverTimeToLocal(testServerTime)
@@ -74,17 +73,17 @@ struct ClockSyncIntegrationTests {
         #expect(abs(backToServer - testServerTime) < 5)
     }
 
-    @Test("Handles extreme network jitter gracefully")
-    func extremeJitter() async {
+    @Test
+    func `Handles extreme network jitter gracefully`() async {
         let sync = ClockSynchronizer()
 
         // Add samples with extreme outliers
         let samples: [(Int64, Int64, Int64, Int64)] = [
-            (1000, 1100, 1105, 1205), // Normal: ~50us offset
-            (2000, 2100, 2105, 2205), // Normal: ~50us offset
-            (3000, 5000, 5005, 8005), // Extreme jitter: 2000us each way
-            (4000, 4100, 4105, 4205), // Normal: ~50us offset
-            (5000, 5100, 5105, 5205) // Normal: ~50us offset
+            (1_000, 1_100, 1_105, 1_205), // Normal: ~50us offset
+            (2_000, 2_100, 2_105, 2_205), // Normal: ~50us offset
+            (3_000, 5_000, 5_005, 8_005), // Extreme jitter: 2000us each way
+            (4_000, 4_100, 4_105, 4_205), // Normal: ~50us offset
+            (5_000, 5_100, 5_105, 5_205) // Normal: ~50us offset
         ]
 
         for (clientTransmitted, serverReceived, serverTransmitted, clientReceived) in samples {
@@ -103,13 +102,13 @@ struct ClockSyncIntegrationTests {
         #expect(offset < 200) // Should be close to normal samples, not outlier
     }
 
-    @Test("Clock drift detection over time")
-    func clockDrift() async {
+    @Test
+    func `Clock drift detection over time`() async {
         let sync = ClockSynchronizer()
 
         // Simulate clock drift: offset changes gradually over time
         for drift in stride(from: 0, through: 100, by: 10) {
-            let baseTime = Int64(drift * 1000)
+            let baseTime = Int64(drift * 1_000)
             let currentOffset = Int64(50 + drift) // Clock drifting apart
 
             let networkDelay: Int64 = 100

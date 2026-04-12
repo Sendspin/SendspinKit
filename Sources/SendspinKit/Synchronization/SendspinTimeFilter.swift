@@ -14,8 +14,7 @@ import Foundation
 /// - RTT floor of 1μs to prevent zero-variance NaN on localhost (from Rust port)
 ///
 /// Units: all timestamps in microseconds (Int64), offset/drift in microseconds (Double).
-struct SendspinTimeFilter: Sendable {
-
+struct SendspinTimeFilter {
     // MARK: - State
 
     /// Client timestamp (μs) of the last accepted measurement
@@ -82,12 +81,12 @@ struct SendspinTimeFilter: Sendable {
         minSamples: UInt8 = 100,
         driftSignificanceThreshold: Double = 2.0
     ) {
-        self.processVariance = processStdDev * processStdDev
-        self.driftProcessVariance = driftProcessStdDev * driftProcessStdDev
-        self.forgetVarianceFactor = forgetFactor * forgetFactor
-        self.adaptiveForgettingCutoff = adaptiveCutoff
-        self.minSamplesForForgetting = minSamples
-        self.driftSignificanceThresholdSquared = driftSignificanceThreshold * driftSignificanceThreshold
+        processVariance = processStdDev * processStdDev
+        driftProcessVariance = driftProcessStdDev * driftProcessStdDev
+        forgetVarianceFactor = forgetFactor * forgetFactor
+        adaptiveForgettingCutoff = adaptiveCutoff
+        minSamplesForForgetting = minSamples
+        driftSignificanceThresholdSquared = driftSignificanceThreshold * driftSignificanceThreshold
     }
 
     // MARK: - Update
@@ -168,8 +167,8 @@ struct SendspinTimeFilter: Sendable {
         let innovation = newOffsetCovariance + measurementVariance // S = H·P·Hᵀ + R
         let uncertainty = 1.0 / innovation
 
-        let offsetGain = newOffsetCovariance * uncertainty         // K[0]
-        let driftGain = newOffsetDriftCovariance * uncertainty      // K[1]
+        let offsetGain = newOffsetCovariance * uncertainty // K[0]
+        let driftGain = newOffsetDriftCovariance * uncertainty // K[1]
 
         offset = predictedOffset + offsetGain * residual
         drift += driftGain * residual

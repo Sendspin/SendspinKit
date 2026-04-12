@@ -3,15 +3,13 @@
 
 import Foundation
 import Network
+@testable import SendspinKit
 import Testing
 
-@testable import SendspinKit
-
-@Suite("Client Advertiser")
 struct ClientAdvertiserTests {
-    @Test("ClientAdvertiser starts and stops without error")
-    func startStop() async throws {
-        let advertiser = ClientAdvertiser(name: "Test Speaker", port: 18929, path: "/sendspin")
+    @Test
+    func `ClientAdvertiser starts and stops without error`() async throws {
+        let advertiser = ClientAdvertiser(name: "Test Speaker", port: 18_929, path: "/sendspin")
 
         try await advertiser.start()
         let isRunning = await advertiser.isRunning
@@ -22,8 +20,8 @@ struct ClientAdvertiserTests {
         #expect(!isStoppedAfter)
     }
 
-    @Test("ClientAdvertiser defaults match spec recommendations")
-    func defaults() async throws {
+    @Test
+    func `ClientAdvertiser defaults match spec recommendations`() async throws {
         // Spec recommends port 8928 and path /sendspin
         let advertiser = ClientAdvertiser()
         // Just verify it can be created with no arguments
@@ -31,9 +29,9 @@ struct ClientAdvertiserTests {
         await advertiser.stop()
     }
 
-    @Test("ClientAdvertiser ignores double start")
-    func doubleStart() async throws {
-        let advertiser = ClientAdvertiser(name: "Test", port: 18930)
+    @Test
+    func `ClientAdvertiser ignores double start`() async throws {
+        let advertiser = ClientAdvertiser(name: "Test", port: 18_930)
         try await advertiser.start()
         // Second start should be a no-op, not an error
         try await advertiser.start()
@@ -43,13 +41,12 @@ struct ClientAdvertiserTests {
     }
 }
 
-@Suite("Multi-Server Decision Logic")
 struct MultiServerDecisionTests {
     // Test the multi-server decision logic indirectly via ServerInfo and the spec rules.
     // Observable behavior is tested through ServerInfo.connectionReason tracking.
 
-    @Test("ServerInfo includes connectionReason")
-    func serverInfoConnectionReason() {
+    @Test
+    func `ServerInfo includes connectionReason`() {
         let info = ServerInfo(
             serverId: "server-1",
             name: "Test Server",
@@ -67,8 +64,8 @@ struct MultiServerDecisionTests {
         #expect(discovery.connectionReason == .discovery)
     }
 
-    @Test("Last played server persistence")
-    func lastPlayedServerPersistence() async {
+    @Test
+    func `Last played server persistence`() async {
         // Save
         let testId = "test-server-\(UUID().uuidString)"
         await MainActor.run {
@@ -87,8 +84,8 @@ struct MultiServerDecisionTests {
         }
     }
 
-    @Test("ConnectionReason encodes correctly on the wire")
-    func connectionReasonEncoding() throws {
+    @Test
+    func `ConnectionReason encodes correctly on the wire`() throws {
         let payload = ServerHelloPayload(
             serverId: "srv-1",
             name: "Test",
@@ -103,8 +100,8 @@ struct MultiServerDecisionTests {
         #expect(json["connection_reason"] as? String == "playback")
     }
 
-    @Test("ConnectionReason decodes discovery")
-    func connectionReasonDecodesDiscovery() throws {
+    @Test
+    func `ConnectionReason decodes discovery`() throws {
         let json = Data("""
         {
             "server_id": "srv-1",
@@ -120,8 +117,8 @@ struct MultiServerDecisionTests {
         #expect(payload.connectionReason == .discovery)
     }
 
-    @Test("GoodbyeReason another_server encodes correctly")
-    func goodbyeAnotherServer() throws {
+    @Test
+    func `GoodbyeReason another_server encodes correctly`() throws {
         let payload = GoodbyePayload(reason: .anotherServer)
         let encoder = JSONEncoder()
         let data = try encoder.encode(payload)
@@ -130,10 +127,9 @@ struct MultiServerDecisionTests {
     }
 }
 
-@Suite("NWWebSocketTransport")
 struct NWWebSocketTransportTests {
-    @Test("NWWebSocketTransport initializes with connection")
-    func initialization() async {
+    @Test
+    func `NWWebSocketTransport initializes with connection`() {
         // We can't easily create a real NWConnection in tests,
         // but we can verify the transport's streams are created
         // and it reports not connected without a real connection.
@@ -143,8 +139,8 @@ struct NWWebSocketTransportTests {
         let _: any SendspinTransport.Type = NWWebSocketTransport.self
     }
 
-    @Test("WebSocketTransport conforms to SendspinTransport")
-    func starscreamConformance() {
+    @Test
+    func `WebSocketTransport conforms to SendspinTransport`() {
         // Verify the existing transport conforms to the protocol
         let _: any SendspinTransport.Type = WebSocketTransport.self
     }

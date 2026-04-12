@@ -43,7 +43,7 @@ public actor ClientAdvertiser {
     ///   - name: Friendly name for this client (advertised in TXT records, optional)
     ///   - port: Port to listen on (default: 8928 per spec)
     ///   - path: WebSocket endpoint path (default: "/sendspin" per spec)
-    public init(name: String? = nil, port: UInt16 = 8928, path: String = "/sendspin") {
+    public init(name: String? = nil, port: UInt16 = 8_928, path: String = "/sendspin") {
         self.name = name
         self.port = port
         self.path = path
@@ -74,7 +74,7 @@ public actor ClientAdvertiser {
         // Advertise via Bonjour with TXT records
         let txtItems: [(key: String, value: String)] = {
             var items = [("path", path)]
-            if let name = name {
+            if let name {
                 items.append(("name", name))
             }
             return items

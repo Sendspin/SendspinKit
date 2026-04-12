@@ -18,7 +18,7 @@ public final class SendspinClient {
     private let volumeCapabilities: VolumeCapabilities
     private let volumeControl: VolumeControl
 
-    // State
+    /// State
     public private(set) var connectionState: ConnectionState = .disconnected
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
@@ -39,7 +39,7 @@ public final class SendspinClient {
     public private(set) var staticDelayMs: Int
     private var artworkStreamActive = false
 
-    // Accumulated state (merged from server deltas per spec)
+    /// Accumulated state (merged from server deltas per spec)
     /// Current track metadata, accumulated from `server/state` deltas.
     public private(set) var currentMetadata: TrackMetadata?
     /// Current group info, accumulated from `group/update` deltas.
@@ -83,12 +83,12 @@ public final class SendspinClient {
         self.roles = roles
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
-        self.staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
+        staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
 
         // Resolve volume mode into concrete capabilities and control implementation
         let resolved = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software)
-        self.volumeCapabilities = resolved.capabilities
-        self.volumeControl = resolved.control
+        volumeCapabilities = resolved.capabilities
+        volumeControl = resolved.control
 
         (events, eventsContinuation) = AsyncStream.makeStream()
 
@@ -201,7 +201,7 @@ public final class SendspinClient {
         self.clockSync = clockSync
         self.audioScheduler = audioScheduler
 
-        if roles.contains(.playerV1), let playerConfig = playerConfig {
+        if roles.contains(.playerV1), let playerConfig {
             let bufferManager = BufferManager(capacity: playerConfig.bufferCapacity)
             // PCM ring buffer holds decompressed audio for the AudioQueue pipeline.
             // Size it relative to the compressed buffer: compressed audio expands ~10-20x
@@ -246,7 +246,7 @@ public final class SendspinClient {
     @MainActor
     public func disconnect(reason: GoodbyeReason = .shutdown) async {
         // Send client/goodbye before tearing down (best-effort)
-        if let transport = transport {
+        if let transport {
             let goodbye = ClientGoodbyeMessage(
                 payload: GoodbyePayload(reason: reason)
             )
@@ -262,7 +262,7 @@ public final class SendspinClient {
         schedulerOutputTask = nil
         syncTelemetryTask = nil
 
-        if let audioPlayer = audioPlayer {
+        if let audioPlayer {
             await audioPlayer.stop()
         }
 
@@ -331,7 +331,7 @@ public final class SendspinClient {
     /// Build the client/hello payload (used by both connect paths)
     private func buildClientHelloPayload() -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
-        if roles.contains(.playerV1), let playerConfig = playerConfig {
+        if roles.contains(.playerV1), let playerConfig {
             playerV1Support = PlayerSupport(
                 supportedFormats: playerConfig.supportedFormats,
                 bufferCapacity: playerConfig.bufferCapacity,
@@ -340,7 +340,7 @@ public final class SendspinClient {
         }
 
         var artworkV1Support: ArtworkSupport?
-        if roles.contains(.artworkV1), let artworkConfig = artworkConfig {
+        if roles.contains(.artworkV1), let artworkConfig {
             artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
         }
 
@@ -358,7 +358,7 @@ public final class SendspinClient {
 
     @MainActor
     private func sendClientHello() async throws {
-        guard let transport = transport else {
+        guard let transport else {
             throw SendspinClientError.notConnected
         }
 
@@ -367,7 +367,7 @@ public final class SendspinClient {
     }
 
     private func sendClientState() async throws {
-        guard let transport = transport else {
+        guard let transport else {
             throw SendspinClientError.notConnected
         }
 
@@ -393,7 +393,7 @@ public final class SendspinClient {
     /// Perform initial clock synchronization (5 quick rounds)
     @MainActor
     private func performInitialSync() async throws {
-        guard let transport = transport, let clockSync = clockSync else {
+        guard let transport, let clockSync else {
             throw SendspinClientError.notConnected
         }
 
@@ -438,16 +438,16 @@ public final class SendspinClient {
     ) async {
         await withTaskGroup(of: Void.self) { group in
             group.addTask { [weak self] in
-                guard let self = self else { return }
+                guard let self else { return }
                 for await text in textStream {
-                    await self.handleTextMessage(text)
+                    await handleTextMessage(text)
                 }
             }
 
             group.addTask { [weak self] in
-                guard let self = self else { return }
+                guard let self else { return }
                 for await data in binaryStream {
-                    await self.handleBinaryMessage(data)
+                    await handleBinaryMessage(data)
                 }
             }
         }
@@ -455,10 +455,10 @@ public final class SendspinClient {
         // Both streams ended — connection was lost (not an explicit disconnect,
         // which cancels this task before streams end naturally)
         await MainActor.run { [weak self] in
-            guard let self = self else { return }
-            if self.connectionState != .disconnected {
-                self.connectionState = .disconnected
-                self.eventsContinuation.yield(.disconnected(reason: .connectionLost))
+            guard let self else { return }
+            if connectionState != .disconnected {
+                connectionState = .disconnected
+                eventsContinuation.yield(.disconnected(reason: .connectionLost))
             }
         }
     }
@@ -563,8 +563,8 @@ public final class SendspinClient {
 
                 let offset = await clockSync.statsOffset
                 let rtt = await clockSync.statsRtt
-                let clockOffsetMs = Double(offset) / 1000.0
-                let rttMs = Double(rtt) / 1000.0
+                let clockOffsetMs = Double(offset) / 1_000.0
+                let rttMs = Double(rtt) / 1_000.0
 
                 // Read sync error computed by the audio callback (precise, no actor jitter)
                 let tSnap = await audioPlayer.telemetrySnapshot
@@ -578,13 +578,13 @@ public final class SendspinClient {
                 let correcting = tSnap.correctionSchedule.isCorrecting
                 fputs(
                     "[TELEMETRY]"
-                    + " sched=\(framesScheduled) played=\(framesPlayed)"
-                    + " late=\(framesDroppedLate) buf=\(bufferFill)ms"
-                    + " offset=\(offsetFmt)ms rtt=\(rttFmt)ms"
-                    + " queue=\(currentStats.queueSize)"
-                    + " sync=\(syncErrorUs)us"
-                    + " correcting=\(correcting)"
-                    + " drop=\(dropN) insert=\(insertN)\n",
+                        + " sched=\(framesScheduled) played=\(framesPlayed)"
+                        + " late=\(framesDroppedLate) buf=\(bufferFill)ms"
+                        + " offset=\(offsetFmt)ms rtt=\(rttFmt)ms"
+                        + " queue=\(currentStats.queueSize)"
+                        + " sync=\(syncErrorUs)us"
+                        + " correcting=\(correcting)"
+                        + " drop=\(dropN) insert=\(insertN)\n",
                     stderr
                 )
 
@@ -680,7 +680,7 @@ public final class SendspinClient {
     }
 
     private func handleServerTime(_ message: ServerTimeMessage) async {
-        guard let clockSync = clockSync else { return }
+        guard let clockSync else { return }
 
         let now = getCurrentMicroseconds()
         await clockSync.processServerTime(
@@ -692,7 +692,7 @@ public final class SendspinClient {
 
         // Push updated time filter state to the audio callback for sync correction.
         // This is the only cross-boundary needed — the callback does all the math.
-        if let audioPlayer = audioPlayer {
+        if let audioPlayer {
             let snapshot = await clockSync.snapshot()
             await audioPlayer.updateTimeSnapshot(snapshot)
         }
@@ -713,7 +713,7 @@ public final class SendspinClient {
                 progress = PlaybackProgress(
                     trackProgressMs: p.trackProgress ?? 0,
                     trackDurationMs: p.trackDuration ?? 0,
-                    playbackSpeed: p.playbackSpeed ?? 1000,
+                    playbackSpeed: p.playbackSpeed ?? 1_000,
                     timestamp: metadata.timestamp ?? 0
                 )
             }
@@ -774,7 +774,7 @@ public final class SendspinClient {
             fputs("[CLIENT] stream/start: artwork only (no player payload)\n", stderr)
             return
         }
-        guard let audioPlayer = audioPlayer else {
+        guard let audioPlayer else {
             fputs("[CLIENT] stream/start: player payload received but audioPlayer is nil!\n", stderr)
             return
         }
@@ -861,7 +861,7 @@ public final class SendspinClient {
 
         if roles == nil || roles?.contains("player") == true {
             await audioScheduler?.clear()
-            if let audioPlayer = audioPlayer {
+            if let audioPlayer {
                 await audioPlayer.clearBuffer()
             }
             await bufferManager?.clear()
@@ -882,7 +882,7 @@ public final class SendspinClient {
             }
         case "set_static_delay":
             if let delayMs = playerCmd.staticDelayMs {
-                await setStaticDelay(max(0, min(5000, delayMs)))
+                await setStaticDelay(max(0, min(5_000, delayMs)))
             }
         default:
             break // Ignore unsupported commands per spec
@@ -894,7 +894,7 @@ public final class SendspinClient {
         let endedRoles = message.payload.roles
 
         if endedRoles == nil || endedRoles?.contains("player") == true {
-            if let audioPlayer = audioPlayer {
+            if let audioPlayer {
                 await audioScheduler?.stop()
                 await audioScheduler?.clear()
                 await audioPlayer.stop()
@@ -940,7 +940,7 @@ public final class SendspinClient {
     private func handleAudioChunk(_ message: BinaryMessage) async {
         // Don't process audio until clock sync is complete — timestamps would be wrong
         if !isClockSynced {
-            if let clockSync = clockSync, await clockSync.hasSynced {
+            if let clockSync, await clockSync.hasSynced {
                 isClockSynced = true
                 await audioScheduler?.clear()
             } else {
@@ -948,8 +948,8 @@ public final class SendspinClient {
             }
         }
 
-        guard let audioPlayer = audioPlayer,
-              let audioScheduler = audioScheduler
+        guard let audioPlayer,
+              let audioScheduler
         else { return }
 
         // Auto-start player if not already started (some servers don't send stream/start)
@@ -979,7 +979,7 @@ public final class SendspinClient {
         do {
             let pcmData = try await audioPlayer.decode(message.data)
             // Per spec: subtract static_delay_ms from server timestamp before scheduling
-            let adjustedTimestamp = message.timestamp - Int64(staticDelayMs) * 1000
+            let adjustedTimestamp = message.timestamp - Int64(staticDelayMs) * 1_000
             await audioScheduler.schedule(pcm: pcmData, serverTimestamp: adjustedTimestamp, generation: streamGeneration)
         } catch {
             // Decode/schedule failure — drop this chunk
@@ -998,7 +998,7 @@ public final class SendspinClient {
     /// Set playback volume (0-100, perceived loudness per spec)
     @MainActor
     public func setVolume(_ volume: Int) async {
-        guard let audioPlayer = audioPlayer else { return }
+        guard let audioPlayer else { return }
 
         let clamped = max(0, min(100, volume))
         currentVolume = clamped
@@ -1010,7 +1010,7 @@ public final class SendspinClient {
     /// Set mute state
     @MainActor
     public func setMute(_ muted: Bool) async {
-        guard let audioPlayer = audioPlayer else { return }
+        guard let audioPlayer else { return }
 
         currentMuted = muted
         await audioPlayer.setMute(muted)
@@ -1023,7 +1023,7 @@ public final class SendspinClient {
     /// Emits `.staticDelayChanged` so the host app can persist the new value.
     @MainActor
     public func setStaticDelay(_ delayMs: Int) async {
-        let clamped = max(0, min(5000, delayMs))
+        let clamped = max(0, min(5_000, delayMs))
         guard clamped != staticDelayMs else { return }
         staticDelayMs = clamped
         eventsContinuation.yield(.staticDelayChanged(clamped))
@@ -1054,7 +1054,7 @@ public final class SendspinClient {
         sampleRate: Int? = nil,
         bitDepth: Int? = nil
     ) async {
-        guard let transport = transport else { return }
+        guard let transport else { return }
 
         let request = PlayerFormatRequest(
             codec: codec?.rawValue,
@@ -1092,7 +1092,7 @@ public final class SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async {
-        guard let transport = transport else { return }
+        guard let transport else { return }
 
         let request = ArtworkFormatRequest(
             channel: channel,
@@ -1114,7 +1114,7 @@ public final class SendspinClient {
     /// the server's `supported_commands`.
     @MainActor
     public func sendCommand(_ command: String, volume: Int? = nil, mute: Bool? = nil) async {
-        guard let transport = transport else { return }
+        guard let transport else { return }
 
         let controller = ControllerCommand(command: command, volume: volume, mute: mute)
         let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
@@ -1122,33 +1122,67 @@ public final class SendspinClient {
     }
 
     /// Convenience: play
-    @MainActor public func play() async { await sendCommand("play") }
+    @MainActor public func play() async {
+        await sendCommand("play")
+    }
+
     /// Convenience: pause
-    @MainActor public func pause() async { await sendCommand("pause") }
+    @MainActor public func pause() async {
+        await sendCommand("pause")
+    }
+
     /// Convenience: stop playback
-    @MainActor public func stopPlayback() async { await sendCommand("stop") }
+    @MainActor public func stopPlayback() async {
+        await sendCommand("stop")
+    }
+
     /// Convenience: next track
-    @MainActor public func next() async { await sendCommand("next") }
+    @MainActor public func next() async {
+        await sendCommand("next")
+    }
+
     /// Convenience: previous track
-    @MainActor public func previous() async { await sendCommand("previous") }
+    @MainActor public func previous() async {
+        await sendCommand("previous")
+    }
+
     /// Convenience: set group volume (0-100)
     @MainActor public func setGroupVolume(_ volume: Int) async {
         await sendCommand("volume", volume: max(0, min(100, volume)))
     }
+
     /// Convenience: set group mute
     @MainActor public func setGroupMute(_ muted: Bool) async {
         await sendCommand("mute", mute: muted)
     }
+
     /// Convenience: repeat off
-    @MainActor public func repeatOff() async { await sendCommand("repeat_off") }
+    @MainActor public func repeatOff() async {
+        await sendCommand("repeat_off")
+    }
+
     /// Convenience: repeat one track
-    @MainActor public func repeatOne() async { await sendCommand("repeat_one") }
+    @MainActor public func repeatOne() async {
+        await sendCommand("repeat_one")
+    }
+
     /// Convenience: repeat all tracks
-    @MainActor public func repeatAll() async { await sendCommand("repeat_all") }
+    @MainActor public func repeatAll() async {
+        await sendCommand("repeat_all")
+    }
+
     /// Convenience: shuffle playback
-    @MainActor public func shuffle() async { await sendCommand("shuffle") }
+    @MainActor public func shuffle() async {
+        await sendCommand("shuffle")
+    }
+
     /// Convenience: unshuffle playback
-    @MainActor public func unshuffle() async { await sendCommand("unshuffle") }
+    @MainActor public func unshuffle() async {
+        await sendCommand("unshuffle")
+    }
+
     /// Convenience: switch to next group
-    @MainActor public func switchGroup() async { await sendCommand("switch") }
+    @MainActor public func switchGroup() async {
+        await sendCommand("switch")
+    }
 }

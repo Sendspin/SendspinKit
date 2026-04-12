@@ -1,6 +1,28 @@
-# SwiftFormat Configuration
-# Disable trailing commas to comply with SwiftLint
+# SwiftFormat Configuration for SendspinKit
+
+--swiftversion 6.3
+--exclude .build,Examples
+
+# Trailing commas: never (matches SwiftLint trailing_comma rule)
 --trailingcommas never
 
-# Disable wrapMultilineStatementBraces to match SwiftLint opening_brace rule
+# Disable rules that conflict with SwiftLint or our style
 --disable wrapMultilineStatementBraces
+
+# Self: remove redundant self (Swift default)
+--self remove
+
+# Number formatting: group large numbers with underscores
+--decimalgrouping 3
+--hexgrouping 4
+--binarygrouping 4
+--octalgrouping 4
+
+# Wrapping
+--maxwidth 150
+--wraparguments before-first
+--wrapparameters before-first
+--wrapcollections before-first
+
+# Imports: sort alphabetically
+--importgrouping alpha

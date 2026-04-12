@@ -2,12 +2,12 @@
 import XCTest
 
 final class AudioSchedulerTests: XCTestCase {
-    func testSchedulerAcceptsChunk() async throws {
+    func testSchedulerAcceptsChunk() async {
         // Mock clock sync that returns zero offset
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
-        let pcmData = Data(repeating: 0x00, count: 1024)
+        let pcmData = Data(repeating: 0x00, count: 1_024)
         let serverTimestamp: Int64 = 1_000_000 // 1 second in microseconds
 
         // Should not throw
@@ -17,12 +17,12 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(stats.received, 1)
     }
 
-    func testSchedulerConvertsTimestamps() async throws {
+    func testSchedulerConvertsTimestamps() async {
         // Clock sync with 1 second offset (server ahead)
         let clockSync = MockClockSynchronizer(offset: 1_000_000, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
-        let pcmData = Data(repeating: 0x00, count: 1024)
+        let pcmData = Data(repeating: 0x00, count: 1_024)
         let serverTimestamp: Int64 = 2_000_000 // 2 seconds server time
 
         await scheduler.schedule(pcm: pcmData, serverTimestamp: serverTimestamp)
@@ -36,7 +36,7 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(actualPlayTime.timeIntervalSince1970, expectedPlayTime.timeIntervalSince1970, accuracy: 0.001)
     }
 
-    func testSchedulerMaintainsSortedQueue() async throws {
+    func testSchedulerMaintainsSortedQueue() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
@@ -104,7 +104,7 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(stats.played, 0)
     }
 
-    func testSchedulerKeepsAllFutureChunks() async throws {
+    func testSchedulerKeepsAllFutureChunks() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
@@ -115,7 +115,7 @@ final class AudioSchedulerTests: XCTestCase {
         for chunkIndex in 0 ..< 10 {
             await scheduler.schedule(
                 pcm: Data([UInt8(chunkIndex)]),
-                serverTimestamp: futureMicros + Int64(chunkIndex * 1000)
+                serverTimestamp: futureMicros + Int64(chunkIndex * 1_000)
             )
         }
 
@@ -127,7 +127,7 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(stats.dropped, 0)
     }
 
-    func testSchedulerClearQueue() async throws {
+    func testSchedulerClearQueue() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
@@ -135,7 +135,7 @@ final class AudioSchedulerTests: XCTestCase {
         let futureMicros = Int64(future.timeIntervalSince1970 * 1_000_000)
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: futureMicros)
-        await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1000)
+        await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1_000)
 
         var chunks = await scheduler.getQueuedChunks()
         XCTAssertEqual(chunks.count, 2)
@@ -146,7 +146,7 @@ final class AudioSchedulerTests: XCTestCase {
         XCTAssertEqual(chunks.count, 0)
     }
 
-    func testSchedulerDetailedStatsReturnsQueueSize() async throws {
+    func testSchedulerDetailedStatsReturnsQueueSize() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
@@ -162,8 +162,8 @@ final class AudioSchedulerTests: XCTestCase {
         let futureMicros = Int64(future.timeIntervalSince1970 * 1_000_000)
 
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: futureMicros)
-        await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1000)
-        await scheduler.schedule(pcm: Data([0x03]), serverTimestamp: futureMicros + 2000)
+        await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1_000)
+        await scheduler.schedule(pcm: Data([0x03]), serverTimestamp: futureMicros + 2_000)
 
         // Queue should have 3 items
         detailedStats = await scheduler.getDetailedStats()
@@ -209,7 +209,7 @@ final class AudioSchedulerTests: XCTestCase {
     }
 }
 
-// Mock ClockSynchronizer for testing
+/// Mock ClockSynchronizer for testing
 actor MockClockSynchronizer: ClockSyncProtocol {
     private let offset: Int64
     private let drift: Double
@@ -220,6 +220,6 @@ actor MockClockSynchronizer: ClockSyncProtocol {
     }
 
     func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
-        return serverTime - offset
+        serverTime - offset
     }
 }

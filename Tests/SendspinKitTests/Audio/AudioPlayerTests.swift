@@ -2,11 +2,10 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("AudioPlayer Tests")
 struct AudioPlayerTests {
-    @Test("Initialize AudioPlayer with dependencies")
-    func initialization() async {
-        let bufferManager = BufferManager(capacity: 1024)
+    @Test
+    func `Initialize AudioPlayer with dependencies`() async {
+        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
 
         let player = AudioPlayer(
@@ -18,16 +17,16 @@ struct AudioPlayerTests {
         #expect(isPlaying == false)
     }
 
-    @Test("Configure audio format")
-    func formatSetup() async throws {
-        let bufferManager = BufferManager(capacity: 1024)
+    @Test
+    func `Configure audio format`() async throws {
+        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
 
         let format = AudioFormatSpec(
             codec: .pcm,
             channels: 2,
-            sampleRate: 48000,
+            sampleRate: 48_000,
             bitDepth: 16
         )
 
@@ -37,8 +36,8 @@ struct AudioPlayerTests {
         #expect(isPlaying == true)
     }
 
-    @Test("Play PCM data with timestamp")
-    func testPlayPCM() async throws {
+    @Test
+    func `Play PCM data with timestamp`() async throws {
         let bufferManager = BufferManager(capacity: 1_048_576)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
@@ -46,7 +45,7 @@ struct AudioPlayerTests {
         let format = AudioFormatSpec(
             codec: .pcm,
             channels: 2,
-            sampleRate: 48000,
+            sampleRate: 48_000,
             bitDepth: 16
         )
 
@@ -63,8 +62,8 @@ struct AudioPlayerTests {
         await player.stop()
     }
 
-    @Test("Verify old enqueue method removed")
-    func enqueueMethodRemoved() async throws {
+    @Test
+    func `Verify old enqueue method removed`() async throws {
         // This test documents that the old enqueue(chunk:) method has been removed
         // in favor of the AudioScheduler-based architecture.
         // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM(_:serverTimestamp:)
@@ -73,10 +72,10 @@ struct AudioPlayerTests {
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
-        let pcmData = Data(repeating: 0, count: 1024)
+        let pcmData = Data(repeating: 0, count: 1_024)
         try await player.playPCM(pcmData, serverTimestamp: 0)
 
         await player.stop()
@@ -84,14 +83,14 @@ struct AudioPlayerTests {
 
     // MARK: - Perceptual volume
 
-    @Test("Perceptual gain at boundaries")
-    func perceptualGainBoundaries() {
+    @Test
+    func `Perceptual gain at boundaries`() {
         #expect(AudioPlayer.perceptualGain(0.0) == 0.0)
         #expect(AudioPlayer.perceptualGain(1.0) == 1.0)
     }
 
-    @Test("Perceptual gain is non-linear")
-    func perceptualGainNonLinear() {
+    @Test
+    func `Perceptual gain is non-linear`() {
         let halfLinear = AudioPlayer.perceptualGain(0.5)
         // (0.5)^1.5 ≈ 0.354 — quieter than linear 0.5
         #expect(halfLinear < 0.5)
@@ -100,30 +99,30 @@ struct AudioPlayerTests {
         #expect(abs(halfLinear - 0.354) < 0.01)
     }
 
-    @Test("Perceptual gain is monotonically increasing")
-    func perceptualGainMonotonic() {
+    @Test
+    func `Perceptual gain is monotonically increasing`() {
         var previous: Float = -1.0
-        for i in 0...100 {
+        for i in 0 ... 100 {
             let gain = AudioPlayer.perceptualGain(Float(i) / 100.0)
             #expect(gain >= previous, "Gain should increase: \(i)% gave \(gain), previous was \(previous)")
             previous = gain
         }
     }
 
-    @Test("Decode method still available")
-    func decodeMethod() async throws {
+    @Test
+    func `Decode method still available`() async throws {
         let bufferManager = BufferManager(capacity: 1_048_576)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         // Decode should work for PCM passthrough
-        let inputData = Data(repeating: 0, count: 1024)
+        let inputData = Data(repeating: 0, count: 1_024)
         let decoded = try await player.decode(inputData)
 
-        #expect(decoded.count == 1024) // PCM passthrough should return same size
+        #expect(decoded.count == 1_024) // PCM passthrough should return same size
 
         await player.stop()
     }

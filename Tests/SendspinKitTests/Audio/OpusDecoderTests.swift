@@ -1,15 +1,15 @@
 // ABOUTME: Unit tests for Opus audio decoder
 // ABOUTME: Validates Opus frame decoding and int32 PCM output format
 
-import XCTest
 @testable import SendspinKit
+import XCTest
 
 final class OpusDecoderTests: XCTestCase {
     func testOpusDecoderCreation() throws {
         // Opus standard format: 48kHz stereo
         let decoder = try AudioDecoderFactory.create(
             codec: .opus,
-            sampleRate: 48000,
+            sampleRate: 48_000,
             channels: 2,
             bitDepth: 16,
             header: nil
@@ -19,7 +19,7 @@ final class OpusDecoderTests: XCTestCase {
     }
 
     func testOpusDecodeProducesInt32Output() throws {
-        let decoder = try OpusDecoder(sampleRate: 48000, channels: 2, bitDepth: 16)
+        let decoder = try OpusDecoder(sampleRate: 48_000, channels: 2, bitDepth: 16)
 
         // Create a minimal valid Opus packet (silence frame)
         // Opus TOC byte for 20ms SILK frame: 0x3C
@@ -34,7 +34,7 @@ final class OpusDecoderTests: XCTestCase {
 
     func testOpusDecoderSampleRates() throws {
         // Test all standard Opus sample rates
-        for sampleRate in [8000, 12000, 16000, 24000, 48000] {
+        for sampleRate in [8_000, 12_000, 16_000, 24_000, 48_000] {
             let decoder = try OpusDecoder(
                 sampleRate: sampleRate,
                 channels: 2,

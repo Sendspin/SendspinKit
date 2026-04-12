@@ -30,7 +30,7 @@ public actor NWWebSocketTransport: SendspinTransport {
     /// Start receiving messages from the connection.
     /// Must be called after init to begin pumping messages into the async streams.
     public func startReceiving() {
-        guard let connection = connection else { return }
+        guard let connection else { return }
         receiveNext(on: connection)
     }
 
@@ -38,8 +38,8 @@ public actor NWWebSocketTransport: SendspinTransport {
         connection?.state == .ready
     }
 
-    public func send<T: Codable & Sendable>(_ message: T) async throws {
-        guard let connection = connection else {
+    public func send(_ message: some Codable & Sendable) async throws {
+        guard let connection else {
             throw TransportError.notConnected
         }
 
@@ -63,7 +63,7 @@ public actor NWWebSocketTransport: SendspinTransport {
                 contentContext: context,
                 isComplete: true,
                 completion: .contentProcessed { error in
-                    if let error = error {
+                    if let error {
                         continuation.resume(throwing: error)
                     } else {
                         continuation.resume()
@@ -74,7 +74,7 @@ public actor NWWebSocketTransport: SendspinTransport {
     }
 
     public func sendBinary(_ data: Data) async throws {
-        guard let connection = connection else {
+        guard let connection else {
             throw TransportError.notConnected
         }
 
@@ -90,7 +90,7 @@ public actor NWWebSocketTransport: SendspinTransport {
                 contentContext: context,
                 isComplete: true,
                 completion: .contentProcessed { error in
-                    if let error = error {
+                    if let error {
                         continuation.resume(throwing: error)
                     } else {
                         continuation.resume()
@@ -112,9 +112,9 @@ public actor NWWebSocketTransport: SendspinTransport {
     /// Recursively receive WebSocket messages from the NWConnection.
     private nonisolated func receiveNext(on connection: NWConnection) {
         connection.receiveMessage { [weak self] content, context, _, error in
-            guard let self = self else { return }
+            guard let self else { return }
 
-            if let error = error {
+            if let error {
                 fputs("[NWTransport] receive error: \(error)\n", stderr)
                 Task { await self.handleDisconnect() }
                 return
@@ -148,7 +148,7 @@ public actor NWWebSocketTransport: SendspinTransport {
             }
 
             // Continue receiving
-            self.receiveNext(on: connection)
+            receiveNext(on: connection)
         }
     }
 

@@ -2,9 +2,9 @@
 // ABOUTME: Converts compressed audio to PCM for playback, handles 24-bit unpacking
 
 @preconcurrency import AVFoundation
+import FLAC
 import Foundation
 import Opus
-import FLAC
 
 /// Audio decoder protocol
 protocol AudioDecoder {
@@ -72,7 +72,7 @@ class OpusDecoder: AudioDecoder {
     private let decoder: Opus.Decoder
     private let channels: Int
 
-    init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
+    init(sampleRate: Int, channels: Int, bitDepth _: Int) throws {
         self.channels = channels
 
         // Create AVAudioFormat for Opus decoder
@@ -88,7 +88,7 @@ class OpusDecoder: AudioDecoder {
 
         // Create opus decoder (validates sample rate internally)
         do {
-            self.decoder = try Opus.Decoder(format: format)
+            decoder = try Opus.Decoder(format: format)
         } catch {
             throw AudioDecoderError.formatCreationFailed("Opus decoder: \(error.localizedDescription)")
         }
@@ -118,15 +118,15 @@ class OpusDecoder: AudioDecoder {
         if channels == 1 {
             // Mono: direct conversion
             let floatData = floatChannelData[0]
-            for i in 0..<frameLength {
+            for i in 0 ..< frameLength {
                 let floatSample = floatData[i]
                 int32Samples[i] = Int32(floatSample * Float(Int32.max))
             }
         } else {
             // Stereo or multi-channel: interleave
-            for channel in 0..<channels {
+            for channel in 0 ..< channels {
                 let floatData = floatChannelData[channel]
-                for frame in 0..<frameLength {
+                for frame in 0 ..< frameLength {
                     let floatSample = floatData[frame]
                     let sampleIndex = frame * channels + channel
                     int32Samples[sampleIndex] = Int32(floatSample * Float(Int32.max))
@@ -145,7 +145,7 @@ class FLACDecoder: AudioDecoder {
     private let sampleRate: Int
     private let channels: Int
     private let bitDepth: Int
-    private var pendingData: Data = Data()
+    private var pendingData: Data = .init()
     private var decodedSamples: [Int32] = []
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
@@ -159,7 +159,7 @@ class FLACDecoder: AudioDecoder {
         guard let flacDecoder = FLAC__stream_decoder_new() else {
             throw AudioDecoderError.formatCreationFailed("Failed to create FLAC stream decoder")
         }
-        self.decoder = flacDecoder
+        decoder = flacDecoder
 
         // Initialize decoder with callbacks
         // We need to use Unmanaged to pass self to C callbacks
@@ -168,27 +168,27 @@ class FLACDecoder: AudioDecoder {
         let initStatus = FLAC__stream_decoder_init_stream(
             decoder,
             { _, buffer, bytes, clientData -> FLAC__StreamDecoderReadStatus in
-                guard let clientData = clientData else {
+                guard let clientData else {
                     return FLAC__STREAM_DECODER_READ_STATUS_ABORT
                 }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 return selfRef.readCallback(buffer: buffer, bytes: bytes)
             },
-            nil,  // seek callback (optional)
-            nil,  // tell callback (optional)
-            nil,  // length callback (optional)
-            nil,  // eof callback (optional)
+            nil, // seek callback (optional)
+            nil, // tell callback (optional)
+            nil, // length callback (optional)
+            nil, // eof callback (optional)
             { _, frame, buffer, clientData -> FLAC__StreamDecoderWriteStatus in
-                guard let clientData = clientData else {
+                guard let clientData else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 return selfRef.writeCallback(frame: frame, buffer: buffer)
             },
-            nil,  // metadata callback (optional)
+            nil, // metadata callback (optional)
             { _, status, clientData in
                 // Error callback - store error for later checking
-                guard let clientData = clientData else { return }
+                guard let clientData else { return }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 selfRef.lastError = status
             },
@@ -202,7 +202,7 @@ class FLACDecoder: AudioDecoder {
 
         // Prepend the codec header (fLaC magic + STREAMINFO) so the decoder
         // can parse the stream. Without this, libFLAC can't decode any frames.
-        if let header = header {
+        if let header {
             pendingData.append(header)
         }
     }
@@ -214,7 +214,7 @@ class FLACDecoder: AudioDecoder {
         lastError = nil
 
         // Process single frame
-        guard let decoder = decoder else {
+        guard let decoder else {
             throw AudioDecoderError.conversionFailed("FLAC decoder not initialized")
         }
 
@@ -243,7 +243,7 @@ class FLACDecoder: AudioDecoder {
             }
 
             // If readOffset didn't advance, we need more data (for streaming use case)
-            if readOffset == startOffset && iterations > 1 {
+            if readOffset == startOffset, iterations > 1 {
                 break
             }
 
@@ -263,7 +263,7 @@ class FLACDecoder: AudioDecoder {
         let bytesConsumed = readOffset - startOffset
         if bytesConsumed > 0 {
             pendingData.removeFirst(bytesConsumed)
-            readOffset = startOffset  // Adjust readOffset to account for removed bytes
+            readOffset = startOffset // Adjust readOffset to account for removed bytes
         }
 
         // Return decoded samples as Data
@@ -271,7 +271,7 @@ class FLACDecoder: AudioDecoder {
     }
 
     private func readCallback(buffer: UnsafeMutablePointer<FLAC__byte>?, bytes: UnsafeMutablePointer<Int>?) -> FLAC__StreamDecoderReadStatus {
-        guard let buffer = buffer, let bytes = bytes else {
+        guard let buffer, let bytes else {
             return FLAC__STREAM_DECODER_READ_STATUS_ABORT
         }
 
@@ -298,7 +298,7 @@ class FLACDecoder: AudioDecoder {
         frame: UnsafePointer<FLAC__Frame>?,
         buffer: UnsafePointer<UnsafePointer<FLAC__int32>?>?
     ) -> FLAC__StreamDecoderWriteStatus {
-        guard let frame = frame, let buffer = buffer else {
+        guard let frame, let buffer else {
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
         }
 
@@ -312,8 +312,8 @@ class FLACDecoder: AudioDecoder {
 
         // FLAC outputs int32 samples per channel
         // Interleave channels if stereo
-        for i in 0..<blocksize {
-            for channel in 0..<channels {
+        for i in 0 ..< blocksize {
+            for channel in 0 ..< channels {
                 guard let channelBuffer = buffer[channel] else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
@@ -331,7 +331,7 @@ class FLACDecoder: AudioDecoder {
     }
 
     deinit {
-        if let decoder = decoder {
+        if let decoder {
             FLAC__stream_decoder_finish(decoder)
             FLAC__stream_decoder_delete(decoder)
         }
@@ -349,11 +349,11 @@ enum AudioDecoderFactory {
     ) throws -> AudioDecoder {
         switch codec {
         case .pcm:
-            return PCMDecoder(bitDepth: bitDepth, channels: channels)
+            PCMDecoder(bitDepth: bitDepth, channels: channels)
         case .opus:
-            return try OpusDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
+            try OpusDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
         case .flac:
-            return try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth, header: header)
+            try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth, header: header)
         }
     }
 }

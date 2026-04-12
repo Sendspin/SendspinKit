@@ -1,17 +1,16 @@
 // ABOUTME: Unit tests for FLAC audio decoder
 // ABOUTME: Validates FLAC frame decoding and int32 PCM output format
 
-import Testing
 @testable import SendspinKit
+import Testing
 
-@Suite("FLAC Decoder Tests")
 struct FLACDecoderTests {
-    @Test("Create FLAC decoder with standard format")
-    func decoderCreation() throws {
+    @Test
+    func `Create FLAC decoder with standard format`() throws {
         // Standard FLAC format: 44.1kHz stereo 16-bit
         let decoder = try AudioDecoderFactory.create(
             codec: .flac,
-            sampleRate: 44100,
+            sampleRate: 44_100,
             channels: 2,
             bitDepth: 16,
             header: nil
@@ -20,11 +19,11 @@ struct FLACDecoderTests {
         #expect(decoder != nil)
     }
 
-    @Test("Create hi-res FLAC decoder")
-    func hiResDecoder() throws {
+    @Test
+    func `Create hi-res FLAC decoder`() throws {
         // Hi-res FLAC: 96kHz stereo 24-bit
         let decoder = try FLACDecoder(
-            sampleRate: 96000,
+            sampleRate: 96_000,
             channels: 2,
             bitDepth: 24
         )
@@ -32,10 +31,10 @@ struct FLACDecoderTests {
         #expect(decoder != nil)
     }
 
-    @Test("FLAC decoder validates creation")
-    func decoderValidation() throws {
+    @Test
+    func `FLAC decoder validates creation`() throws {
         let decoder = try FLACDecoder(
-            sampleRate: 44100,
+            sampleRate: 44_100,
             channels: 2,
             bitDepth: 16
         )

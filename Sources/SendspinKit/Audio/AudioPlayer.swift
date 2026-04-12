@@ -40,17 +40,17 @@ actor AudioPlayer {
 
     private var _isPlaying: Bool = false
 
-    // Ring buffer consumed by AudioQueue callback.
-    // All fields accessed under pcmBufferLock from the audio thread.
+    /// Ring buffer consumed by AudioQueue callback.
+    /// All fields accessed under pcmBufferLock from the audio thread.
     private nonisolated let pcmBufferLock = NSLock()
-    // Ring buffer sized relative to the compressed buffer capacity.
-    // Decompressed PCM is ~10-20x larger than compressed audio, but we don't
-    // need to buffer all of it — just enough for the AudioQueue pipeline (~2-3s).
-    // Default 512KB ≈ 2.7s at 48kHz/stereo/16-bit.
+    /// Ring buffer sized relative to the compressed buffer capacity.
+    /// Decompressed PCM is ~10-20x larger than compressed audio, but we don't
+    /// need to buffer all of it — just enough for the AudioQueue pipeline (~2-3s).
+    /// Default 512KB ≈ 2.7s at 48kHz/stereo/16-bit.
     private nonisolated(unsafe) var pcmRingBuffer: PCMRingBuffer
-    // Frame size in bytes (channels × bytesPerSample after decoding)
+    /// Frame size in bytes (channels × bytesPerSample after decoding)
     private nonisolated(unsafe) var frameSize: Int = 0
-    // Last output frame for insert (sample-hold repeat) — fixed allocation, no Data on audio thread
+    /// Last output frame for insert (sample-hold repeat) — fixed allocation, no Data on audio thread
     private nonisolated(unsafe) var lastFrameStorage: UnsafeMutableRawBufferPointer =
         .allocate(byteCount: 32, alignment: 8) // max: 8ch × 4bytes = 32
     private nonisolated(unsafe) var lastFrameValid: Bool = false
@@ -64,18 +64,18 @@ actor AudioPlayer {
     // The time filter snapshot is pushed from the clock sync path; the planner lives here.
     private nonisolated(unsafe) var timeSnapshot: TimeFilterSnapshot = .invalid
     private nonisolated(unsafe) var syncPlanner = CorrectionPlanner(
-        deadbandMicroseconds: 1_500,   // Tight thresholds — measurement is now precise
+        deadbandMicroseconds: 1_500, // Tight thresholds — measurement is now precise
         engageMicroseconds: 3_000,
         reanchorThresholdMicroseconds: 500_000
     )
-    // Latest sync error in µs, written by audio callback, read by telemetry
+    /// Latest sync error in µs, written by audio callback, read by telemetry
     private nonisolated(unsafe) var lastSyncErrorUs: Int64 = 0
     // Whether a reanchor was requested by the callback (handled by the actor method)
     private nonisolated(unsafe) var pendingReanchorServerTime: Int64 = 0
     private nonisolated(unsafe) var reanchorRequested: Bool = false
-    // Grace period: suppress sync correction after AudioQueue rebuild to avoid
-    // audible pitch shifts from transient sync error. Frames-based countdown
-    // (decremented in the callback). At 48kHz, 48000 frames = 1 second.
+    /// Grace period: suppress sync correction after AudioQueue rebuild to avoid
+    /// audible pitch shifts from transient sync error. Frames-based countdown
+    /// (decremented in the callback). At 48kHz, 48000 frames = 1 second.
     private nonisolated(unsafe) var correctionGraceFrames: Int64 = 0
 
     // Playback cursor: tracks server-time position of what's being output.
@@ -83,7 +83,7 @@ actor AudioPlayer {
     private nonisolated(unsafe) var cursorMicroseconds: Int64 = 0
     private nonisolated(unsafe) var cursorRemainder: Int64 = 0 // sub-microsecond accumulation
     private nonisolated(unsafe) var sampleRate: Int = 0
-    // Total frames consumed (for diagnostics)
+    /// Total frames consumed (for diagnostics)
     private nonisolated(unsafe) var framesConsumed: Int64 = 0
 
     private var currentVolume: Float = 1.0
@@ -95,9 +95,17 @@ actor AudioPlayer {
     private nonisolated(unsafe) var processCallback: AudioProcessCallback?
     private nonisolated(unsafe) var processCallbackFormat: AudioFormatSpec?
 
-    var isPlaying: Bool { _isPlaying }
-    var volume: Float { currentVolume }
-    var muted: Bool { isMuted }
+    var isPlaying: Bool {
+        _isPlaying
+    }
+
+    var volume: Float {
+        currentVolume
+    }
+
+    var muted: Bool {
+        isMuted
+    }
 
     /// - Parameter pcmBufferCapacity: Size of the PCM ring buffer in bytes.
     ///   Defaults to 524_288 (512KB ≈ 2.7s at 48kHz/stereo/16-bit).
@@ -114,7 +122,7 @@ actor AudioPlayer {
     ) {
         self.bufferManager = bufferManager
         self.clockSync = clockSync
-        self.pcmRingBuffer = PCMRingBuffer(capacity: pcmBufferCapacity)
+        pcmRingBuffer = PCMRingBuffer(capacity: pcmBufferCapacity)
         self.volumeControl = volumeControl
         self.processCallback = processCallback
     }
@@ -166,7 +174,7 @@ actor AudioPlayer {
             &queue
         )
 
-        guard status == noErr, let queue = queue else {
+        guard status == noErr, let queue else {
             throw AudioPlayerError.queueCreationFailed
         }
 
@@ -213,10 +221,10 @@ actor AudioPlayer {
         // each callback, so we get ~85ms feedback loops — sufficient for ±1-3ms
         // steady-state accuracy. Smaller buffers cause instability due to the
         // correction schedule updating too frequently relative to its effect.
-        let bufferSize: UInt32 = 16384
+        let bufferSize: UInt32 = 16_384
         for _ in 0 ..< 3 {
             var buffer: AudioQueueBufferRef?
-            if AudioQueueAllocateBuffer(queue, bufferSize, &buffer) == noErr, let buffer = buffer {
+            if AudioQueueAllocateBuffer(queue, bufferSize, &buffer) == noErr, let buffer {
                 fillBuffer(queue: queue, buffer: buffer)
             }
         }
@@ -268,7 +276,7 @@ actor AudioPlayer {
 
     /// Decode compressed audio data to PCM
     func decode(_ data: Data) throws -> Data {
-        guard let decoder = decoder else {
+        guard let decoder else {
             throw AudioPlayerError.notStarted
         }
         return try decoder.decode(data)
@@ -323,7 +331,7 @@ actor AudioPlayer {
     }
 
     /// Telemetry snapshot — read by the external telemetry loop for logging.
-    struct TelemetrySnapshot: Sendable {
+    struct TelemetrySnapshot {
         let cursorMicroseconds: Int64
         let sampleRate: Int
         let syncErrorUs: Int64
@@ -395,11 +403,10 @@ actor AudioPlayer {
                 correctionGraceFrames -= Int64(framesInBuffer)
             }
 
-            let newSchedule: CorrectionSchedule
-            if correctionGraceFrames > 0 {
-                newSchedule = CorrectionSchedule() // no correction during grace period
+            let newSchedule: CorrectionSchedule = if correctionGraceFrames > 0 {
+                CorrectionSchedule() // no correction during grace period
             } else {
-                newSchedule = syncPlanner.plan(
+                syncPlanner.plan(
                     errorMicroseconds: syncErrorUs,
                     sampleRate: UInt32(sr),
                     currentlyCorrecting: correctionSchedule.isCorrecting
@@ -531,9 +538,9 @@ actor AudioPlayer {
     }
 }
 
-// AudioQueue callback (C function)
+/// AudioQueue callback (C function)
 private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, buffer in
-    guard let userData = userData else { return }
+    guard let userData else { return }
     let player = Unmanaged<AudioPlayer>.fromOpaque(userData).takeUnretainedValue()
     player.fillBuffer(queue: queue, buffer: buffer)
 }

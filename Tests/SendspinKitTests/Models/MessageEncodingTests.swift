@@ -2,10 +2,9 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("Message Encoding Tests")
 struct MessageEncodingTests {
-    @Test("ClientHello encodes with versioned roles")
-    func clientHelloEncoding() throws {
+    @Test
+    func `ClientHello encodes with versioned roles`() throws {
         let payload = ClientHelloPayload(
             clientId: "test-client",
             name: "Test Client",
@@ -14,9 +13,9 @@ struct MessageEncodingTests {
             supportedRoles: [.playerV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
-                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
                 ],
-                bufferCapacity: 1024,
+                bufferCapacity: 1_024,
                 supportedCommands: [.volume, .mute]
             ),
             artworkV1Support: nil,
@@ -36,8 +35,8 @@ struct MessageEncodingTests {
         #expect(json.contains("\"player@v1_support\""))
     }
 
-    @Test("ServerHello decodes with active_roles and connection_reason")
-    func serverHelloDecoding() throws {
+    @Test
+    func `ServerHello decodes with active_roles and connection_reason`() throws {
         let json = """
         {
             "type": "server/hello",
@@ -65,8 +64,8 @@ struct MessageEncodingTests {
         #expect(message.payload.connectionReason == .playback)
     }
 
-    @Test("ClientState encodes with client state and player state object")
-    func clientStateEncoding() throws {
+    @Test
+    func `ClientState encodes with client state and player state object`() throws {
         let playerState = PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
         let payload = ClientStatePayload(state: .synchronized, player: playerState)
         let message = ClientStateMessage(payload: payload)
@@ -84,8 +83,8 @@ struct MessageEncodingTests {
 
     // MARK: - client/goodbye
 
-    @Test("ClientGoodbye encodes with shutdown reason")
-    func clientGoodbyeShutdown() throws {
+    @Test
+    func `ClientGoodbye encodes with shutdown reason`() throws {
         let message = ClientGoodbyeMessage(payload: GoodbyePayload(reason: .shutdown))
 
         let encoder = JSONEncoder()
@@ -95,8 +94,8 @@ struct MessageEncodingTests {
         #expect(json.contains("\"reason\":\"shutdown\""))
     }
 
-    @Test("ClientGoodbye encodes snake_case reasons correctly")
-    func clientGoodbyeReasons() throws {
+    @Test
+    func `ClientGoodbye encodes snake_case reasons correctly`() throws {
         let encoder = JSONEncoder()
 
         for (reason, expected) in [
@@ -112,8 +111,8 @@ struct MessageEncodingTests {
         }
     }
 
-    @Test("ClientGoodbye decodes from JSON")
-    func clientGoodbyeDecoding() throws {
+    @Test
+    func `ClientGoodbye decodes from JSON`() throws {
         let json = """
         {"type": "client/goodbye", "payload": {"reason": "another_server"}}
         """
@@ -125,8 +124,8 @@ struct MessageEncodingTests {
 
     // MARK: - stream/clear
 
-    @Test("StreamClear decodes with roles")
-    func streamClearWithRoles() throws {
+    @Test
+    func `StreamClear decodes with roles`() throws {
         let json = """
         {"type": "stream/clear", "payload": {"roles": ["player", "visualizer"]}}
         """
@@ -140,8 +139,8 @@ struct MessageEncodingTests {
         #expect(roles.contains("visualizer"))
     }
 
-    @Test("StreamClear decodes without roles (clears all)")
-    func streamClearWithoutRoles() throws {
+    @Test
+    func `StreamClear decodes without roles (clears all)`() throws {
         let json = """
         {"type": "stream/clear", "payload": {}}
         """
@@ -153,8 +152,8 @@ struct MessageEncodingTests {
 
     // MARK: - server/command
 
-    @Test("ServerCommand decodes volume command")
-    func serverCommandVolume() throws {
+    @Test
+    func `ServerCommand decodes volume command`() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "volume", "volume": 75}}}
         """
@@ -167,8 +166,8 @@ struct MessageEncodingTests {
         #expect(player.mute == nil)
     }
 
-    @Test("ServerCommand decodes mute command")
-    func serverCommandMute() throws {
+    @Test
+    func `ServerCommand decodes mute command`() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "mute", "mute": true}}}
         """
@@ -180,8 +179,8 @@ struct MessageEncodingTests {
         #expect(player.mute == true)
     }
 
-    @Test("ServerCommand decodes set_static_delay command")
-    func serverCommandStaticDelay() throws {
+    @Test
+    func `ServerCommand decodes set_static_delay command`() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "set_static_delay", "static_delay_ms": 250}}}
         """
@@ -195,8 +194,8 @@ struct MessageEncodingTests {
 
     // MARK: - server/state
 
-    @Test("ServerState decodes metadata with null fields as .null")
-    func serverStateMetadataExplicitNull() throws {
+    @Test
+    func `ServerState decodes metadata with null fields as .null`() throws {
         // When the server sends explicit null, it means "clear this field"
         let json = """
         {
@@ -215,16 +214,16 @@ struct MessageEncodingTests {
         let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
 
         let metadata = try #require(message.payload.metadata)
-        #expect(metadata.timestamp == 12345678)
+        #expect(metadata.timestamp == 12_345_678)
         // Explicit null should decode as .null (clear), not .absent (keep previous)
         #expect(metadata.title.merge(previous: "old") == nil)
         #expect(metadata.artist.merge(previous: "old") == nil)
         #expect(metadata.album.merge(previous: "old") == nil)
-        #expect(metadata.year.merge(previous: 2024) == nil)
+        #expect(metadata.year.merge(previous: 2_024) == nil)
     }
 
-    @Test("ServerState decodes metadata with absent fields as .absent")
-    func serverStateMetadataAbsentFields() throws {
+    @Test
+    func `ServerState decodes metadata with absent fields as .absent`() throws {
         // When a field is absent from JSON, it means "no change" — keep previous value
         let json = """
         {"type": "server/state", "payload": {"metadata": {"timestamp": 12345678, "title": "New Song"}}}
@@ -233,13 +232,13 @@ struct MessageEncodingTests {
         let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
 
         let metadata = try #require(message.payload.metadata)
-        #expect(metadata.timestamp == 12345678)
+        #expect(metadata.timestamp == 12_345_678)
         // Present field should have the value
         #expect(metadata.title.merge(previous: "old") == "New Song")
         // Absent fields should preserve previous values
         #expect(metadata.artist.merge(previous: "Previous Artist") == "Previous Artist")
         #expect(metadata.album.merge(previous: "Previous Album") == "Previous Album")
-        #expect(metadata.year.merge(previous: 2024) == 2024)
+        #expect(metadata.year.merge(previous: 2_024) == 2_024)
         // Absent with no previous should remain nil
         #expect(metadata.shuffle.merge(previous: nil) == nil)
     }

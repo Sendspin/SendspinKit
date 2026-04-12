@@ -22,11 +22,11 @@ public struct VersionedRole: Codable, Sendable, Hashable, ExpressibleByStringLit
     public init(stringLiteral value: String) {
         let components = value.split(separator: "@", maxSplits: 1)
         if components.count == 2 {
-            self.role = String(components[0])
-            self.version = String(components[1])
+            role = String(components[0])
+            version = String(components[1])
         } else {
-            self.role = value
-            self.version = "v1"
+            role = value
+            version = "v1"
         }
     }
 

@@ -123,7 +123,7 @@ public actor ServerDiscovery {
 
         // Extract hostname and port from connection
         var hostname = "localhost"
-        var port = 8927 // Default Sendspin port
+        var port = 8_927 // Default Sendspin port
 
         if case let .hostPort(host, portValue) = connection.currentPath?.remoteEndpoint {
             switch host {

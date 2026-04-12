@@ -10,8 +10,8 @@ import Foundation
 /// - 16-23: Visualizer role
 /// - 24-191: Reserved for future roles
 /// - 192-255: Application-specific roles
-enum BinaryMessageType: UInt8, Sendable {
-    // Player role (4-7)
+enum BinaryMessageType: UInt8 {
+    /// Player role (4-7)
     case audioChunk = 4
 
     // Artwork role (8-11) - channels 0-3
@@ -20,12 +20,12 @@ enum BinaryMessageType: UInt8, Sendable {
     case artworkChannel2 = 10
     case artworkChannel3 = 11
 
-    // Visualizer role (16-23)
+    /// Visualizer role (16-23)
     case visualizerData = 16
 }
 
 /// Binary message from server
-struct BinaryMessage: Sendable {
+struct BinaryMessage {
     /// Message type
     let type: BinaryMessageType
     /// Server timestamp in microseconds when this should be played/displayed

@@ -5,10 +5,9 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("Message Round Trip Integration Tests")
 struct MessageRoundTripTests {
-    @Test("ClientHello round trip maintains all data")
-    func clientHelloRoundTrip() throws {
+    @Test
+    func `ClientHello round trip maintains all data`() throws {
         // Create complete ClientHello with all fields populated
         let originalPayload = ClientHelloPayload(
             clientId: "test-client-123",
@@ -22,9 +21,9 @@ struct MessageRoundTripTests {
             supportedRoles: [.playerV1, .controllerV1, .metadataV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
-                    AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
-                    AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44100, bitDepth: 24),
-                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                    AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                    AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
                 ],
                 bufferCapacity: 1_048_576,
                 supportedCommands: [.volume, .mute]
@@ -66,19 +65,19 @@ struct MessageRoundTripTests {
         let firstFormat = playerSupport.supportedFormats[0]
         #expect(firstFormat.codec == .opus)
         #expect(firstFormat.channels == 2)
-        #expect(firstFormat.sampleRate == 48000)
+        #expect(firstFormat.sampleRate == 48_000)
         #expect(firstFormat.bitDepth == 16)
     }
 
-    @Test("StreamStart round trip with codec header")
-    func streamStartRoundTrip() throws {
+    @Test
+    func `StreamStart round trip with codec header`() throws {
         let codecHeaderData = Data([0x66, 0x4C, 0x61, 0x43]) // "fLaC" FLAC signature
         let codecHeaderB64 = codecHeaderData.base64EncodedString()
 
         let originalPayload = StreamStartPayload(
             player: StreamStartPlayer(
                 codec: "flac",
-                sampleRate: 44100,
+                sampleRate: 44_100,
                 channels: 2,
                 bitDepth: 24,
                 codecHeader: codecHeaderB64
@@ -100,17 +99,17 @@ struct MessageRoundTripTests {
         // Verify
         let player = try #require(decodedMessage.payload.player)
         #expect(player.codec == "flac")
-        #expect(player.sampleRate == 44100)
+        #expect(player.sampleRate == 44_100)
         #expect(player.channels == 2)
         #expect(player.bitDepth == 24)
         #expect(player.codecHeader == codecHeaderB64)
 
         // Verify codec header can be decoded back
-        let decodedHeader = Data(base64Encoded: player.codecHeader!)
+        let decodedHeader = try Data(base64Encoded: #require(player.codecHeader))
         #expect(decodedHeader == codecHeaderData)
     }
 
-    // Helper function to verify ClientHello message encoding/decoding
+    /// Helper function to verify ClientHello message encoding/decoding
     private func verifyClientHello(encoder: JSONEncoder, decoder: JSONDecoder) throws {
         let helloMessage = ClientHelloMessage(
             payload: ClientHelloPayload(
@@ -121,7 +120,7 @@ struct MessageRoundTripTests {
                 supportedRoles: [.playerV1],
                 playerV1Support: PlayerSupport(
                     supportedFormats: [
-                        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
                     ],
                     bufferCapacity: 512_000,
                     supportedCommands: []
@@ -136,7 +135,7 @@ struct MessageRoundTripTests {
         #expect(helloDecoded.payload.clientId == "client-1")
     }
 
-    // Helper function to verify ServerHello message decoding
+    /// Helper function to verify ServerHello message decoding
     private func verifyServerHello(decoder: JSONDecoder) throws {
         let serverHelloData = Data("""
         {
@@ -155,7 +154,7 @@ struct MessageRoundTripTests {
         #expect(serverHello.payload.serverId == "server-1")
     }
 
-    // Helper function to verify ClientTime message encoding/decoding
+    /// Helper function to verify ClientTime message encoding/decoding
     private func verifyClientTime(encoder: JSONEncoder, decoder: JSONDecoder) throws {
         let timeMessage = ClientTimeMessage(
             payload: ClientTimePayload(clientTransmitted: 123_456_789)
@@ -166,7 +165,7 @@ struct MessageRoundTripTests {
         #expect(timeDecoded.payload.clientTransmitted == 123_456_789)
     }
 
-    // Helper function to verify StreamStart message decoding
+    /// Helper function to verify StreamStart message decoding
     private func verifyStreamStart(decoder: JSONDecoder) throws {
         let streamData = Data("""
         {
@@ -186,8 +185,8 @@ struct MessageRoundTripTests {
         #expect(streamStart.payload.player?.codec == "opus")
     }
 
-    @Test("Multiple message types in sequence")
-    func messageSequence() throws {
+    @Test
+    func `Multiple message types in sequence`() throws {
         // ClientHello now uses custom CodingKeys, no strategy needed
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
@@ -201,8 +200,8 @@ struct MessageRoundTripTests {
         // All messages decoded successfully in sequence
     }
 
-    @Test("GroupUpdate with null fields")
-    func groupUpdateWithNulls() throws {
+    @Test
+    func `GroupUpdate with null fields`() throws {
         // Test partial updates with null fields (common in delta updates)
         let jsonWithNulls = Data("""
         {

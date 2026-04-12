@@ -2,8 +2,8 @@
 // ABOUTME: Verifies: binary frame bytes → BinaryMessage → PCM decode → correct output
 
 import Foundation
-import Testing
 @testable import SendspinKit
+import Testing
 
 /// Generates deterministic test audio signals for verification.
 enum TestSignal {
@@ -14,17 +14,17 @@ enum TestSignal {
         durationMs: Int,
         frequencyHz: Double = 440.0
     ) -> [UInt8] {
-        let frameCount = sampleRate * durationMs / 1000
+        let frameCount = sampleRate * durationMs / 1_000
         var bytes = [UInt8]()
         bytes.reserveCapacity(frameCount * 2 * 2) // stereo, 2 bytes per sample
 
-        for frame in 0..<frameCount {
+        for frame in 0 ..< frameCount {
             let t = Double(frame) / Double(sampleRate)
             let amplitude = sin(2.0 * .pi * frequencyHz * t)
             let i16Value = Int16(amplitude * Double(Int16.max))
 
             // Both channels get the same value (mono spread to stereo)
-            for _ in 0..<2 {
+            for _ in 0 ..< 2 {
                 bytes.append(UInt8(i16Value & 0xFF))
                 bytes.append(UInt8((i16Value >> 8) & 0xFF))
             }
@@ -38,17 +38,17 @@ enum TestSignal {
         durationMs: Int,
         frequencyHz: Double = 440.0
     ) -> [UInt8] {
-        let frameCount = sampleRate * durationMs / 1000
+        let frameCount = sampleRate * durationMs / 1_000
         let i24Max: Int32 = 8_388_607
         var bytes = [UInt8]()
         bytes.reserveCapacity(frameCount * 2 * 3) // stereo, 3 bytes per sample
 
-        for frame in 0..<frameCount {
+        for frame in 0 ..< frameCount {
             let t = Double(frame) / Double(sampleRate)
             let amplitude = sin(2.0 * .pi * frequencyHz * t)
             let i24Value = Int32(amplitude * Double(i24Max))
 
-            for _ in 0..<2 {
+            for _ in 0 ..< 2 {
                 bytes.append(UInt8(i24Value & 0xFF))
                 bytes.append(UInt8((i24Value >> 8) & 0xFF))
                 bytes.append(UInt8((i24Value >> 16) & 0xFF))
@@ -71,16 +71,14 @@ enum TestSignal {
     }
 }
 
-@Suite("Audio Pipeline Integration")
 struct AudioPipelineIntegrationTests {
-
     // MARK: - Full pipeline: binary frame → BinaryMessage → PCMDecoder → Data
 
-    @Test("16-bit PCM: binary frame → parsed message → decoded samples match source signal")
-    func fullPipeline16Bit() throws {
+    @Test
+    func `16-bit PCM: binary frame → parsed message → decoded samples match source signal`() throws {
         // 1. Generate known audio signal
         let pcmBytes = TestSignal.sineWave16BitStereo(
-            sampleRate: 48000,
+            sampleRate: 48_000,
             durationMs: 25
         )
 
@@ -103,7 +101,7 @@ struct AudioPipelineIntegrationTests {
         #expect(decoded == Data(pcmBytes))
 
         // 6. Verify signal properties
-        let frameCount = 48000 * 25 / 1000
+        let frameCount = 48_000 * 25 / 1_000
         #expect(decoded.count == frameCount * 2 * 2) // stereo × 2 bytes
 
         // First sample should be near zero (sin(0) = 0)
@@ -111,7 +109,7 @@ struct AudioPipelineIntegrationTests {
         #expect(firstSample == 0)
 
         // Quarter-wave peak should be near max (sin(π/2) ≈ 1)
-        let quarterWaveFrame = 48000 / (440 * 4)
+        let quarterWaveFrame = 48_000 / (440 * 4)
         let peakOffset = quarterWaveFrame * 2 * 2 // stereo × 2 bytes
         let peakSample = decoded.withUnsafeBytes {
             $0.load(fromByteOffset: peakOffset, as: Int16.self)
@@ -120,10 +118,10 @@ struct AudioPipelineIntegrationTests {
         #expect(peakF32 > 0.9, "Quarter-wave peak should be near 1.0, got \(peakF32)")
     }
 
-    @Test("24-bit PCM: binary frame → parsed message → decoded samples match source signal")
-    func fullPipeline24Bit() throws {
+    @Test
+    func `24-bit PCM: binary frame → parsed message → decoded samples match source signal`() throws {
         let pcmBytes = TestSignal.sineWave24BitStereo(
-            sampleRate: 48000,
+            sampleRate: 48_000,
             durationMs: 25
         )
 
@@ -146,8 +144,8 @@ struct AudioPipelineIntegrationTests {
 
     // MARK: - Sequential chunks (simulating a stream)
 
-    @Test("sequential 25ms chunks maintain timestamp continuity")
-    func sequentialChunks() throws {
+    @Test
+    func `sequential 25ms chunks maintain timestamp continuity`() throws {
         let chunkDurationUs: Int64 = 25_000
         let chunkCount = 10
         let decoder = PCMDecoder(bitDepth: 16, channels: 2)
@@ -155,11 +153,11 @@ struct AudioPipelineIntegrationTests {
         var totalBytes = 0
         var lastTimestamp: Int64 = -1
 
-        for chunkIndex in 0..<chunkCount {
+        for chunkIndex in 0 ..< chunkCount {
             let timestampUs = Int64(chunkIndex) * chunkDurationUs
 
             let pcmBytes = TestSignal.sineWave16BitStereo(
-                sampleRate: 48000,
+                sampleRate: 48_000,
                 durationMs: 25
             )
 
@@ -177,15 +175,15 @@ struct AudioPipelineIntegrationTests {
         }
 
         // 10 chunks × 25ms × 48kHz × 2 channels × 2 bytes = 96000 bytes
-        let expectedTotal = chunkCount * (48000 * 25 / 1000) * 2 * 2
+        let expectedTotal = chunkCount * (48_000 * 25 / 1_000) * 2 * 2
         #expect(totalBytes == expectedTotal)
     }
 
     // MARK: - Edge cases
 
-    @Test("binary frame with zero timestamp")
-    func zeroTimestamp() throws {
-        let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48000, durationMs: 1)
+    @Test
+    func `binary frame with zero timestamp`() throws {
+        let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48_000, durationMs: 1)
         let frameData = TestSignal.packBinaryFrame(
             audioData: pcmBytes,
             timestampMicroseconds: 0
@@ -195,10 +193,10 @@ struct AudioPipelineIntegrationTests {
         #expect(message.timestamp == 0)
     }
 
-    @Test("binary frame with large timestamp (hours of playback)")
-    func largeTimestamp() throws {
-        let threeHoursUs: Int64 = 3 * 3600 * 1_000_000
-        let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48000, durationMs: 1)
+    @Test
+    func `binary frame with large timestamp (hours of playback)`() throws {
+        let threeHoursUs: Int64 = 3 * 3_600 * 1_000_000
+        let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48_000, durationMs: 1)
         let frameData = TestSignal.packBinaryFrame(
             audioData: pcmBytes,
             timestampMicroseconds: threeHoursUs

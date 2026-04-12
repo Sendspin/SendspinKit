@@ -28,9 +28,9 @@ struct PCMRingBuffer {
         while cap < requestedCapacity {
             cap <<= 1
         }
-        self.capacity = cap
-        self.mask = cap - 1
-        self.storage = .allocate(byteCount: cap, alignment: 16)
+        capacity = cap
+        mask = cap - 1
+        storage = .allocate(byteCount: cap, alignment: 16)
         storage.initializeMemory(as: UInt8.self, repeating: 0)
     }
 

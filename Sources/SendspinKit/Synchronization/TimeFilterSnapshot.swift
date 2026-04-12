@@ -9,7 +9,7 @@ import Foundation
 /// Created by `ClockSynchronizer.snapshot()` and consumed by the audio callback
 /// to compute sync error with microsecond precision. The snapshot is cheap to copy
 /// (6 scalars) and can be stored under any lock the audio thread already holds.
-struct TimeFilterSnapshot: Sendable {
+struct TimeFilterSnapshot {
     /// Kalman filter offset estimate (μs): server_time ≈ client_time + offset
     let offset: Double
     /// Kalman filter drift estimate (μs/μs, dimensionless)

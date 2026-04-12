@@ -10,13 +10,12 @@ import Foundation
 /// - RTT gating (rejects negative and >100ms samples)
 /// - Absolute time conversion (process-relative → Unix epoch for Date construction)
 actor ClockSynchronizer: ClockSyncProtocol {
-
     private var filter = SendspinTimeFilter()
 
-    // Latest raw measurements for telemetry
+    /// Latest raw measurements for telemetry
     private var latestRtt: Int64 = 0
 
-    // Absolute anchor: converts process-relative client timestamps to Unix epoch
+    /// Absolute anchor: converts process-relative client timestamps to Unix epoch
     private let clientProcessStartAbsolute: Int64
 
     init() {
@@ -26,14 +25,23 @@ actor ClockSynchronizer: ClockSyncProtocol {
     // MARK: - Public interface
 
     /// Current clock offset in microseconds (server - client)
-    var currentOffset: Int64 { Int64(filter.offset.rounded()) }
+    var currentOffset: Int64 {
+        Int64(filter.offset.rounded())
+    }
 
     /// Individual stats for telemetry
-    var statsOffset: Int64 { Int64(filter.offset.rounded()) }
-    var statsRtt: Int64 { latestRtt }
+    var statsOffset: Int64 {
+        Int64(filter.offset.rounded())
+    }
+
+    var statsRtt: Int64 {
+        latestRtt
+    }
 
     /// Whether at least one sync sample has been accepted
-    var hasSynced: Bool { filter.isInitialized }
+    var hasSynced: Bool {
+        filter.isInitialized
+    }
 
     /// Process a server/time response to update the clock model.
     ///
@@ -58,7 +66,7 @@ actor ClockSynchronizer: ClockSyncProtocol {
         guard rtt >= 0, rtt <= 100_000 else { return }
 
         // Feed into the Kalman filter
-        let maxError = Double(max(rtt, 1)) / 2.0  // RTT floor of 1μs (Rust port fix)
+        let maxError = Double(max(rtt, 1)) / 2.0 // RTT floor of 1μs (Rust port fix)
         filter.update(
             timeAdded: clientReceived,
             measurement: Double(measuredOffset),

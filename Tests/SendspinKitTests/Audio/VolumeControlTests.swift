@@ -3,20 +3,18 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("Volume Control")
 struct VolumeControlTests {
-
     // MARK: - VolumeCapabilities
 
-    @Test("VolumeCapabilities.all advertises volume and mute")
-    func capabilitiesAll() {
+    @Test
+    func `VolumeCapabilities.all advertises volume and mute`() {
         let caps = VolumeCapabilities.all
         #expect(caps.supportsVolume == true)
         #expect(caps.playerCommands == [.volume, .mute])
     }
 
-    @Test("VolumeCapabilities.none advertises nothing")
-    func capabilitiesNone() {
+    @Test
+    func `VolumeCapabilities.none advertises nothing`() {
         let caps = VolumeCapabilities.none
         #expect(caps.supportsVolume == false)
         #expect(caps.playerCommands.isEmpty)
@@ -24,16 +22,16 @@ struct VolumeControlTests {
 
     // MARK: - VolumeControlFactory
 
-    @Test("Software mode resolves to full capabilities")
-    func factorySoftware() {
+    @Test
+    func `Software mode resolves to full capabilities`() {
         let (caps, control) = VolumeControlFactory.resolve(mode: .software)
         #expect(caps.supportsVolume == true)
         #expect(caps.playerCommands == [.volume, .mute])
         #expect(control is SoftwareVolumeControl)
     }
 
-    @Test("None mode resolves to no capabilities but still has control")
-    func factoryNone() {
+    @Test
+    func `None mode resolves to no capabilities but still has control`() {
         let (caps, control) = VolumeControlFactory.resolve(mode: .none)
         #expect(caps.supportsVolume == false)
         #expect(caps.playerCommands.isEmpty)
@@ -41,8 +39,8 @@ struct VolumeControlTests {
         #expect(control is SoftwareVolumeControl)
     }
 
-    @Test("Hardware mode resolves on this platform")
-    func factoryHardware() {
+    @Test
+    func `Hardware mode resolves on this platform`() {
         let (caps, control) = VolumeControlFactory.resolve(mode: .hardware)
         // On macOS: should detect hardware capabilities from default output device
         // On iOS: falls back to software
@@ -60,8 +58,8 @@ struct VolumeControlTests {
 
     // MARK: - SoftwareVolumeControl
 
-    @Test("SoftwareVolumeControl handles nil queue gracefully")
-    func softwareNilQueue() {
+    @Test
+    func `SoftwareVolumeControl handles nil queue gracefully`() {
         let control = SoftwareVolumeControl()
         // Should not crash with nil queue
         control.setVolume(0.5, on: nil)
@@ -71,11 +69,11 @@ struct VolumeControlTests {
 
     // MARK: - PlayerConfiguration VolumeMode
 
-    @Test("PlayerConfiguration defaults to software volume mode")
-    func configDefaultsToSoftware() {
+    @Test
+    func `PlayerConfiguration defaults to software volume mode`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
-            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)]
+            bufferCapacity: 1_024,
+            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)]
         )
         switch config.volumeMode {
         case .software: break // expected
@@ -83,11 +81,11 @@ struct VolumeControlTests {
         }
     }
 
-    @Test("PlayerConfiguration accepts explicit volume mode")
-    func configExplicitVolumeMode() {
+    @Test
+    func `PlayerConfiguration accepts explicit volume mode`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
-            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)],
+            bufferCapacity: 1_024,
+            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)],
             volumeMode: .none
         )
         switch config.volumeMode {
@@ -98,10 +96,10 @@ struct VolumeControlTests {
 
     // MARK: - Integration: AudioPlayer with VolumeControl
 
-    @Test("AudioPlayer uses provided VolumeControl for volume")
-    func audioPlayerUsesVolumeControl() async throws {
+    @Test
+    func `AudioPlayer uses provided VolumeControl for volume`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1024)
+        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
             bufferManager: bufferManager,
@@ -109,7 +107,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setVolume(0.75)
@@ -119,10 +117,10 @@ struct VolumeControlTests {
         await player.stop()
     }
 
-    @Test("AudioPlayer uses provided VolumeControl for mute")
-    func audioPlayerUsesVolumeControlForMute() async throws {
+    @Test
+    func `AudioPlayer uses provided VolumeControl for mute`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1024)
+        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
             bufferManager: bufferManager,
@@ -130,7 +128,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setMute(true)
@@ -140,10 +138,10 @@ struct VolumeControlTests {
         await player.stop()
     }
 
-    @Test("AudioPlayer does not call setVolume when muted")
-    func audioPlayerSkipsVolumeWhenMuted() async throws {
+    @Test
+    func `AudioPlayer does not call setVolume when muted`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1024)
+        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
             bufferManager: bufferManager,
@@ -151,7 +149,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setMute(true)
@@ -165,23 +163,24 @@ struct VolumeControlTests {
     }
 
     #if os(macOS)
-    // MARK: - HardwareVolumeControl (macOS only)
 
-    @Test("HardwareVolumeControl can query default output device")
-    func hardwareDefaultDevice() {
-        let deviceID = HardwareVolumeControl.defaultOutputDevice()
-        // On a real macOS system, there should be a default output device
-        // On headless CI, this might be kAudioObjectUnknown
-        _ = deviceID // just verify it doesn't crash
-    }
+        // MARK: - HardwareVolumeControl (macOS only)
 
-    @Test("HardwareVolumeControl.queryCapabilities does not crash")
-    func hardwareQueryCapabilities() {
-        let caps = HardwareVolumeControl.queryCapabilities()
-        // Just verify it returns something reasonable without crashing
-        _ = caps.supportsVolume
-        _ = caps.playerCommands
-    }
+        @Test
+        func `HardwareVolumeControl can query default output device`() {
+            let deviceID = HardwareVolumeControl.defaultOutputDevice()
+            // On a real macOS system, there should be a default output device
+            // On headless CI, this might be kAudioObjectUnknown
+            _ = deviceID // just verify it doesn't crash
+        }
+
+        @Test
+        func `HardwareVolumeControl.queryCapabilities does not crash`() {
+            let caps = HardwareVolumeControl.queryCapabilities()
+            // Just verify it returns something reasonable without crashing
+            _ = caps.supportsVolume
+            _ = caps.playerCommands
+        }
     #endif
 }
 

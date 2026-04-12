@@ -63,8 +63,10 @@ public struct PlayerConfiguration: Sendable {
     ) {
         precondition(bufferCapacity > 0, "Buffer capacity must be positive")
         precondition(!supportedFormats.isEmpty, "Must support at least one audio format")
-        precondition(initialStaticDelayMs >= 0 && initialStaticDelayMs <= 5000,
-                     "initialStaticDelayMs must be 0-5000")
+        precondition(
+            initialStaticDelayMs >= 0 && initialStaticDelayMs <= 5_000,
+            "initialStaticDelayMs must be 0-5000"
+        )
 
         self.bufferCapacity = bufferCapacity
         self.supportedFormats = supportedFormats

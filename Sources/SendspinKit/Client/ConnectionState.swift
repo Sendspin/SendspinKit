@@ -17,11 +17,11 @@ extension ConnectionState: Equatable {
         case (.disconnected, .disconnected),
              (.connecting, .connecting),
              (.connected, .connected):
-            return true
+            true
         case let (.error(lhsError), .error(rhsError)):
-            return lhsError == rhsError
+            lhsError == rhsError
         default:
-            return false
+            false
         }
     }
 }

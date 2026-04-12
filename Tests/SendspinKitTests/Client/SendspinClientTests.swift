@@ -2,15 +2,14 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("SendspinClient Tests")
 @MainActor
 struct SendspinClientTests {
-    @Test("Initialize client with player role")
-    func initialization() {
+    @Test
+    func `Initialize client with player role`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
@@ -25,12 +24,12 @@ struct SendspinClientTests {
         #expect(client.connectionState == .disconnected)
     }
 
-    @Test("Connect creates transport and starts connecting")
-    func connect() async throws {
+    @Test
+    func `Connect creates transport and starts connecting`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
@@ -47,12 +46,12 @@ struct SendspinClientTests {
         // Real integration tests need mock server
     }
 
-    @Test("SendspinClient has AudioScheduler after connect")
-    func clientHasScheduler() async throws {
+    @Test
+    func `SendspinClient has AudioScheduler after connect`() {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
@@ -72,12 +71,12 @@ struct SendspinClientTests {
         #expect(client.connectionState == .disconnected)
     }
 
-    @Test("AudioScheduler is cleared on disconnect")
-    func schedulerCleanupOnDisconnect() async throws {
+    @Test
+    func `AudioScheduler is cleared on disconnect`() async {
         let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 

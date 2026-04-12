@@ -4,7 +4,7 @@
 import Foundation
 import Starscream
 
-// Delegate to handle WebSocket events and receiving
+/// Delegate to handle WebSocket events and receiving
 private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
     let textContinuation: AsyncStream<String>.Continuation
     let binaryContinuation: AsyncStream<Data>.Continuation
@@ -13,18 +13,15 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
     init(textContinuation: AsyncStream<String>.Continuation, binaryContinuation: AsyncStream<Data>.Continuation) {
         self.textContinuation = textContinuation
         self.binaryContinuation = binaryContinuation
-
     }
 
     func didReceive(event: WebSocketEvent, client _: any WebSocketClient) {
         switch event {
         case .connected:
-
             connectionContinuation?.resume()
             connectionContinuation = nil
 
         case .disconnected:
-
             // If we were waiting for connection, fail it
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
@@ -34,31 +31,24 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case let .text(string):
-
             textContinuation.yield(string)
 
         case let .binary(data):
-
             binaryContinuation.yield(data)
 
         case .ping:
-
             break
 
         case .pong:
-
             break
 
         case .viabilityChanged:
-
             break
 
         case .reconnectSuggested:
-
             break
 
         case .cancelled:
-
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -67,7 +57,6 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case .error:
-
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -76,7 +65,6 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
             binaryContinuation.finish()
 
         case .peerClosed:
-
             if let continuation = connectionContinuation {
                 continuation.resume(throwing: TransportError.connectionFailed)
                 connectionContinuation = nil
@@ -146,12 +134,12 @@ public actor WebSocketTransport: SendspinTransport {
 
     /// Check if currently connected
     public var isConnected: Bool {
-        return webSocket != nil
+        webSocket != nil
     }
 
     /// Send a text message (JSON)
-    public func send<T: Codable & Sendable>(_ message: T) async throws {
-        guard let webSocket = webSocket else {
+    public func send(_ message: some Codable & Sendable) async throws {
+        guard let webSocket else {
             throw TransportError.notConnected
         }
 
@@ -167,7 +155,7 @@ public actor WebSocketTransport: SendspinTransport {
 
     /// Send a binary message
     public func sendBinary(_ data: Data) async throws {
-        guard let webSocket = webSocket else {
+        guard let webSocket else {
             throw TransportError.notConnected
         }
         webSocket.write(data: data)

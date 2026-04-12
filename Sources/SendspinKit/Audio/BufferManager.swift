@@ -16,7 +16,7 @@ actor BufferManager {
 
     /// Check if buffer has capacity for additional bytes
     func hasCapacity(_ bytes: Int) -> Bool {
-        return bufferedBytes + bytes <= capacity
+        bufferedBytes + bytes <= capacity
     }
 
     /// Register a chunk added to the buffer
@@ -43,7 +43,7 @@ actor BufferManager {
 
     /// Current buffer usage in bytes
     var usage: Int {
-        return bufferedBytes
+        bufferedBytes
     }
 
     /// Clear all buffered chunks

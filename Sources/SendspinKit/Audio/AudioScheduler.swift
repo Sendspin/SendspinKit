@@ -9,7 +9,7 @@ protocol ClockSyncProtocol: Actor {
 }
 
 /// Statistics tracked by the scheduler
-struct SchedulerStats: Sendable {
+struct SchedulerStats {
     let received: Int
     let played: Int
     let dropped: Int
@@ -24,7 +24,7 @@ struct SchedulerStats: Sendable {
 }
 
 /// Detailed statistics including queue size and buffer metrics
-struct DetailedSchedulerStats: Sendable {
+struct DetailedSchedulerStats {
     let received: Int
     let played: Int
     let dropped: Int
@@ -50,7 +50,7 @@ struct DetailedSchedulerStats: Sendable {
 }
 
 /// A chunk scheduled for playback at a specific time
-struct ScheduledChunk: Sendable {
+struct ScheduledChunk {
     let pcmData: Data
     let playTime: Date
     let originalTimestamp: Int64
@@ -134,23 +134,22 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
 
     /// Get queued chunks (for testing)
     func getQueuedChunks() -> [ScheduledChunk] {
-        return queue
+        queue
     }
 
     /// Get current statistics
     var stats: SchedulerStats {
-        return schedulerStats
+        schedulerStats
     }
 
     /// Get detailed statistics including queue size and buffer metrics
     func getDetailedStats() -> DetailedSchedulerStats {
         // Calculate buffer fill: time until next chunk should play
         let now = Date()
-        let bufferFillMs: Double
-        if let nextChunk = queue.first {
-            bufferFillMs = max(0, nextChunk.playTime.timeIntervalSince(now) * 1000.0)
+        let bufferFillMs: Double = if let nextChunk = queue.first {
+            max(0, nextChunk.playTime.timeIntervalSince(now) * 1_000.0)
         } else {
-            bufferFillMs = 0.0
+            0.0
         }
 
         return DetailedSchedulerStats(
