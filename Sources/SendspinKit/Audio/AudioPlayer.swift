@@ -61,11 +61,7 @@ private struct LockedState: @unchecked Sendable {
     var correctionSchedule = CorrectionSchedule()
     var dropCounter: UInt32 = 0
     var insertCounter: UInt32 = 0
-    var syncPlanner = CorrectionPlanner(
-        deadbandMicroseconds: 1_500,
-        engageMicroseconds: 3_000,
-        reanchorThresholdMicroseconds: 500_000
-    )
+    var syncPlanner = CorrectionPlanner()
     var timeSnapshot: TimeFilterSnapshot = .invalid
 
     /// Latest sync error in µs, written by audio callback, read by telemetry
