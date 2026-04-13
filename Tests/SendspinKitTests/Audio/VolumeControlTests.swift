@@ -14,8 +14,8 @@ struct VolumeControlTests {
     }
 
     @Test
-    func `VolumeCapabilities.none advertises nothing`() {
-        let caps = VolumeCapabilities.none
+    func `VolumeCapabilities.unsupported advertises nothing`() {
+        let caps = VolumeCapabilities.unsupported
         #expect(caps.supportsVolume == false)
         #expect(caps.playerCommands.isEmpty)
     }

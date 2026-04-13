@@ -13,7 +13,7 @@ import Foundation
 /// When volume is supported, mute is always supported too (we can always
 /// zero the output, whether via AudioQueue gain, hardware volume, or
 /// hardware mute toggle).
-struct VolumeCapabilities {
+struct VolumeCapabilities: Sendable {
     /// Whether this device supports volume (and therefore mute) control
     let supportsVolume: Bool
 
@@ -23,11 +23,17 @@ struct VolumeCapabilities {
     }
 
     static let all = VolumeCapabilities(supportsVolume: true)
-    static let none = VolumeCapabilities(supportsVolume: false)
+    static let unsupported = VolumeCapabilities(supportsVolume: false)
 }
 
 /// Protocol for applying volume/mute changes to audio output.
 /// Implementations handle software (AudioQueue) vs hardware (CoreAudio device) control.
+///
+/// **Caller contract:** Volume and mute are separate axes. For `SoftwareVolumeControl`,
+/// both map to the same AudioQueue gain parameter, so `setVolume` after `setMute(true)`
+/// will effectively unmute. For `HardwareVolumeControl`, mute is an independent hardware
+/// toggle — `setVolume` does not affect mute state. The caller (`AudioPlayer`) is
+/// responsible for coordinating these correctly (e.g., not calling `setVolume` while muted).
 protocol VolumeControl: Sendable {
     /// Set volume (0.0-1.0 linear, implementation applies perceptual curve if needed)
     func setVolume(_ volume: Float, on queue: AudioQueueRef?)
@@ -42,13 +48,19 @@ struct SoftwareVolumeControl: VolumeControl {
     func setVolume(_ volume: Float, on queue: AudioQueueRef?) {
         guard let queue else { return }
         let gain = AudioPlayer.perceptualGain(volume)
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+        let status = AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+        if status != noErr {
+            fputs("[VOLUME] AudioQueueSetParameter failed (OSStatus \(status))\n", stderr)
+        }
     }
 
     func setMute(_ muted: Bool, currentVolume: Float, on queue: AudioQueueRef?) {
         guard let queue else { return }
-        let gain = muted ? Float(0.0) : AudioPlayer.perceptualGain(currentVolume)
-        AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+        let gain = muted ? 0.0 : AudioPlayer.perceptualGain(currentVolume)
+        let status = AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
+        if status != noErr {
+            fputs("[VOLUME] AudioQueueSetParameter (mute) failed (OSStatus \(status))\n", stderr)
+        }
     }
 }
 
@@ -63,14 +75,7 @@ struct SoftwareVolumeControl: VolumeControl {
         func setVolume(_ volume: Float, on _: AudioQueueRef?) {
             let deviceID = Self.defaultOutputDevice()
             guard deviceID != kAudioObjectUnknown else { return }
-
-            // Set volume on the master channel (0), falling back to channels 1+2
-            let clamped = max(0.0, min(1.0, volume))
-            if !Self.setVolumeScalar(clamped, device: deviceID, channel: 0) {
-                // Some devices don't have a master channel — set L+R individually
-                Self.setVolumeScalar(clamped, device: deviceID, channel: 1)
-                Self.setVolumeScalar(clamped, device: deviceID, channel: 2)
-            }
+            Self.setVolumeOnDevice(max(0.0, min(1.0, volume)), device: deviceID)
         }
 
         func setMute(_ muted: Bool, currentVolume: Float, on _: AudioQueueRef?) {
@@ -85,17 +90,17 @@ struct SoftwareVolumeControl: VolumeControl {
                     mScope: kAudioDevicePropertyScopeOutput,
                     mElement: kAudioObjectPropertyElementMain
                 )
-                AudioObjectSetPropertyData(
+                let status = AudioObjectSetPropertyData(
                     deviceID, &address, 0, nil,
                     UInt32(MemoryLayout<UInt32>.size), &muteValue
                 )
+                if status != noErr {
+                    fputs("[VOLUME] Hardware mute failed (OSStatus \(status))\n", stderr)
+                }
             } else {
                 // No hardware mute — fake it by zeroing/restoring volume
-                let target: Float = muted ? 0.0 : currentVolume
-                if !Self.setVolumeScalar(target, device: deviceID, channel: 0) {
-                    Self.setVolumeScalar(target, device: deviceID, channel: 1)
-                    Self.setVolumeScalar(target, device: deviceID, channel: 2)
-                }
+                let target = muted ? 0.0 : max(0.0, min(1.0, currentVolume))
+                Self.setVolumeOnDevice(target, device: deviceID)
             }
         }
 
@@ -137,7 +142,7 @@ struct SoftwareVolumeControl: VolumeControl {
         static func queryCapabilities() -> VolumeCapabilities {
             let deviceID = defaultOutputDevice()
             guard deviceID != kAudioObjectUnknown else {
-                return .none
+                return .unsupported
             }
 
             // Check master channel first, then individual channels
@@ -145,6 +150,14 @@ struct SoftwareVolumeControl: VolumeControl {
                 || deviceHasProperty(deviceID, selector: kAudioDevicePropertyVolumeScalar, channel: 1)
 
             return VolumeCapabilities(supportsVolume: hasVolume)
+        }
+
+        /// Set volume on a device, trying master channel first, falling back to L+R.
+        private static func setVolumeOnDevice(_ volume: Float, device: AudioDeviceID) {
+            if !setVolumeScalar(volume, device: device, channel: 0) {
+                setVolumeScalar(volume, device: device, channel: 1)
+                setVolumeScalar(volume, device: device, channel: 2)
+            }
         }
 
         @discardableResult
@@ -180,7 +193,7 @@ enum VolumeControlFactory {
         case .none:
             // No commands advertised, but still use software control internally
             // (the server just won't send volume/mute commands)
-            return (.none, SoftwareVolumeControl())
+            return (.unsupported, SoftwareVolumeControl())
 
         case .hardware:
             #if os(macOS)
@@ -189,6 +202,7 @@ enum VolumeControlFactory {
             #else
                 // iOS/tvOS/watchOS don't expose per-device volume via CoreAudio.
                 // Fall back to software control.
+                fputs("[VOLUME] Hardware volume requested but unavailable on this platform, using software\n", stderr)
                 return (.all, SoftwareVolumeControl())
             #endif
         }
