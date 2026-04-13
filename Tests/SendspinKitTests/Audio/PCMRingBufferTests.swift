@@ -1,5 +1,5 @@
 // ABOUTME: Tests for PCMRingBuffer — the real-time audio thread ring buffer
-// ABOUTME: Validates wrap-around, partial writes, skip, peek, and capacity behavior
+// ABOUTME: Validates wrap-around, partial writes, skip, reset, and capacity behavior
 
 import Foundation
 @testable import SendspinKit
@@ -168,5 +168,15 @@ struct PCMRingBufferTests {
         }
         #expect(readCount == 3)
         #expect(dest[0 ... 2] == [1, 2, 3])
+    }
+
+    @Test
+    func `Capacity of 1 rounds to 1`() {
+        // Minimum valid capacity — verifies the power-of-2 loop handles
+        // the smallest input without underflowing or producing 0.
+        var buf = PCMRingBuffer(capacity: 1)
+        #expect(buf.capacity == 1)
+        #expect(buf.availableToWrite == 1)
+        buf.deallocate()
     }
 }
