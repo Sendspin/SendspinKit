@@ -42,6 +42,9 @@ struct PCMDecoder: AudioDecoder {
         }
     }
 
+    /// Unpack 3-byte little-endian 24-bit samples into left-justified Int32
+    /// for AudioQueue (which expects 32-bit containers for 24-bit audio).
+    /// Works directly on Data's underlying bytes — no intermediate [UInt8] copy.
     private func decode24Bit(_ data: Data) throws -> Data {
         let bytesPerSample = 3
         guard data.count % bytesPerSample == 0 else {
@@ -52,20 +55,30 @@ struct PCMDecoder: AudioDecoder {
         }
 
         let sampleCount = data.count / bytesPerSample
-        let bytes = [UInt8](data)
 
-        // Unpack 24-bit samples to Int32 (4 bytes per sample)
-        var samples = [Int32]()
-        samples.reserveCapacity(sampleCount)
+        return data.withUnsafeBytes { src in
+            let base = src.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            // Allocate output: 4 bytes per sample (Int32)
+            let output = UnsafeMutableBufferPointer<Int32>.allocate(capacity: sampleCount)
+            defer { output.deallocate() }
 
-        for i in 0 ..< sampleCount {
-            let sample = PCMUtilities.unpack24Bit(bytes, offset: i * bytesPerSample)
-            // Left-shift 8 bits: 24-bit range -> 32-bit range for AudioQueue
-            samples.append(sample << 8)
+            for i in 0 ..< sampleCount {
+                let off = i * bytesPerSample
+                var value = Int32(base[off])
+                    | (Int32(base[off + 1]) << 8)
+                    | (Int32(base[off + 2]) << 16)
+
+                // Sign extend: if bit 23 is set, the value is negative
+                if value & 0x80_0000 != 0 {
+                    value |= ~0xFF_FFFF
+                }
+
+                // Left-shift into 32-bit range for AudioQueue
+                output[i] = value << 8
+            }
+
+            return Data(buffer: output)
         }
-
-        // Convert Int32 array to Data
-        return samples.withUnsafeBytes { Data($0) }
     }
 }
 
