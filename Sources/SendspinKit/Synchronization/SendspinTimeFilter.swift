@@ -211,11 +211,6 @@ struct SendspinTimeFilter {
 
     // MARK: - Diagnostics
 
-    /// Estimated error (1σ) of the offset in microseconds
-    var estimatedError: Int64 {
-        Int64(offsetCovariance.squareRoot().rounded())
-    }
-
     /// Whether the filter has received at least one measurement
     var isInitialized: Bool {
         count > 0

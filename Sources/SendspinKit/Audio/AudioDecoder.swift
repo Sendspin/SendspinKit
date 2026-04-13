@@ -16,11 +16,9 @@ protocol AudioDecoder {
 /// Immutable after init — safe to use from any context.
 struct PCMDecoder: AudioDecoder {
     private let bitDepth: Int
-    private let channels: Int
 
-    init(bitDepth: Int, channels: Int) {
+    init(bitDepth: Int, channels _: Int) {
         self.bitDepth = bitDepth
-        self.channels = channels
     }
 
     func decode(_ data: Data) throws -> Data {
@@ -176,9 +174,7 @@ class OpusDecoder: AudioDecoder {
 /// `Unmanaged` call in `init`, this assumption would break.
 class FLACDecoder: AudioDecoder {
     private var decoder: UnsafeMutablePointer<FLAC__StreamDecoder>?
-    private let sampleRate: Int
     private let channels: Int
-    private let bitDepth: Int
 
     /// Pending compressed data waiting for libFLAC to consume.
     /// Uses an index-based sliding window: `readOffset` tracks the libFLAC
@@ -190,9 +186,7 @@ class FLACDecoder: AudioDecoder {
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
     init(sampleRate: Int, channels: Int, bitDepth: Int, header: Data? = nil) throws {
-        self.sampleRate = sampleRate
         self.channels = channels
-        self.bitDepth = bitDepth
 
         // Create FLAC stream decoder
         guard let flacDecoder = FLAC__stream_decoder_new() else {

@@ -207,7 +207,6 @@ public final class SendspinClient {
             // capacity as a reasonable default (512KB for a typical 1MB buffer).
             let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
             let audioPlayer = AudioPlayer(
-                clockSync: clockSync,
                 pcmBufferCapacity: pcmBufferCapacity,
                 volumeControl: volumeControl,
                 processCallback: playerConfig.processCallback

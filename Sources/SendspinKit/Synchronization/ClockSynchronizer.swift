@@ -120,9 +120,4 @@ actor ClockSynchronizer: ClockSyncProtocol {
         )
     }
 
-    /// Reset clock synchronization (e.g., after reconnection)
-    func reset() {
-        filter.reset()
-        latestRtt = 0
-    }
 }

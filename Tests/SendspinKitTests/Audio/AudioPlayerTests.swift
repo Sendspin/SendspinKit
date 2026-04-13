@@ -5,11 +5,7 @@ import Testing
 struct AudioPlayerTests {
     @Test
     func `Initialize AudioPlayer with dependencies`() async {
-        let clockSync = ClockSynchronizer()
-
-        let player = AudioPlayer(
-            clockSync: clockSync
-        )
+        let player = AudioPlayer()
 
         let isPlaying = await player.isPlaying
         #expect(isPlaying == false)
@@ -17,8 +13,7 @@ struct AudioPlayerTests {
 
     @Test
     func `Configure audio format`() async throws {
-        let clockSync = ClockSynchronizer()
-        let player = AudioPlayer(clockSync: clockSync)
+        let player = AudioPlayer()
 
         let format = AudioFormatSpec(
             codec: .pcm,
@@ -35,8 +30,7 @@ struct AudioPlayerTests {
 
     @Test
     func `Play PCM data with timestamp`() async throws {
-        let clockSync = ClockSynchronizer()
-        let player = AudioPlayer(clockSync: clockSync)
+        let player = AudioPlayer()
 
         let format = AudioFormatSpec(
             codec: .pcm,
@@ -64,8 +58,7 @@ struct AudioPlayerTests {
         // in favor of the AudioScheduler-based architecture.
         // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM(_:serverTimestamp:)
 
-        let clockSync = ClockSynchronizer()
-        let player = AudioPlayer(clockSync: clockSync)
+        let player = AudioPlayer()
 
         let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
@@ -106,8 +99,7 @@ struct AudioPlayerTests {
 
     @Test
     func `Decode method still available`() async throws {
-        let clockSync = ClockSynchronizer()
-        let player = AudioPlayer(clockSync: clockSync)
+        let player = AudioPlayer()
 
         let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)

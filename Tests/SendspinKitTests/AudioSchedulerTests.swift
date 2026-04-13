@@ -228,11 +228,9 @@ private struct TimeoutError: Error {}
 /// Mock ClockSynchronizer for testing
 actor MockClockSynchronizer: ClockSyncProtocol {
     private let offset: Int64
-    private let drift: Double
 
-    init(offset: Int64, drift: Double) {
+    init(offset: Int64, drift _: Double) {
         self.offset = offset
-        self.drift = drift
     }
 
     func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
