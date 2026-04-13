@@ -9,48 +9,20 @@ protocol ClockSyncProtocol: Actor {
 }
 
 /// Statistics tracked by the scheduler
-struct SchedulerStats {
-    let received: Int
-    let played: Int
-    let dropped: Int
-    let droppedLate: Int // Frames dropped because they were >50ms late
-
-    init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0) {
-        self.received = received
-        self.played = played
-        self.dropped = dropped
-        self.droppedLate = droppedLate
-    }
+struct SchedulerStats: Sendable, Equatable {
+    var received: Int = 0
+    var played: Int = 0
+    var dropped: Int = 0
+    var droppedLate: Int = 0
+    var queueSize: Int = 0
+    /// Total buffered duration: time from now until the last queued chunk's
+    /// play time (milliseconds). Zero when the queue is empty.
+    var bufferFillMs: Double = 0.0
 }
 
-/// Detailed statistics including queue size and buffer metrics
-struct DetailedSchedulerStats {
-    let received: Int
-    let played: Int
-    let dropped: Int
-    let droppedLate: Int
-    let queueSize: Int
-    let bufferFillMs: Double // Current buffer fill in milliseconds
-
-    init(
-        received: Int = 0,
-        played: Int = 0,
-        dropped: Int = 0,
-        droppedLate: Int = 0,
-        queueSize: Int = 0,
-        bufferFillMs: Double = 0.0
-    ) {
-        self.received = received
-        self.played = played
-        self.dropped = dropped
-        self.droppedLate = droppedLate
-        self.queueSize = queueSize
-        self.bufferFillMs = bufferFillMs
-    }
-}
-
-/// A chunk scheduled for playback at a specific time
-struct ScheduledChunk {
+/// A chunk scheduled for playback at a specific time, carrying stream identity
+/// via `generation` for seamless format transitions.
+struct ScheduledChunk: Sendable {
     let pcmData: Data
     /// Local absolute time in microseconds (from MonotonicClock) when this chunk should play
     let playTimeMicroseconds: Int64
@@ -61,12 +33,12 @@ struct ScheduledChunk {
 }
 
 /// Actor managing timestamp-based audio playback scheduling
-actor AudioScheduler<ClockSync: ClockSyncProtocol> {
-    private let clockSync: ClockSync
+actor AudioScheduler {
+    private let clockSync: any ClockSyncProtocol
     /// Playback window in microseconds — chunks within ±this window of "now" are played
     private let playbackWindowUs: Int64
     private var queue: [ScheduledChunk] = []
-    private var schedulerStats: SchedulerStats
+    private var counters = SchedulerStats()
     private var timerTask: Task<Void, Never>?
 
     // AsyncStream for output
@@ -74,12 +46,11 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     let scheduledChunks: AsyncStream<ScheduledChunk>
 
     init(
-        clockSync: ClockSync,
+        clockSync: any ClockSyncProtocol,
         playbackWindow: TimeInterval = 0.05
     ) {
         self.clockSync = clockSync
         playbackWindowUs = Int64(playbackWindow * 1_000_000)
-        schedulerStats = SchedulerStats()
 
         // Create AsyncStream
         (scheduledChunks, chunkContinuation) = AsyncStream.makeStream()
@@ -106,12 +77,7 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         // Insert into sorted position
         insertSorted(chunk)
 
-        schedulerStats = SchedulerStats(
-            received: schedulerStats.received + 1,
-            played: schedulerStats.played,
-            dropped: schedulerStats.dropped,
-            droppedLate: schedulerStats.droppedLate
-        )
+        counters.received += 1
     }
 
     /// Insert chunk maintaining sorted order by playTime
@@ -132,33 +98,22 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         queue.insert(chunk, at: low)
     }
 
-    /// Get queued chunks (for testing)
-    func getQueuedChunks() -> [ScheduledChunk] {
+    /// Queued chunks (for testing)
+    var queuedChunks: [ScheduledChunk] {
         queue
     }
 
-    /// Get current statistics
+    /// Statistics snapshot including queue size and buffer fill.
     var stats: SchedulerStats {
-        schedulerStats
-    }
+        var snapshot = counters
+        snapshot.queueSize = queue.count
 
-    /// Get detailed statistics including queue size and buffer metrics
-    func getDetailedStats() -> DetailedSchedulerStats {
         let nowUs = MonotonicClock.absoluteMicroseconds()
-        let bufferFillMs: Double = if let nextChunk = queue.first {
-            max(0, Double(nextChunk.playTimeMicroseconds - nowUs) / 1_000.0)
-        } else {
-            0.0
+        if let lastChunk = queue.last {
+            snapshot.bufferFillMs = max(0, Double(lastChunk.playTimeMicroseconds - nowUs) / 1_000.0)
         }
 
-        return DetailedSchedulerStats(
-            received: schedulerStats.received,
-            played: schedulerStats.played,
-            dropped: schedulerStats.dropped,
-            droppedLate: schedulerStats.droppedLate,
-            queueSize: queue.count,
-            bufferFillMs: bufferFillMs
-        )
+        return snapshot
     }
 
     /// Start the scheduling timer loop
@@ -225,23 +180,13 @@ actor AudioScheduler<ClockSync: ClockSyncProtocol> {
             } else if delayUs < -playbackWindowUs {
                 // Too late, drop
                 queue.removeFirst()
-                schedulerStats = SchedulerStats(
-                    received: schedulerStats.received,
-                    played: schedulerStats.played,
-                    dropped: schedulerStats.dropped + 1,
-                    droppedLate: schedulerStats.droppedLate + 1
-                )
+                counters.dropped += 1
+                counters.droppedLate += 1
             } else {
                 // Ready to play (within ±window)
                 let chunk = queue.removeFirst()
                 chunkContinuation.yield(chunk)
-
-                schedulerStats = SchedulerStats(
-                    received: schedulerStats.received,
-                    played: schedulerStats.played + 1,
-                    dropped: schedulerStats.dropped,
-                    droppedLate: schedulerStats.droppedLate
-                )
+                counters.played += 1
             }
         }
     }

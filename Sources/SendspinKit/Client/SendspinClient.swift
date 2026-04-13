@@ -57,7 +57,7 @@ public final class SendspinClient {
     // Dependencies
     private var transport: (any SendspinTransport)?
     private var clockSync: ClockSynchronizer?
-    private var audioScheduler: AudioScheduler<ClockSynchronizer>?
+    private var audioScheduler: AudioScheduler?
     private var bufferManager: BufferManager?
     private var audioPlayer: AudioPlayer?
 
@@ -534,7 +534,7 @@ public final class SendspinClient {
     /// Sync correction is now computed inside the AudioQueue callback itself,
     /// so this loop only handles rare reanchor events and periodic logging.
     private nonisolated func runSyncCorrectionAndTelemetry() async {
-        var lastTelemetryStats = DetailedSchedulerStats()
+        var lastTelemetryStats = SchedulerStats()
         var tickCount = 0
 
         while !Task.isCancelled {
@@ -554,7 +554,7 @@ public final class SendspinClient {
 
             // --- Telemetry (every 2s = every 4 ticks) ---
             if tickCount % 4 == 0 {
-                let currentStats = await audioScheduler.getDetailedStats()
+                let currentStats = await audioScheduler.stats
                 guard currentStats.received > 0 else { continue }
 
                 let framesScheduled = currentStats.received - lastTelemetryStats.received

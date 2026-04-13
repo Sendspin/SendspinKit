@@ -27,7 +27,7 @@ final class AudioSchedulerTests: XCTestCase {
 
         await scheduler.schedule(pcm: pcmData, serverTimestamp: serverTimestamp)
 
-        let chunks = await scheduler.getQueuedChunks()
+        let chunks = await scheduler.queuedChunks
         XCTAssertEqual(chunks.count, 1)
 
         // Expected: serverTime - offset = 2_000_000 - 1_000_000 = 1_000_000 microseconds
@@ -43,7 +43,7 @@ final class AudioSchedulerTests: XCTestCase {
         await scheduler.schedule(pcm: Data([1]), serverTimestamp: 1_000_000)
         await scheduler.schedule(pcm: Data([2]), serverTimestamp: 2_000_000)
 
-        let chunks = await scheduler.getQueuedChunks()
+        let chunks = await scheduler.queuedChunks
         XCTAssertEqual(chunks.count, 3)
 
         // Should be sorted by playTime
@@ -61,18 +61,9 @@ final class AudioSchedulerTests: XCTestCase {
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: nowMicros)
         await scheduler.startScheduling()
 
-        // Should output chunk immediately
-        let outputChunk: ScheduledChunk? = await withCheckedContinuation { continuation in
-            Task {
-                for await chunk in await scheduler.scheduledChunks {
-                    continuation.resume(returning: chunk)
-                    return
-                }
-                continuation.resume(returning: nil)
-            }
-        }
-
-        try await Task.sleep(for: .milliseconds(50))
+        // Race the stream against a timeout to avoid hanging if the scheduler
+        // never yields (e.g. a regression in checkQueue).
+        let outputChunk = try await nextChunkWithTimeout(from: scheduler, seconds: 2)
         await scheduler.stop()
 
         XCTAssertNotNil(outputChunk)
@@ -114,7 +105,7 @@ final class AudioSchedulerTests: XCTestCase {
             )
         }
 
-        let chunks = await scheduler.getQueuedChunks()
+        let chunks = await scheduler.queuedChunks
         XCTAssertEqual(chunks.count, 10)
 
         let stats = await scheduler.stats
@@ -131,25 +122,25 @@ final class AudioSchedulerTests: XCTestCase {
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: futureMicros)
         await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: futureMicros + 1_000)
 
-        var chunks = await scheduler.getQueuedChunks()
+        var chunks = await scheduler.queuedChunks
         XCTAssertEqual(chunks.count, 2)
 
         await scheduler.clear()
 
-        chunks = await scheduler.getQueuedChunks()
+        chunks = await scheduler.queuedChunks
         XCTAssertEqual(chunks.count, 0)
     }
 
-    func testSchedulerDetailedStatsReturnsQueueSize() async {
+    func testGetStatsIncludesQueueSize() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
         // Initially queue should be empty
-        var detailedStats = await scheduler.getDetailedStats()
-        XCTAssertEqual(detailedStats.queueSize, 0)
-        XCTAssertEqual(detailedStats.received, 0)
-        XCTAssertEqual(detailedStats.played, 0)
-        XCTAssertEqual(detailedStats.dropped, 0)
+        var snapshot = await scheduler.stats
+        XCTAssertEqual(snapshot.queueSize, 0)
+        XCTAssertEqual(snapshot.received, 0)
+        XCTAssertEqual(snapshot.played, 0)
+        XCTAssertEqual(snapshot.dropped, 0)
 
         // Schedule 3 chunks for future playback
         let futureMicros = MonotonicClock.absoluteMicroseconds() + 10_000_000
@@ -159,14 +150,14 @@ final class AudioSchedulerTests: XCTestCase {
         await scheduler.schedule(pcm: Data([0x03]), serverTimestamp: futureMicros + 2_000)
 
         // Queue should have 3 items
-        detailedStats = await scheduler.getDetailedStats()
-        XCTAssertEqual(detailedStats.queueSize, 3)
-        XCTAssertEqual(detailedStats.received, 3)
-        XCTAssertEqual(detailedStats.played, 0)
-        XCTAssertEqual(detailedStats.dropped, 0)
+        snapshot = await scheduler.stats
+        XCTAssertEqual(snapshot.queueSize, 3)
+        XCTAssertEqual(snapshot.received, 3)
+        XCTAssertEqual(snapshot.played, 0)
+        XCTAssertEqual(snapshot.dropped, 0)
     }
 
-    func testSchedulerDetailedStatsUpdatesAfterPlayback() async throws {
+    func testGetStatsUpdatesAfterPlayback() async throws {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)
 
@@ -176,30 +167,63 @@ final class AudioSchedulerTests: XCTestCase {
         await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: nowMicros)
         await scheduler.startScheduling()
 
-        // Consume the output
-        let outputChunk: ScheduledChunk? = await withCheckedContinuation { continuation in
-            Task {
-                for await chunk in await scheduler.scheduledChunks {
-                    continuation.resume(returning: chunk)
-                    return
-                }
-            }
-        }
-
-        try await Task.sleep(for: .milliseconds(50))
+        let outputChunk = try await nextChunkWithTimeout(from: scheduler, seconds: 2)
         await scheduler.stop()
 
         // Verify chunk was played
         XCTAssertNotNil(outputChunk)
 
-        // Check detailed stats
-        let detailedStats = await scheduler.getDetailedStats()
-        XCTAssertEqual(detailedStats.queueSize, 0) // Queue should be empty
-        XCTAssertEqual(detailedStats.received, 1)
-        XCTAssertEqual(detailedStats.played, 1)
-        XCTAssertEqual(detailedStats.dropped, 0)
+        // Check stats
+        let snapshot = await scheduler.stats
+        XCTAssertEqual(snapshot.queueSize, 0) // Queue should be empty
+        XCTAssertEqual(snapshot.received, 1)
+        XCTAssertEqual(snapshot.played, 1)
+        XCTAssertEqual(snapshot.dropped, 0)
+    }
+
+    func testBufferFillMeasuresToLastChunk() async {
+        let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
+        let scheduler = AudioScheduler(clockSync: clockSync)
+
+        let nowMicros = MonotonicClock.absoluteMicroseconds()
+        // Schedule chunks spanning 5 seconds into the future
+        let firstTimestamp = nowMicros + 100_000 // 100ms ahead
+        let lastTimestamp = nowMicros + 5_000_000 // 5s ahead
+
+        await scheduler.schedule(pcm: Data([0x01]), serverTimestamp: firstTimestamp)
+        await scheduler.schedule(pcm: Data([0x02]), serverTimestamp: lastTimestamp)
+
+        let snapshot = await scheduler.stats
+        // bufferFillMs should reflect the last chunk (~5000ms), not the first (~100ms)
+        XCTAssertGreaterThan(snapshot.bufferFillMs, 4_000.0)
     }
 }
+
+// MARK: - Helpers
+
+/// Wait for the next chunk from the scheduler's output stream, or fail after a timeout.
+private func nextChunkWithTimeout(
+    from scheduler: AudioScheduler,
+    seconds: Int
+) async throws -> ScheduledChunk? {
+    try await withThrowingTaskGroup(of: ScheduledChunk?.self) { group in
+        group.addTask {
+            for await chunk in await scheduler.scheduledChunks {
+                return chunk
+            }
+            return nil
+        }
+        group.addTask {
+            try await Task.sleep(for: .seconds(seconds))
+            throw TimeoutError()
+        }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
+    }
+}
+
+private struct TimeoutError: Error {}
 
 /// Mock ClockSynchronizer for testing
 actor MockClockSynchronizer: ClockSyncProtocol {
