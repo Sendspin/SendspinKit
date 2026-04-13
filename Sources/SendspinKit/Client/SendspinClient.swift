@@ -701,14 +701,14 @@ public final class SendspinClient {
 
             // Build progress: Nullable.merge handles absent vs null vs value
             let mergedProgress = metadata.progress.merge(previous: prev?.progress.flatMap { p in
-                MetadataProgress(trackProgress: p.trackProgressMs, trackDuration: p.trackDurationMs, playbackSpeed: p.playbackSpeed)
+                MetadataProgress(trackProgress: p.trackProgressMs, trackDuration: p.trackDurationMs, playbackSpeed: p.playbackSpeedX1000)
             })
             var progress: PlaybackProgress?
             if let p = mergedProgress {
                 progress = PlaybackProgress(
                     trackProgressMs: p.trackProgress ?? 0,
                     trackDurationMs: p.trackDuration ?? 0,
-                    playbackSpeed: p.playbackSpeed ?? 1_000,
+                    playbackSpeedX1000: p.playbackSpeed ?? 1_000,
                     timestamp: metadata.timestamp ?? 0
                 )
             }
@@ -722,7 +722,7 @@ public final class SendspinClient {
                 albumArtist: metadata.albumArtist.merge(previous: prev?.albumArtist),
                 track: metadata.track.merge(previous: prev?.track),
                 year: metadata.year.merge(previous: prev?.year),
-                artworkUrl: metadata.artworkUrl.merge(previous: prev?.artworkUrl),
+                artworkURL: metadata.artworkUrl.merge(previous: prev?.artworkURL),
                 progress: progress,
                 repeatMode: mergedRepeatStr.flatMap { RepeatMode(rawValue: $0) },
                 shuffle: metadata.shuffle.merge(previous: prev?.shuffle)
@@ -742,9 +742,10 @@ public final class SendspinClient {
 
         if let controller = message.payload.controller {
             let prev = currentControllerState
-            let cmds = controller.supportedCommands?.compactMap { ControllerCommandType(rawValue: $0) }
+            let cmds: Set<ControllerCommandType> = controller.supportedCommands
+                .map { Set($0.compactMap { ControllerCommandType(rawValue: $0) }) }
                 ?? prev?.supportedCommands ?? []
-            let vol = controller.volume ?? prev?.volume ?? 0
+            let vol = min(max(controller.volume ?? prev?.volume ?? 0, 0), 100)
             let muted = controller.muted ?? prev?.muted ?? false
 
             let state = ControllerState(
@@ -776,7 +777,7 @@ public final class SendspinClient {
         fputs("[CLIENT] stream/start: \(playerInfo.codec) \(playerInfo.sampleRate)Hz \(playerInfo.channels)ch \(playerInfo.bitDepth)bit\n", stderr)
 
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
-            connectionState = .error("Unsupported codec: \(playerInfo.codec)")
+            connectionState = .error(.unsupportedCodec(playerInfo.codec))
             clientOperationalState = .error
             try? await sendClientState()
             return
@@ -845,7 +846,7 @@ public final class SendspinClient {
             }
             try? await sendClientState()
         } catch {
-            connectionState = .error("Failed to start audio: \(error.localizedDescription)")
+            connectionState = .error(.audioStartFailed(error.localizedDescription))
             clientOperationalState = .error
             try? await sendClientState()
         }
@@ -1017,7 +1018,7 @@ public final class SendspinClient {
         let clamped = max(0, min(5_000, delayMs))
         guard clamped != staticDelayMs else { return }
         staticDelayMs = clamped
-        eventsContinuation.yield(.staticDelayChanged(clamped))
+        eventsContinuation.yield(.staticDelayChanged(milliseconds: clamped))
         try? await sendClientState()
     }
 

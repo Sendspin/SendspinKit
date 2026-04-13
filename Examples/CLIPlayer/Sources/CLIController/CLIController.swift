@@ -76,7 +76,7 @@ final class CLIController {
                 if let progress = metadata.progress {
                     let pos = Self.formatMs(progress.trackProgressMs)
                     let dur = progress.trackDurationMs > 0 ? Self.formatMs(progress.trackDurationMs) : "live"
-                    let speed = progress.playbackSpeed == 0 ? "paused" : "\(Double(progress.playbackSpeed) / 1000.0)x"
+                    let speed = progress.playbackSpeedX1000 == 0 ? "paused" : "\(Double(progress.playbackSpeedX1000) / 1000.0)x"
                     print("[progress] \(pos) / \(dur) [\(speed)]")
                 }
 
@@ -96,9 +96,6 @@ final class CLIController {
 
             case let .disconnected(reason):
                 print("[disconnected] \(reason)")
-
-            case let .error(message):
-                print("[error] \(message)")
 
             default:
                 break

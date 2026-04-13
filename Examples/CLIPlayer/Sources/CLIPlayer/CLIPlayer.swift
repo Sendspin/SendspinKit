@@ -169,13 +169,13 @@ final class CLIPlayer {
                         title: metadata.title,
                         artist: metadata.artist,
                         album: metadata.album,
-                        artworkUrl: metadata.artworkUrl
+                        artworkUrl: metadata.artworkURL
                     )
                 } else {
                     print("[METADATA] Track: \(metadata.title ?? "unknown")")
                     print("[METADATA] Artist: \(metadata.artist ?? "unknown")")
                     print("[METADATA] Album: \(metadata.album ?? "unknown")")
-                    if let artworkUrl = metadata.artworkUrl {
+                    if let artworkUrl = metadata.artworkURL {
                         print("[METADATA] Artwork URL: \(artworkUrl)")
                     }
                 }
@@ -218,10 +218,6 @@ final class CLIPlayer {
                 disconnectedContinuation.yield()
                 disconnectedContinuation.finish()
 
-            case let .error(message):
-                if !useTUI {
-                    print("[ERROR] \(message)")
-                }
             }
         }
         // Event stream ended (client deallocated or connection dropped)

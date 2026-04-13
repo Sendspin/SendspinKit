@@ -3,25 +3,27 @@
 
 import Foundation
 
+/// Errors that can put the client into an error state during streaming.
+public enum ClientError: Error, Sendable, Equatable, LocalizedError {
+    /// Server sent a codec this client doesn't support
+    case unsupportedCodec(String)
+    /// AudioQueue failed to start (e.g. no audio device available)
+    case audioStartFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .unsupportedCodec(codec):
+            "Unsupported codec: \(codec)"
+        case let .audioStartFailed(reason):
+            "Failed to start audio: \(reason)"
+        }
+    }
+}
+
 /// Connection state of the Sendspin client
-public enum ConnectionState: Sendable {
+public enum ConnectionState: Sendable, Equatable {
     case disconnected
     case connecting
     case connected
-    case error(String) // Store error description instead of Error to maintain Sendable
-}
-
-extension ConnectionState: Equatable {
-    public static func == (lhs: ConnectionState, rhs: ConnectionState) -> Bool {
-        switch (lhs, rhs) {
-        case (.disconnected, .disconnected),
-             (.connecting, .connecting),
-             (.connected, .connected):
-            true
-        case let (.error(lhsError), .error(rhsError)):
-            lhsError == rhsError
-        default:
-            false
-        }
-    }
+    case error(ClientError)
 }

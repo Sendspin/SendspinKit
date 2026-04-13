@@ -115,7 +115,7 @@ struct ServerHelloMessage: SendspinMessage {
 }
 
 /// Connection reason for server/hello
-public enum ConnectionReason: String, Codable, Sendable {
+public enum ConnectionReason: String, Codable, Sendable, Hashable {
     /// Server connected for general availability/discovery
     case discovery
     /// Server connected for active playback
@@ -732,7 +732,7 @@ struct ClientGoodbyeMessage: SendspinMessage {
 }
 
 /// Goodbye reason per spec
-public enum GoodbyeReason: String, Codable, Sendable {
+public enum GoodbyeReason: String, Codable, Sendable, Hashable {
     /// Switching to a different server
     case anotherServer = "another_server"
     /// Client is shutting down
