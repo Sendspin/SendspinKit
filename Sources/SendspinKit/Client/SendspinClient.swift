@@ -58,7 +58,6 @@ public final class SendspinClient {
     private var transport: (any SendspinTransport)?
     private var clockSync: ClockSynchronizer?
     private var audioScheduler: AudioScheduler?
-    private var bufferManager: BufferManager?
     private var audioPlayer: AudioPlayer?
 
     // Task management
@@ -202,21 +201,18 @@ public final class SendspinClient {
         self.audioScheduler = audioScheduler
 
         if roles.contains(.playerV1), let playerConfig {
-            let bufferManager = BufferManager(capacity: playerConfig.bufferCapacity)
             // PCM ring buffer holds decompressed audio for the AudioQueue pipeline.
             // Size it relative to the compressed buffer: compressed audio expands ~10-20x
             // when decoded, but we only need ~2-3s of headroom. Use half the compressed
             // capacity as a reasonable default (512KB for a typical 1MB buffer).
             let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
             let audioPlayer = AudioPlayer(
-                bufferManager: bufferManager,
                 clockSync: clockSync,
                 pcmBufferCapacity: pcmBufferCapacity,
                 volumeControl: volumeControl,
                 processCallback: playerConfig.processCallback
             )
 
-            self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
 
             currentMuted = await audioPlayer.muted
@@ -273,7 +269,6 @@ public final class SendspinClient {
         transport = nil
         clockSync = nil
         audioScheduler = nil
-        bufferManager = nil
         audioPlayer = nil
 
         clientOperationalState = .synchronized
@@ -864,7 +859,6 @@ public final class SendspinClient {
             if let audioPlayer {
                 await audioPlayer.clearBuffer()
             }
-            await bufferManager?.clear()
         }
     }
 

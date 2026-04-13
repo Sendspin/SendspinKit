@@ -13,7 +13,6 @@ struct AudioProcessCallbackTests {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, format in
                 invoked.record(byteCount: samples.count, format: format)
@@ -43,7 +42,6 @@ struct AudioProcessCallbackTests {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, format in
                 invoked.record(byteCount: samples.count, format: format)
@@ -77,7 +75,6 @@ struct AudioProcessCallbackTests {
         let format24 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, format in
                 invoked.record(byteCount: samples.count, format: format)
@@ -107,7 +104,6 @@ struct AudioProcessCallbackTests {
         let modified = CallbackRecorder()
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, _ in
                 // Write a known pattern to verify mutability
@@ -135,7 +131,6 @@ struct AudioProcessCallbackTests {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, format in
                 invoked.record(byteCount: samples.count, format: format)
@@ -157,7 +152,6 @@ struct AudioProcessCallbackTests {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer(),
             processCallback: { samples, _ in
                 invoked.record(byteCount: samples.count, format: Self.stereo16)
@@ -190,7 +184,6 @@ struct AudioProcessCallbackTests {
     @Test
     func `Player works fine without a process callback`() async throws {
         let player = AudioPlayer(
-            bufferManager: BufferManager(capacity: 1_048_576),
             clockSync: ClockSynchronizer()
             // no processCallback
         )

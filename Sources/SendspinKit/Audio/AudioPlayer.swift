@@ -118,7 +118,6 @@ private struct LockedState: @unchecked Sendable {
 
 /// Actor managing synchronized audio playback
 actor AudioPlayer {
-    private let bufferManager: BufferManager
     private let clockSync: ClockSynchronizer
 
     private var audioQueue: AudioQueueRef? {
@@ -167,13 +166,11 @@ actor AudioPlayer {
     /// - Parameter processCallback: Optional callback invoked on the audio thread
     ///   with the final buffer contents before playback. See ``AudioProcessCallback``.
     init(
-        bufferManager: BufferManager,
         clockSync: ClockSynchronizer,
         pcmBufferCapacity: Int = 524_288,
         volumeControl: VolumeControl = SoftwareVolumeControl(),
         processCallback: AudioProcessCallback? = nil
     ) {
-        self.bufferManager = bufferManager
         self.clockSync = clockSync
         self.volumeControl = volumeControl
         self.processCallback = processCallback

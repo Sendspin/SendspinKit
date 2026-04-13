@@ -99,10 +99,8 @@ struct VolumeControlTests {
     @Test
     func `AudioPlayer uses provided VolumeControl for volume`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
-            bufferManager: bufferManager,
             clockSync: clockSync,
             volumeControl: recorder
         )
@@ -120,10 +118,8 @@ struct VolumeControlTests {
     @Test
     func `AudioPlayer uses provided VolumeControl for mute`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
-            bufferManager: bufferManager,
             clockSync: clockSync,
             volumeControl: recorder
         )
@@ -141,10 +137,8 @@ struct VolumeControlTests {
     @Test
     func `AudioPlayer does not call setVolume when muted`() async throws {
         let recorder = RecordingVolumeControl()
-        let bufferManager = BufferManager(capacity: 1_024)
         let clockSync = ClockSynchronizer()
         let player = AudioPlayer(
-            bufferManager: bufferManager,
             clockSync: clockSync,
             volumeControl: recorder
         )
