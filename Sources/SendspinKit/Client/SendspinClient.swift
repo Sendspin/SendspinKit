@@ -690,8 +690,10 @@ public final class SendspinClient {
 
         // Push updated time filter state to the audio callback for sync correction.
         // This is the only cross-boundary needed — the callback does all the math.
-        if let audioPlayer {
-            let snapshot = await clockSync.snapshot()
+        // snapshot() returns nil when the filter is uninitialized (before
+        // first sync or after a reset). In that case the audio player keeps
+        // its existing snapshot and plays unsynchronized.
+        if let audioPlayer, let snapshot = await clockSync.snapshot() {
             await audioPlayer.updateTimeSnapshot(snapshot)
         }
     }

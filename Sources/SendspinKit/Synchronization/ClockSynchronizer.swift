@@ -127,18 +127,15 @@ actor ClockSynchronizer: ClockSyncProtocol {
     }
 
     /// Create an immutable snapshot of the current filter state for audio-thread use.
-    /// The snapshot captures everything needed for time conversion without actor isolation.
-    func snapshot() -> TimeFilterSnapshot {
-        guard filter.isInitialized else {
-            return .invalid
-        }
+    /// Returns `nil` before the first successful sync.
+    func snapshot() -> TimeFilterSnapshot? {
+        guard filter.isInitialized else { return nil }
         return TimeFilterSnapshot(
             offset: filter.offset,
             drift: filter.drift,
             lastUpdate: filter.lastUpdate,
             useDrift: filter.useDrift,
-            clientProcessStartAbsolute: clientProcessStartAbsolute,
-            isValid: true
+            clientProcessStartAbsolute: clientProcessStartAbsolute
         )
     }
 }

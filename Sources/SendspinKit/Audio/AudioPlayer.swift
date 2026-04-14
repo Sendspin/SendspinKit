@@ -62,7 +62,10 @@ private struct LockedState: @unchecked Sendable {
     var dropCounter: UInt32 = 0
     var insertCounter: UInt32 = 0
     var syncPlanner = CorrectionPlanner()
-    var timeSnapshot: TimeFilterSnapshot = .invalid
+    /// `nil` until first sync snapshot arrives via `updateTimeSnapshot`.
+    /// When nil, the audio callback skips sync correction — audio plays
+    /// unsynchronized until the first clock sync completes.
+    var timeSnapshot: TimeFilterSnapshot?
 
     /// Latest sync error in µs, written by audio callback, read by telemetry
     var lastSyncErrorUs: Int64 = 0
@@ -372,6 +375,8 @@ actor AudioPlayer {
 
     /// Push a new time filter snapshot for use by the audio callback.
     /// Called from the clock sync path whenever processServerTime updates the filter.
+    /// Forward-only: there is currently no path to clear the snapshot back to nil.
+    /// If server reconnect/reset support is added, this may need a clearing variant.
     func updateTimeSnapshot(_ snapshot: TimeFilterSnapshot) {
         lockedState.withLock { $0.timeSnapshot = snapshot }
     }
@@ -460,9 +465,9 @@ actor AudioPlayer {
 
             // --- Compute sync error and update correction schedule ---
             // Monotonic clock and cursor are read in the same lock scope = zero jitter.
-            if state.cursorMicroseconds > 0, state.timeSnapshot.isValid {
+            if state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot {
                 let nowAbsolute = MonotonicClock.absoluteMicroseconds()
-                let expectedServerTime = state.timeSnapshot.localToServerTime(nowAbsolute)
+                let expectedServerTime = snapshot.localTimeToServer(nowAbsolute)
 
                 // AQ pipeline latency estimate: ~2 buffers in flight (1 playing + 1 queued).
                 // Actual depth can vary slightly, but this is sufficient for the continuous

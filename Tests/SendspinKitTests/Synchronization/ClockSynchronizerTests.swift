@@ -86,7 +86,7 @@ struct ClockSynchronizerTests {
     }
 
     @Test
-    func `Snapshot produces identical conversions as actor methods`() async {
+    func `Snapshot produces identical conversions as actor methods`() async throws {
         let sync = ClockSynchronizer()
 
         // Feed enough samples to get a stable filter with drift
@@ -104,38 +104,36 @@ struct ClockSynchronizerTests {
         )
 
         let snap = await sync.snapshot()
-        #expect(snap.isValid)
+        let unwrapped = try #require(snap)
 
         // Test serverTimeToLocal matches for several server times
         for serverTime: Int64 in [0, 1_000, 5_000, 100_000, 1_000_000] {
             let actorResult = await sync.serverTimeToLocal(serverTime)
-            let snapResult = snap.serverTimeToLocal(serverTime)
+            let snapResult = unwrapped.serverTimeToLocal(serverTime)
             #expect(
                 actorResult == snapResult,
                 "serverTimeToLocal mismatch for serverTime=\(serverTime): actor=\(actorResult) snapshot=\(snapResult)"
             )
         }
 
-        // Test localToServerTime matches for several local times
+        // Test localTimeToServer matches for several local times
         // Use a recent absolute time as base
         let baseLocal = await sync.serverTimeToLocal(3_000)
         for delta: Int64 in [0, 1_000, 5_000, -1_000] {
             let localTime = baseLocal + delta
             let actorResult = await sync.localTimeToServer(localTime)
-            let snapResult = snap.localToServerTime(localTime)
+            let snapResult = unwrapped.localTimeToServer(localTime)
             #expect(
                 actorResult == snapResult,
-                "localToServerTime mismatch for localTime delta=\(delta): actor=\(actorResult) snapshot=\(snapResult)"
+                "localTimeToServer mismatch for localTime delta=\(delta): actor=\(actorResult) snapshot=\(snapResult)"
             )
         }
     }
 
     @Test
-    func `Snapshot is invalid before first sync`() async {
+    func `Snapshot is nil before first sync`() async {
         let sync = ClockSynchronizer()
         let snap = await sync.snapshot()
-        #expect(!snap.isValid)
-        #expect(snap.serverTimeToLocal(5_000) == 0)
-        #expect(snap.localToServerTime(5_000) == 0)
+        #expect(snap == nil)
     }
 }
