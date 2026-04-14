@@ -14,14 +14,17 @@ struct ClockSyncIntegrationTests {
         // Server is consistently 50 microseconds ahead
         let serverOffset: Int64 = 50
 
+        // Fixed jitter sequence for deterministic results
+        let jitterSequence: [Int64] = [3, 17, 8, 12, 1, 19, 6, 14, 10, 5]
+
         var offsets: [Int64] = []
 
         for round in 0 ..< 10 {
             let baseTime = Int64(round * 10_000)
 
-            // Simulate symmetric network delay with jitter
+            // Simulate symmetric network delay with deterministic jitter
             let networkDelay: Int64 = 100
-            let jitter = Int64.random(in: 0 ..< 20)
+            let jitter = jitterSequence[round]
 
             let clientTx = baseTime
             let serverRx = baseTime + networkDelay + jitter + serverOffset // Client to server + offset
@@ -45,7 +48,9 @@ struct ClockSyncIntegrationTests {
 
         // Verify median filtering is working (offsets should be relatively stable)
         let lastFive = Array(offsets.suffix(5))
-        let maxVariation = try #require(lastFive.max()) - lastFive.min()!
+        let maxValue = try #require(lastFive.max())
+        let minValue = try #require(lastFive.min())
+        let maxVariation = maxValue - minValue
         #expect(maxVariation < 200) // Low variation indicates good filtering
     }
 

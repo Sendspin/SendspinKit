@@ -31,7 +31,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create binary message
         var messageData = Data()
-        messageData.append(4) // Audio chunk type (per spec, player role uses type 4)
+        messageData.append(BinaryMessageType.audioChunk.rawValue)
 
         let timestamp: Int64 = 1_000_000 // 1 second in microseconds
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -43,6 +43,8 @@ struct BinaryMessageIntegrationTests {
 
         #expect(message.type == .audioChunk)
         #expect(message.timestamp == 1_000_000)
+        // Verify header/payload split: total frame = header + payload
+        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
         #expect(message.data.count == dataSize)
     }
 
@@ -54,7 +56,7 @@ struct BinaryMessageIntegrationTests {
         // Create 10 sequential chunks
         for chunkIndex in 0 ..< 10 {
             var data = Data()
-            data.append(4) // Audio chunk type (per spec, player role uses type 4)
+            data.append(BinaryMessageType.audioChunk.rawValue)
 
             let timestamp = Int64(chunkIndex) * chunkDuration
             withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -75,7 +77,9 @@ struct BinaryMessageIntegrationTests {
         }
 
         // Verify time span
-        let totalDuration = try #require(chunks.last?.timestamp) - chunks.first!.timestamp
+        let lastTimestamp = try #require(chunks.last?.timestamp)
+        let firstTimestamp = try #require(chunks.first?.timestamp)
+        let totalDuration = lastTimestamp - firstTimestamp
         #expect(totalDuration == 9 * chunkDuration) // 9 intervals between 10 chunks
     }
 
@@ -110,7 +114,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create artwork message for channel 0
         var messageData = Data()
-        messageData.append(8) // Artwork channel 0 (per spec, artwork role uses types 8-11)
+        messageData.append(BinaryMessageType.artworkChannel0.rawValue)
 
         let timestamp: Int64 = 5_000_000 // 5 seconds
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -122,7 +126,7 @@ struct BinaryMessageIntegrationTests {
 
         #expect(message.type == .artworkChannel0)
         #expect(message.timestamp == 5_000_000)
-        #expect(message.data.count == jpegData.count)
+        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
 
         // Verify JPEG header is intact
         #expect(message.data[0] == 0xFF)
@@ -133,12 +137,15 @@ struct BinaryMessageIntegrationTests {
 
     @Test
     func `All artwork channels simultaneously`() throws {
+        let artworkTypes: [BinaryMessageType] = [
+            .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3
+        ]
         var channels: [BinaryMessage] = []
 
         // Create messages for all 4 artwork channels
-        for channelNum in 0 ..< 4 {
+        for (channelNum, artworkType) in artworkTypes.enumerated() {
             var data = Data()
-            data.append(UInt8(8 + channelNum)) // Channels 8-11 (per spec)
+            data.append(artworkType.rawValue)
 
             let timestamp: Int64 = 1_000_000
             withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -167,7 +174,7 @@ struct BinaryMessageIntegrationTests {
     func `Empty artwork message (clear artwork command)`() throws {
         // Per spec, empty artwork message clears the display
         var data = Data()
-        data.append(8) // Artwork channel 0 (per spec, type 8)
+        data.append(BinaryMessageType.artworkChannel0.rawValue)
 
         let timestamp: Int64 = 2_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
@@ -195,7 +202,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create visualizer message
         var messageData = Data()
-        messageData.append(16) // Visualizer data type (per spec, type 16)
+        messageData.append(BinaryMessageType.visualizerData.rawValue)
 
         let timestamp: Int64 = 3_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -217,7 +224,7 @@ struct BinaryMessageIntegrationTests {
         let audioData = Data(repeating: 0xAB, count: chunkSize)
 
         var messageData = Data()
-        messageData.append(4) // Audio chunk (per spec, player role uses type 4)
+        messageData.append(BinaryMessageType.audioChunk.rawValue)
 
         let timestamp: Int64 = 10_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -228,6 +235,6 @@ struct BinaryMessageIntegrationTests {
 
         #expect(message.type == .audioChunk)
         #expect(message.data.count == chunkSize)
-        #expect(messageData.count == 9 + chunkSize) // 1 type + 8 timestamp + data
+        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
     }
 }

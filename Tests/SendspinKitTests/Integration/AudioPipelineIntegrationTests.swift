@@ -61,10 +61,10 @@ enum TestSignal {
     static func packBinaryFrame(
         audioData: [UInt8],
         timestampMicroseconds: Int64,
-        type: UInt8 = 0x04 // audioChunk
+        type: BinaryMessageType = .audioChunk
     ) -> Data {
         var frame = Data()
-        frame.append(type)
+        frame.append(type.rawValue)
         withUnsafeBytes(of: timestampMicroseconds.bigEndian) { frame.append(contentsOf: $0) }
         frame.append(contentsOf: audioData)
         return frame
@@ -105,15 +105,15 @@ struct AudioPipelineIntegrationTests {
         #expect(decoded.count == frameCount * 2 * 2) // stereo × 2 bytes
 
         // First sample should be near zero (sin(0) = 0)
-        let firstSample = decoded.withUnsafeBytes { $0.load(as: Int16.self) }
+        let firstSample = Int16(littleEndian: decoded.withUnsafeBytes { $0.load(as: Int16.self) })
         #expect(firstSample == 0)
 
         // Quarter-wave peak should be near max (sin(π/2) ≈ 1)
         let quarterWaveFrame = 48_000 / (440 * 4)
         let peakOffset = quarterWaveFrame * 2 * 2 // stereo × 2 bytes
-        let peakSample = decoded.withUnsafeBytes {
+        let peakSample = Int16(littleEndian: decoded.withUnsafeBytes {
             $0.load(fromByteOffset: peakOffset, as: Int16.self)
-        }
+        })
         let peakF32 = Float(peakSample) / Float(Int16.max)
         #expect(peakF32 > 0.9, "Quarter-wave peak should be near 1.0, got \(peakF32)")
     }
