@@ -337,7 +337,99 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 7. connect throws alreadyConnected
+    // MARK: 7. rawAudioChunk emitted for chunks arriving before stream/start
+
+    @Test
+    func `raw audio chunks emitted even when arriving before stream start`() async throws {
+        // Regression test: binary and text messages are consumed by parallel tasks
+        // in the message loop. If the binary task processes audio chunks before the
+        // text task processes stream/start, shouldEmitRawAudio must already be true
+        // (set at connection setup, not deferred to handleStreamStart).
+        let client = SendspinClient(
+            clientId: "test-client",
+            name: "Test Client",
+            roles: [.playerV1],
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 1_024,
+                supportedFormats: [
+                    AudioFormatSpec(codec: .pcm, channels: 1, sampleRate: 8_000, bitDepth: 16)
+                ],
+                emitRawAudioEvents: true
+            )
+        )
+
+        let mock = MockTransport()
+        try await client.acceptConnection(mock)
+
+        // Inject server/hello so the client reaches .connected state
+        try await mock.injectText(serverHelloJSON())
+        try await waitForState(client, expected: .connected, timeout: .seconds(3))
+
+        // Inject binary audio chunks BEFORE stream/start text message.
+        // This reproduces the race: the binary task may process these before
+        // the text task gets to stream/start.
+        let pcmSamples = Data(repeating: 0x7F, count: 400) // 200 samples × 16-bit
+        let timestamp: Int64 = 1_000_000
+        let chunkCount = 3
+        for i in 0 ..< chunkCount {
+            var frame = Data()
+            frame.append(BinaryMessageType.audioChunk.rawValue)
+            var ts = (timestamp + Int64(i) * 25_000).bigEndian
+            frame.append(Data(bytes: &ts, count: 8))
+            frame.append(pcmSamples)
+            await mock.injectBinary(frame)
+        }
+
+        // Now inject stream/start — this is when handleStreamStart runs, but
+        // the audio chunks above may already have been processed by then.
+        let streamStart = StreamStartMessage(
+            payload: StreamStartPayload(
+                player: StreamStartPlayer(
+                    codec: "pcm",
+                    sampleRate: 8_000,
+                    channels: 1,
+                    bitDepth: 16,
+                    codecHeader: nil
+                ),
+                artwork: nil,
+                visualizer: nil
+            )
+        )
+        let streamStartData = try JSONEncoder().encode(streamStart)
+        let streamStartJSON = try #require(String(data: streamStartData, encoding: .utf8))
+        await mock.injectText(streamStartJSON)
+
+        // Collect rawAudioChunk events
+        let stream = client.events
+        let collected = await withTaskGroup(of: Int.self) { group in
+            group.addTask {
+                var count = 0
+                for await event in stream {
+                    if case .rawAudioChunk = event {
+                        count += 1
+                    }
+                    // Stop after we've seen stream start + all chunks, or timeout
+                    if count >= chunkCount { break }
+                }
+                return count
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(3))
+                return -1 // sentinel for timeout
+            }
+            for await result in group {
+                group.cancelAll()
+                return result
+            }
+            return 0
+        }
+
+        #expect(collected == chunkCount, "Expected \(chunkCount) rawAudioChunk events but got \(collected)")
+
+        await client.disconnect()
+    }
+
+    // MARK: 8. connect throws alreadyConnected
 
     @Test
     func `connect throws already connected when connected`() async throws {

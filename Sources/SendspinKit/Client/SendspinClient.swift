@@ -231,6 +231,11 @@ public final class SendspinClient {
             self.audioPlayer = audioPlayer
 
             currentMuted = await audioPlayer.muted
+
+            // Set eagerly so raw audio events are emitted even for chunks that
+            // arrive before stream/start is processed (binary and text messages
+            // are consumed by parallel tasks, so binary chunks can race ahead).
+            shouldEmitRawAudio = playerConfig.emitRawAudioEvents
         }
 
         try await sendClientHello()
