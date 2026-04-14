@@ -11,6 +11,8 @@ public actor NWWebSocketTransport: SendspinTransport {
     private var connection: NWConnection?
     private let textContinuation: AsyncStream<String>.Continuation
     private let binaryContinuation: AsyncStream<Data>.Continuation
+    /// Confined to actor isolation — do not pass across isolation boundaries.
+    private let encoder = SendspinEncoding.makeEncoder()
 
     /// Set when a WebSocket close frame is received. Used by `finishStreams()`
     /// to distinguish a clean server-initiated close from an unexpected error,
@@ -49,14 +51,7 @@ public actor NWWebSocketTransport: SendspinTransport {
             throw TransportError.notConnected
         }
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
-        let data = try encoder.encode(message)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw TransportError.encodingFailed
-        }
-
-        let sendData = text.data(using: .utf8)
+        let sendData = try encoder.encode(message)
         let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
         let context = NWConnection.ContentContext(
             identifier: "wsText",
@@ -117,10 +112,11 @@ public actor NWWebSocketTransport: SendspinTransport {
 
     /// Recursively receive WebSocket messages from the NWConnection.
     ///
-    /// On `.close` frames we finish the stream continuations but do NOT cancel the
-    /// connection. The receive loop continues — NWConnection will deliver any buffered
-    /// frames and then produce an error, terminating the loop naturally. This avoids a
-    /// race between `cancel()` aborting pending receives and frames still in the buffer.
+    /// On `.close` frames we set `closeReceived` but do NOT finish the stream
+    /// continuations or cancel the connection. The receive loop continues —
+    /// NWConnection will deliver any buffered frames and then produce an error,
+    /// which calls `finishStreams()` to terminate naturally. This avoids a race
+    /// between `cancel()` aborting pending receives and frames still in the buffer.
     private nonisolated func receiveNext(on connection: NWConnection) {
         connection.receiveMessage { [weak self] content, context, _, error in
             guard let self else { return }
@@ -143,8 +139,8 @@ public actor NWWebSocketTransport: SendspinTransport {
                         Task { await self.yieldBinary(data) }
                     }
                 case .close:
-                    // Finish continuations so consumers see the stream end, but keep
-                    // receiving — there may be data frames queued ahead of the close.
+                    // Note the close but keep receiving — data frames may be queued
+                    // behind it. Streams finish when the receive loop terminates.
                     Task { await self.handleClose() }
                 case .ping, .pong, .cont:
                     break

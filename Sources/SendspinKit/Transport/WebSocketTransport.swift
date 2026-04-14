@@ -2,33 +2,57 @@
 // ABOUTME: Provides AsyncStreams for text (JSON) and binary messages
 
 import Foundation
+import os
 import Starscream
 
-/// Delegate to handle WebSocket events and receiving
-private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
+/// Mutable state shared between the actor and the Starscream callback queue.
+/// Protected by `OSAllocatedUnfairLock` so `StarscreamDelegate` can be
+/// properly `Sendable` without `@unchecked`.
+private struct DelegateState {
+    var connectionContinuation: CheckedContinuation<Void, Error>?
+    var connected: Bool = false
+}
+
+/// Delegate to handle WebSocket events and receiving.
+///
+/// All mutable state lives in a lock-protected `DelegateState`, making this
+/// class genuinely `Sendable` — no `@unchecked` needed. The lock is held
+/// briefly (just setting a bool or consuming a continuation), so contention
+/// is negligible.
+private final class StarscreamDelegate: WebSocketDelegate, Sendable {
     let textContinuation: AsyncStream<String>.Continuation
     let binaryContinuation: AsyncStream<Data>.Continuation
-    var connectionContinuation: CheckedContinuation<Void, Error>?
+    let state = OSAllocatedUnfairLock(initialState: DelegateState())
 
     init(textContinuation: AsyncStream<String>.Continuation, binaryContinuation: AsyncStream<Data>.Continuation) {
         self.textContinuation = textContinuation
         self.binaryContinuation = binaryContinuation
     }
 
+    /// Whether the WebSocket is connected. Thread-safe read.
+    var isConnected: Bool {
+        state.withLock { $0.connected }
+    }
+
     func didReceive(event: WebSocketEvent, client _: any WebSocketClient) {
         switch event {
         case .connected:
-            connectionContinuation?.resume()
-            connectionContinuation = nil
-
-        case .disconnected:
-            // If we were waiting for connection, fail it
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
+            let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+                state.connected = true
+                let cont = state.connectionContinuation
+                state.connectionContinuation = nil
+                return cont
             }
-            textContinuation.finish()
-            binaryContinuation.finish()
+            continuation?.resume()
+
+        case let .disconnected(reason, code):
+            handleDisconnection(error: TransportError.disconnected(reason: reason, code: code))
+
+        case .cancelled, .peerClosed:
+            handleDisconnection(error: TransportError.connectionFailed)
+
+        case let .error(error):
+            handleDisconnection(error: error ?? TransportError.connectionFailed)
 
         case let .text(string):
             textContinuation.yield(string)
@@ -36,42 +60,31 @@ private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
         case let .binary(data):
             binaryContinuation.yield(data)
 
-        case .ping:
+        case .ping, .pong, .viabilityChanged, .reconnectSuggested:
             break
-
-        case .pong:
-            break
-
-        case .viabilityChanged:
-            break
-
-        case .reconnectSuggested:
-            break
-
-        case .cancelled:
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
-
-        case .error:
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
-
-        case .peerClosed:
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
         }
+    }
+
+    // MARK: - Disconnection (called by Starscream callbacks AND the actor's disconnect())
+
+    /// Mark as disconnected, finish streams, and resume any pending connection
+    /// continuation.
+    ///
+    /// The continuation is consumed under the lock, then resumed outside it
+    /// to avoid deadlock if the resumed task synchronously re-enters.
+    /// Multiple concurrent calls are safe: the lock ensures only one caller
+    /// gets the continuation, and `AsyncStream.Continuation.finish()` is
+    /// idempotent.
+    func handleDisconnection(error: Error) {
+        let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+            state.connected = false
+            let cont = state.connectionContinuation
+            state.connectionContinuation = nil
+            return cont
+        }
+        continuation?.resume(throwing: error)
+        textContinuation.finish()
+        binaryContinuation.finish()
     }
 }
 
@@ -81,6 +94,9 @@ public actor WebSocketTransport: SendspinTransport {
     private var webSocket: WebSocket?
     private let url: URL
 
+    /// Confined to actor isolation — do not pass across isolation boundaries.
+    private let encoder = SendspinEncoding.makeEncoder()
+
     /// Stream of incoming text messages (JSON)
     public nonisolated let textMessages: AsyncStream<String>
 
@@ -88,14 +104,7 @@ public actor WebSocketTransport: SendspinTransport {
     public nonisolated let binaryMessages: AsyncStream<Data>
 
     public init(url: URL) {
-        // Ensure URL has proper WebSocket path if not specified
-        if url.path.isEmpty || url.path == "/" {
-            // Append recommended Sendspin endpoint path
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-            self.url = components.url ?? url
-        } else {
-            self.url = url
-        }
+        self.url = url
 
         // Create streams and pass continuations to delegate
         let (textStream, textCont) = AsyncStream<String>.makeStream()
@@ -125,60 +134,83 @@ public actor WebSocketTransport: SendspinTransport {
 
         webSocket = socket
 
-        // Wait for connection to complete
+        // Store the continuation under the lock, then kick off connect().
+        // If Starscream fires .connected synchronously (unlikely but not contractually
+        // impossible), CheckedContinuation handles resume-before-suspension correctly.
         try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            delegate.connectionContinuation = continuation
+            delegate.state.withLock { $0.connectionContinuation = continuation }
             socket.connect()
         }
     }
 
-    /// Check if currently connected
-    public var isConnected: Bool {
-        webSocket != nil
+    /// Whether the underlying WebSocket connection is alive.
+    /// Reads from the lock-protected delegate state — `nonisolated` because
+    /// the lock is the actual synchronization mechanism, not actor isolation.
+    public nonisolated var isConnected: Bool {
+        delegate.isConnected
     }
 
-    /// Send a text message (JSON)
+    /// Send a text message (JSON).
+    ///
+    /// Note: the `isConnected` check is best-effort — the connection could drop
+    /// between the guard and the write (inherent TOCTOU). Starscream handles
+    /// writes to a closing socket gracefully (they're silently dropped).
     public func send(_ message: some Codable & Sendable) async throws {
-        guard let webSocket else {
+        guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
+        // JSONEncoder always produces valid UTF-8.
         let data = try encoder.encode(message)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw TransportError.encodingFailed
-        }
-
+        // swiftlint:disable:next optional_data_string_conversion
+        let text = String(decoding: data, as: UTF8.self)
         webSocket.write(string: text)
     }
 
     /// Send a binary message
     public func sendBinary(_ data: Data) async throws {
-        guard let webSocket else {
+        guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
         webSocket.write(data: data)
     }
 
-    /// Disconnect from server
+    /// Disconnect from server.
+    /// Delegates to `handleDisconnection` on the delegate for consistent
+    /// state management, then nils out the socket.
     public func disconnect() async {
         webSocket?.disconnect()
         webSocket = nil
+        delegate.handleDisconnection(error: CancellationError())
     }
 }
 
-/// Errors that can occur during WebSocket transport
-public enum TransportError: Error {
-    /// Failed to encode message to UTF-8 string
-    case encodingFailed
-
-    /// WebSocket is not connected - call connect() first
+/// Errors that can occur during WebSocket transport.
+///
+/// `errorDescription` delegates to `description` — keep both in sync when adding cases.
+public enum TransportError: LocalizedError, CustomStringConvertible {
+    /// WebSocket is not connected — call connect() first
     case notConnected
 
-    /// Already connected - call disconnect() before reconnecting
+    /// Already connected — call disconnect() before reconnecting
     case alreadyConnected
 
     /// Connection failed during handshake
     case connectionFailed
+
+    /// WebSocket was disconnected by the remote peer
+    case disconnected(reason: String, code: UInt16)
+
+    public var description: String {
+        switch self {
+        case .notConnected: "WebSocket is not connected"
+        case .alreadyConnected: "WebSocket is already connected"
+        case .connectionFailed: "WebSocket connection failed"
+        case let .disconnected(reason, code): "WebSocket disconnected (code \(code): \(reason))"
+        }
+    }
+
+    public var errorDescription: String? {
+        description
+    }
 }
