@@ -54,12 +54,23 @@ public struct PlayerConfiguration: Sendable {
     /// See ``AudioProcessCallback`` for threading constraints and parameter details.
     public let processCallback: AudioProcessCallback?
 
+    /// When `true`, the client emits ``ClientEvent/rawAudioChunk(data:serverTimestamp:)``
+    /// for every audio binary message received from the server.
+    ///
+    /// The `data` payload contains the raw bytes exactly as received — PCM samples
+    /// for PCM streams, encoded FLAC frames for FLAC streams. Useful for conformance
+    /// testing, recording, or analysis.
+    ///
+    /// Defaults to `false` to avoid unnecessary work in normal playback scenarios.
+    public let emitRawAudioEvents: Bool
+
     public init(
         bufferCapacity: Int,
         supportedFormats: [AudioFormatSpec],
         initialStaticDelayMs: Int = 0,
         volumeMode: VolumeMode = .software,
-        processCallback: AudioProcessCallback? = nil
+        processCallback: AudioProcessCallback? = nil,
+        emitRawAudioEvents: Bool = false
     ) {
         precondition(bufferCapacity > 0, "Buffer capacity must be positive")
         precondition(!supportedFormats.isEmpty, "Must support at least one audio format")
@@ -73,5 +84,6 @@ public struct PlayerConfiguration: Sendable {
         self.initialStaticDelayMs = initialStaticDelayMs
         self.volumeMode = volumeMode
         self.processCallback = processCallback
+        self.emitRawAudioEvents = emitRawAudioEvents
     }
 }

@@ -22,6 +22,16 @@ enum BinaryMessageType: UInt8 {
 
     /// Visualizer role (16-23)
     case visualizerData = 16
+
+    /// The artwork channel index (0-3) for artwork message types, or `nil` for non-artwork types.
+    var artworkChannel: Int? {
+        switch self {
+        case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
+            Int(rawValue - BinaryMessageType.artworkChannel0.rawValue)
+        default:
+            nil
+        }
+    }
 }
 
 /// Binary message from server

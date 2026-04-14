@@ -38,6 +38,8 @@ public final class SendspinClient {
     /// updated when the server sends a `set_static_delay` command.
     public private(set) var staticDelayMs: Int
     private var artworkStreamActive = false
+    /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
+    private var shouldEmitRawAudio = false
 
     /// Accumulated state (merged from server deltas per spec)
     /// Current track metadata, accumulated from `server/state` deltas.
@@ -46,6 +48,9 @@ public final class SendspinClient {
     public private(set) var currentGroup: GroupInfo?
     /// Current controller state from the server.
     public private(set) var currentControllerState: ControllerState?
+    /// Codec header for the current stream (e.g. FLAC streaminfo), if any.
+    /// Set when `stream/start` carries a `codec_header` field; cleared on `stream/end`.
+    public private(set) var currentCodecHeader: Data?
 
     // Multi-server state
     private var currentConnectionReason: ConnectionReason?
@@ -275,6 +280,8 @@ public final class SendspinClient {
         currentVolume = 100
         currentMuted = false
         currentStreamFormat = nil
+        currentCodecHeader = nil
+        shouldEmitRawAudio = false
         pendingFormat = nil
         pendingCodecHeader = nil
         artworkStreamActive = false
@@ -635,11 +642,7 @@ public final class SendspinClient {
             await handleAudioChunkNonisolated(message)
 
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
-            // Per spec: binary messages should be rejected if there is no active stream
-            guard await artworkStreamActive else { return }
-            let channel = Int(message.type.rawValue - 8)
-            // Empty payload (no image data) means clear the artwork per spec
-            eventsContinuation.yield(.artworkReceived(channel: channel, data: message.data))
+            await handleArtworkBinary(message)
 
         case .visualizerData:
             eventsContinuation.yield(.visualizerData(message.data))
@@ -793,6 +796,8 @@ public final class SendspinClient {
         if let headerBase64 = playerInfo.codecHeader {
             codecHeader = Data(base64Encoded: headerBase64)
         }
+        currentCodecHeader = codecHeader
+        shouldEmitRawAudio = playerConfig?.emitRawAudioEvents ?? false
 
         let wasPlaying = await audioPlayer.isPlaying
         let previousFormat = currentStreamFormat
@@ -894,6 +899,7 @@ public final class SendspinClient {
                 await audioPlayer.stop()
             }
             currentStreamFormat = nil
+            currentCodecHeader = nil
         }
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
@@ -931,7 +937,29 @@ public final class SendspinClient {
         await handleAudioChunk(message)
     }
 
+    /// Handle artwork binary frames on the main actor.
+    ///
+    /// The spec says binary messages "should be rejected if there is no active stream."
+    /// We intentionally don't gate on `artworkStreamActive` here because binary and text
+    /// messages arrive on parallel tasks — artwork binary frames can (and do) arrive
+    /// before the `stream/start` text message that sets the flag. The binary message
+    /// type (8-11) already validates this is artwork data from the server, which is
+    /// sufficient validation. Dropping legitimate frames due to a race would be worse
+    /// than delivering them slightly early.
+    private func handleArtworkBinary(_ message: BinaryMessage) {
+        guard let channel = message.type.artworkChannel else { return }
+        // Empty payload (no image data) means clear the artwork per spec
+        eventsContinuation.yield(.artworkReceived(channel: channel, data: message.data))
+    }
+
     private func handleAudioChunk(_ message: BinaryMessage) async {
+        // Emit raw audio data before any processing for conformance testing / recording.
+        // This must be above the clock-sync guard — the conformance adapter needs every
+        // chunk regardless of sync state.
+        if shouldEmitRawAudio {
+            eventsContinuation.yield(.rawAudioChunk(data: message.data, serverTimestamp: message.timestamp))
+        }
+
         // Don't process audio until clock sync is complete — timestamps would be wrong
         if !isClockSynced {
             if let clockSync, await clockSync.hasSynced {

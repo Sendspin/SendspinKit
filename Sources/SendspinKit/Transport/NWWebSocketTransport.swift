@@ -11,6 +11,11 @@ public actor NWWebSocketTransport: SendspinTransport {
     private let textContinuation: AsyncStream<String>.Continuation
     private let binaryContinuation: AsyncStream<Data>.Continuation
 
+    /// Set when a WebSocket close frame is received. Used by `finishStreams()`
+    /// to distinguish a clean server-initiated close from an unexpected error,
+    /// so we can suppress the noisy (but expected) post-close receive error log.
+    private var closeReceived = false
+
     public nonisolated let textMessages: AsyncStream<String>
     public nonisolated let binaryMessages: AsyncStream<Data>
 
@@ -110,13 +115,17 @@ public actor NWWebSocketTransport: SendspinTransport {
     // MARK: - Private
 
     /// Recursively receive WebSocket messages from the NWConnection.
+    ///
+    /// On `.close` frames we finish the stream continuations but do NOT cancel the
+    /// connection. The receive loop continues — NWConnection will deliver any buffered
+    /// frames and then produce an error, terminating the loop naturally. This avoids a
+    /// race between `cancel()` aborting pending receives and frames still in the buffer.
     private nonisolated func receiveNext(on connection: NWConnection) {
         connection.receiveMessage { [weak self] content, context, _, error in
             guard let self else { return }
 
             if let error {
-                fputs("[NWTransport] receive error: \(error)\n", stderr)
-                Task { await self.handleDisconnect() }
+                Task { await self.handleReceiveError(error) }
                 return
             }
 
@@ -133,14 +142,10 @@ public actor NWWebSocketTransport: SendspinTransport {
                         Task { await self.yieldBinary(data) }
                     }
                 case .close:
-                    Task { await self.handleDisconnect() }
-                    return
-                case .ping:
-                    // NWProtocolWebSocket handles pong automatically
-                    break
-                case .pong:
-                    break
-                case .cont:
+                    // Finish continuations so consumers see the stream end, but keep
+                    // receiving — there may be data frames queued ahead of the close.
+                    Task { await self.handleClose() }
+                case .ping, .pong, .cont:
                     break
                 @unknown default:
                     break
@@ -160,9 +165,25 @@ public actor NWWebSocketTransport: SendspinTransport {
         binaryContinuation.yield(data)
     }
 
-    private func handleDisconnect() {
-        connection?.cancel()
-        connection = nil
+    /// Called on WebSocket close frame. We note it but do NOT finish the stream
+    /// continuations yet — data frames may still be queued behind the close in the
+    /// NWConnection buffer. The streams are finished when the receive loop terminates
+    /// naturally (error or connection teardown) via `finishStreams()`.
+    private func handleClose() {
+        closeReceived = true
+    }
+
+    /// Called when the receive loop encounters an error.
+    /// After a clean close frame, the post-close error is expected — suppress the log.
+    private func handleReceiveError(_ error: NWError) {
+        if !closeReceived {
+            fputs("[NWTransport] receive error: \(error)\n", stderr)
+        }
+        finishStreams()
+    }
+
+    /// Called when the receive loop terminates (error or connection gone).
+    private func finishStreams() {
         textContinuation.finish()
         binaryContinuation.finish()
     }

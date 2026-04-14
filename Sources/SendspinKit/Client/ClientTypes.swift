@@ -55,6 +55,14 @@ public enum ClientEvent: Sendable, Equatable {
     case artworkStreamStarted([StreamArtworkChannelConfig])
     case artworkReceived(channel: Int, data: Data)
     case visualizerData(Data)
+    /// Raw audio chunk bytes exactly as received from the server (before decoding).
+    /// For PCM streams, this is the raw PCM samples. For FLAC streams, these are
+    /// encoded FLAC frames. Only emitted when ``PlayerConfiguration/emitRawAudioEvents``
+    /// is `true`.
+    ///
+    /// `serverTimestamp` is microseconds in the server's clock domain (same as
+    /// ``PlaybackProgress/timestamp``).
+    case rawAudioChunk(data: Data, serverTimestamp: Int64)
     /// Server changed the static delay via `server/command`. The host app should
     /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
     case staticDelayChanged(milliseconds: Int)
