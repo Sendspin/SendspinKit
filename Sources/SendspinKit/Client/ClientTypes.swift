@@ -7,7 +7,7 @@ import Foundation
 ///
 /// Per spec, only `playing` and `stopped` exist on the wire. Paused playback
 /// is represented as `playing` with `PlaybackProgress.playbackSpeedX1000 == 0`.
-public enum PlaybackState: String, Sendable {
+public enum PlaybackState: String, Codable, Sendable, Hashable {
     case playing
     case stopped
 }
@@ -15,7 +15,7 @@ public enum PlaybackState: String, Sendable {
 /// Repeat mode for playback queue.
 ///
 /// Values match the wire format: `'off'`, `'one'`, `'all'`.
-public enum RepeatMode: String, Sendable {
+public enum RepeatMode: String, Codable, Sendable, Hashable {
     case off
     case one
     case all
@@ -23,9 +23,14 @@ public enum RepeatMode: String, Sendable {
 
 /// Controller command identifiers per spec.
 ///
+/// These are group-level commands sent by a client with the `controller` role
+/// (play, pause, skip, group volume/mute, etc.). Distinct from ``PlayerCommand``
+/// which targets an individual player. The `volume` and `mute` cases overlap
+/// because group volume/mute cascades to individual player volumes/mutes.
+///
 /// Raw values match the wire format exactly (e.g. `"repeat_off"`, `"switch"`).
 /// Used in `supported_commands` arrays and `client/command` messages.
-public enum ControllerCommandType: String, Sendable, Hashable {
+public enum ControllerCommandType: String, Codable, Sendable, Hashable {
     case play, pause, stop, next, previous
     case volume, mute
     case repeatOff = "repeat_off"

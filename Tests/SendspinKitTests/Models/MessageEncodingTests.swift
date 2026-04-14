@@ -161,7 +161,7 @@ struct MessageEncodingTests {
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
 
         let player = try #require(message.payload.player)
-        #expect(player.command == "volume")
+        #expect(player.command == .volume)
         #expect(player.volume == 75)
         #expect(player.mute == nil)
     }
@@ -175,7 +175,7 @@ struct MessageEncodingTests {
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
 
         let player = try #require(message.payload.player)
-        #expect(player.command == "mute")
+        #expect(player.command == .mute)
         #expect(player.mute == true)
     }
 
@@ -188,7 +188,7 @@ struct MessageEncodingTests {
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
 
         let player = try #require(message.payload.player)
-        #expect(player.command == "set_static_delay")
+        #expect(player.command == .setStaticDelay)
         #expect(player.staticDelayMs == 250)
     }
 

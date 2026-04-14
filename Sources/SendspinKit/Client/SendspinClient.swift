@@ -379,7 +379,7 @@ public final class SendspinClient {
                 volume: currentVolume,
                 muted: currentMuted,
                 staticDelayMs: staticDelayMs,
-                supportedCommands: ["set_static_delay"]
+                supportedCommands: [.setStaticDelay]
             )
         }
 
@@ -717,7 +717,6 @@ public final class SendspinClient {
             }
 
             // Merge using Nullable: .absent keeps previous, .null clears, .value updates
-            let mergedRepeatStr = metadata.repeat.merge(previous: prev?.repeatMode?.rawValue)
             let merged = TrackMetadata(
                 title: metadata.title.merge(previous: prev?.title),
                 artist: metadata.artist.merge(previous: prev?.artist),
@@ -727,7 +726,7 @@ public final class SendspinClient {
                 year: metadata.year.merge(previous: prev?.year),
                 artworkURL: metadata.artworkUrl.merge(previous: prev?.artworkURL),
                 progress: progress,
-                repeatMode: mergedRepeatStr.flatMap { RepeatMode(rawValue: $0) },
+                repeatMode: metadata.repeat.merge(previous: prev?.repeatMode),
                 shuffle: metadata.shuffle.merge(previous: prev?.shuffle)
             )
             currentMetadata = merged
@@ -746,7 +745,7 @@ public final class SendspinClient {
         if let controller = message.payload.controller {
             let prev = currentControllerState
             let cmds: Set<ControllerCommandType> = controller.supportedCommands
-                .map { Set($0.compactMap { ControllerCommandType(rawValue: $0) }) }
+                .map { Set($0) }
                 ?? prev?.supportedCommands ?? []
             let vol = min(max(controller.volume ?? prev?.volume ?? 0, 0), 100)
             let muted = controller.muted ?? prev?.muted ?? false
@@ -872,20 +871,18 @@ public final class SendspinClient {
         guard let playerCmd = message.payload.player else { return }
 
         switch playerCmd.command {
-        case "volume":
+        case .volume:
             if let volume = playerCmd.volume {
                 await setVolume(volume)
             }
-        case "mute":
+        case .mute:
             if let mute = playerCmd.mute {
                 await setMute(mute)
             }
-        case "set_static_delay":
+        case .setStaticDelay:
             if let delayMs = playerCmd.staticDelayMs {
                 await setStaticDelay(max(0, min(5_000, delayMs)))
             }
-        default:
-            break // Ignore unsupported commands per spec
         }
     }
 
@@ -913,15 +910,14 @@ public final class SendspinClient {
 
     private func handleGroupUpdate(_ message: GroupUpdateMessage) async {
         // Per spec: persist server_id when playback_state transitions to 'playing'
-        if message.payload.playbackState == "playing", let serverId = currentServerId {
+        if message.payload.playbackState == .playing, let serverId = currentServerId {
             Self.lastPlayedServerId = serverId
         }
 
         // Per spec: "Contains delta updates with only the changed fields.
         // The client should merge these updates into existing state."
         let prev = currentGroup
-        let playbackState = message.payload.playbackState.flatMap { PlaybackState(rawValue: $0) }
-            ?? prev?.playbackState
+        let playbackState = message.payload.playbackState ?? prev?.playbackState
 
         let info = GroupInfo(
             groupId: message.payload.groupId ?? prev?.groupId ?? "",
@@ -1077,7 +1073,7 @@ public final class SendspinClient {
         guard let transport else { return }
 
         let request = PlayerFormatRequest(
-            codec: codec?.rawValue,
+            codec: codec,
             channels: channels,
             sampleRate: sampleRate,
             bitDepth: bitDepth
@@ -1133,7 +1129,7 @@ public final class SendspinClient {
     /// Only valid if the client has the controller role and the command is in
     /// the server's `supported_commands`.
     @MainActor
-    public func sendCommand(_ command: String, volume: Int? = nil, mute: Bool? = nil) async {
+    public func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async {
         guard let transport else { return }
 
         let controller = ControllerCommand(command: command, volume: volume, mute: mute)
@@ -1143,66 +1139,66 @@ public final class SendspinClient {
 
     /// Convenience: play
     @MainActor public func play() async {
-        await sendCommand("play")
+        await sendCommand(.play)
     }
 
     /// Convenience: pause
     @MainActor public func pause() async {
-        await sendCommand("pause")
+        await sendCommand(.pause)
     }
 
     /// Convenience: stop playback
     @MainActor public func stopPlayback() async {
-        await sendCommand("stop")
+        await sendCommand(.stop)
     }
 
     /// Convenience: next track
     @MainActor public func next() async {
-        await sendCommand("next")
+        await sendCommand(.next)
     }
 
     /// Convenience: previous track
     @MainActor public func previous() async {
-        await sendCommand("previous")
+        await sendCommand(.previous)
     }
 
     /// Convenience: set group volume (0-100)
     @MainActor public func setGroupVolume(_ volume: Int) async {
-        await sendCommand("volume", volume: max(0, min(100, volume)))
+        await sendCommand(.volume, volume: max(0, min(100, volume)))
     }
 
     /// Convenience: set group mute
     @MainActor public func setGroupMute(_ muted: Bool) async {
-        await sendCommand("mute", mute: muted)
+        await sendCommand(.mute, mute: muted)
     }
 
     /// Convenience: repeat off
     @MainActor public func repeatOff() async {
-        await sendCommand("repeat_off")
+        await sendCommand(.repeatOff)
     }
 
     /// Convenience: repeat one track
     @MainActor public func repeatOne() async {
-        await sendCommand("repeat_one")
+        await sendCommand(.repeatOne)
     }
 
     /// Convenience: repeat all tracks
     @MainActor public func repeatAll() async {
-        await sendCommand("repeat_all")
+        await sendCommand(.repeatAll)
     }
 
     /// Convenience: shuffle playback
     @MainActor public func shuffle() async {
-        await sendCommand("shuffle")
+        await sendCommand(.shuffle)
     }
 
     /// Convenience: unshuffle playback
     @MainActor public func unshuffle() async {
-        await sendCommand("unshuffle")
+        await sendCommand(.unshuffle)
     }
 
     /// Convenience: switch to next group
     @MainActor public func switchGroup() async {
-        await sendCommand("switch")
+        await sendCommand(.switch)
     }
 }

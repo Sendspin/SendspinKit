@@ -220,7 +220,7 @@ struct MessageRoundTripTests {
         let message = try decoder.decode(GroupUpdateMessage.self, from: jsonWithNulls)
 
         #expect(message.type == "group/update")
-        #expect(message.payload.playbackState == "playing")
+        #expect(message.payload.playbackState == .playing)
         #expect(message.payload.groupId == "group-123")
         #expect(message.payload.groupName == nil)
     }

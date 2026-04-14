@@ -6,7 +6,15 @@ import Foundation
     import UIKit
 #endif
 
-/// Base protocol for all Sendspin messages
+/// Base protocol for all Sendspin messages.
+///
+/// Every message has a `type` field identifying it and a `payload` with
+/// message-specific data. Concrete types use a `let type = "..."` constant
+/// and a private `CodingKeys` enum so the type round-trips through JSON.
+///
+/// Concrete message types also conform to `Equatable` for testing and
+/// deduplication, but `Equatable` is deliberately not required here to
+/// avoid constraining future message types that may carry non-equatable payloads.
 protocol SendspinMessage: Codable, Sendable {
     var type: String { get }
 }
@@ -14,14 +22,14 @@ protocol SendspinMessage: Codable, Sendable {
 // MARK: - Client Messages
 
 /// Client hello message sent after WebSocket connection
-struct ClientHelloMessage: SendspinMessage {
+struct ClientHelloMessage: SendspinMessage, Equatable {
     let type = "client/hello"
     let payload: ClientHelloPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ClientHelloPayload: Codable {
+struct ClientHelloPayload: Codable, Equatable {
     let clientId: String
     let name: String
     let deviceInfo: DeviceInfo?
@@ -43,13 +51,13 @@ struct ClientHelloPayload: Codable {
     }
 }
 
-struct DeviceInfo: Codable {
+struct DeviceInfo: Codable, Equatable {
     let productName: String?
     let manufacturer: String?
     let softwareVersion: String?
 
     static var current: DeviceInfo {
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
             return DeviceInfo(
                 productName: UIDevice.current.model,
                 manufacturer: "Apple",
@@ -67,12 +75,25 @@ struct DeviceInfo: Codable {
     }
 }
 
-enum PlayerCommand: String, Codable {
+/// Player command identifiers per spec.
+///
+/// These are commands that target an individual player (volume, mute, static delay).
+/// Distinct from ``ControllerCommandType`` which targets the group (play, pause, skip, etc.).
+/// The `volume` and `mute` cases overlap because a player's volume/mute can be set
+/// directly by the server or indirectly via group-level controller commands.
+///
+/// Used in `player@v1_support.supported_commands`, `client/state` player object's
+/// `supported_commands`, and `server/command` player object's `command` field.
+public enum PlayerCommand: String, Codable, Sendable, Hashable {
+    /// Set player volume (0-100)
     case volume
+    /// Set player mute state
     case mute
+    /// Set static delay in milliseconds (0-5000)
+    case setStaticDelay = "set_static_delay"
 }
 
-struct PlayerSupport: Codable {
+struct PlayerSupport: Codable, Equatable {
     let supportedFormats: [AudioFormatSpec]
     let bufferCapacity: Int
     let supportedCommands: [PlayerCommand]
@@ -89,12 +110,12 @@ struct PlayerSupport: Codable {
 
 /// Artwork@v1 support object in client/hello per spec.
 /// Declares artwork channels the client can display.
-struct ArtworkSupport: Codable {
+struct ArtworkSupport: Codable, Equatable {
     /// Supported artwork channels (1-4), array index is the channel number
     let channels: [ArtworkChannel]
 }
 
-struct VisualizerSupport: Codable {
+struct VisualizerSupport: Codable, Equatable {
     // IMPLEMENTATION_NOTE: Implement when visualizer role is added
 
     init() {}
@@ -107,7 +128,7 @@ struct VisualizerSupport: Codable {
 // MARK: - Server Messages
 
 /// Server hello response
-struct ServerHelloMessage: SendspinMessage {
+struct ServerHelloMessage: SendspinMessage, Equatable {
     let type = "server/hello"
     let payload: ServerHelloPayload
 
@@ -122,7 +143,7 @@ public enum ConnectionReason: String, Codable, Sendable, Hashable {
     case playback
 }
 
-struct ServerHelloPayload: Codable {
+struct ServerHelloPayload: Codable, Equatable {
     let serverId: String
     let name: String
     let version: Int
@@ -139,14 +160,14 @@ struct ServerHelloPayload: Codable {
 }
 
 /// Client time message for clock sync
-struct ClientTimeMessage: SendspinMessage {
+struct ClientTimeMessage: SendspinMessage, Equatable {
     let type = "client/time"
     let payload: ClientTimePayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ClientTimePayload: Codable {
+struct ClientTimePayload: Codable, Equatable {
     let clientTransmitted: Int64
 
     enum CodingKeys: String, CodingKey {
@@ -155,14 +176,14 @@ struct ClientTimePayload: Codable {
 }
 
 /// Server time response for clock sync
-struct ServerTimeMessage: SendspinMessage {
+struct ServerTimeMessage: SendspinMessage, Equatable {
     let type = "server/time"
     let payload: ServerTimePayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ServerTimePayload: Codable {
+struct ServerTimePayload: Codable, Equatable {
     let clientTransmitted: Int64
     let serverReceived: Int64
     let serverTransmitted: Int64
@@ -178,7 +199,7 @@ struct ServerTimePayload: Codable {
 
 /// Client operational state per Sendspin protocol spec.
 /// This is a top-level field in client/state, independent of any role.
-enum ClientOperationalState: String, Codable {
+enum ClientOperationalState: String, Codable, Equatable {
     /// Client is operational and synchronized with server timestamps
     case synchronized
     /// Client has a problem preventing normal operation
@@ -188,7 +209,7 @@ enum ClientOperationalState: String, Codable {
 }
 
 /// Client state message (sent by clients to report current state)
-struct ClientStateMessage: SendspinMessage {
+struct ClientStateMessage: SendspinMessage, Equatable {
     let type = "client/state"
     let payload: ClientStatePayload
 
@@ -197,7 +218,7 @@ struct ClientStateMessage: SendspinMessage {
 
 /// Client state payload containing client-level state and role-specific state objects.
 /// Per spec: must be sent after server/hello and whenever any state changes.
-struct ClientStatePayload: Codable {
+struct ClientStatePayload: Codable, Equatable {
     /// Client operational state (required on initial send, optional on deltas)
     let state: ClientOperationalState?
     /// Player role state (only if client has player role)
@@ -211,7 +232,7 @@ struct ClientStatePayload: Codable {
 
 /// Player state object within client/state message.
 /// Per spec: volume/muted are optional (only if supported), but static_delay_ms is always required.
-struct PlayerStateObject: Codable {
+struct PlayerStateObject: Codable, Equatable {
     /// Volume level (0-100), only if 'volume' is in supported_commands from player@v1_support
     let volume: Int?
     /// Mute state, only if 'mute' is in supported_commands from player@v1_support
@@ -219,8 +240,9 @@ struct PlayerStateObject: Codable {
     /// Static delay in milliseconds (0-5000), always required for players.
     /// Compensates for delay beyond the audio port (external speakers, amplifiers).
     let staticDelayMs: Int
-    /// Supported commands that can change at runtime (e.g. when audio output changes)
-    let supportedCommands: [String]?
+    /// Supported commands that can change at runtime (e.g. when audio output changes).
+    /// Per spec, currently only `set_static_delay` is valid here.
+    let supportedCommands: [PlayerCommand]?
 
     enum CodingKeys: String, CodingKey {
         case volume
@@ -229,7 +251,7 @@ struct PlayerStateObject: Codable {
         case supportedCommands = "supported_commands"
     }
 
-    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [String]? = nil) {
+    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [PlayerCommand]? = nil) {
         if let vol = volume {
             precondition(vol >= 0 && vol <= 100, "Volume must be between 0 and 100")
         }
@@ -244,14 +266,14 @@ struct PlayerStateObject: Codable {
 // MARK: - Server State
 
 /// Server state message (delta state updates from server to client)
-struct ServerStateMessage: SendspinMessage {
+struct ServerStateMessage: SendspinMessage, Equatable {
     let type = "server/state"
     let payload: ServerStatePayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ServerStatePayload: Codable {
+struct ServerStatePayload: Codable, Equatable {
     /// Player state pushed from server (e.g. volume/mute commands)
     let player: ServerPlayerState?
     /// Metadata state from server
@@ -267,7 +289,7 @@ struct ServerStatePayload: Codable {
 }
 
 /// Player state within server/state
-struct ServerPlayerState: Codable {
+struct ServerPlayerState: Codable, Equatable {
     let volume: Int?
     let muted: Bool?
 
@@ -279,9 +301,9 @@ struct ServerPlayerState: Codable {
 
 /// Controller state within server/state — tells the client what commands are available
 /// and the current group volume/mute state.
-struct ServerControllerState: Codable {
+struct ServerControllerState: Codable, Equatable {
     /// Which commands the server supports for this group
-    let supportedCommands: [String]?
+    let supportedCommands: [ControllerCommandType]?
     /// Group volume (0-100, average of all player volumes)
     let volume: Int?
     /// Group mute state (true only when all players muted)
@@ -293,7 +315,7 @@ struct ServerControllerState: Codable {
         case muted
     }
 
-    init(supportedCommands: [String]? = nil, volume: Int? = nil, muted: Bool? = nil) {
+    init(supportedCommands: [ControllerCommandType]? = nil, volume: Int? = nil, muted: Bool? = nil) {
         self.supportedCommands = supportedCommands
         self.volume = volume
         self.muted = muted
@@ -301,7 +323,14 @@ struct ServerControllerState: Codable {
 }
 
 /// Distinguishes "field absent" from "field explicitly null" in JSON delta merges.
+///
 /// Per spec: absent means "no change", null means "clear the value".
+///
+/// - Important: `Nullable` values should not be encoded directly via a keyed container's
+///   `encode(_:forKey:)` when the value is `.absent`. The `Codable` conformance encodes
+///   `.absent` as an empty single-value container, which most encoders emit as `null` —
+///   indistinguishable from `.null`. Instead, check `isAbsent` and skip encoding entirely.
+///   See `ServerMetadataState.encode(to:)` for the correct pattern.
 enum Nullable<T: Codable & Sendable> {
     /// Key was not present in JSON — keep previous value
     case absent
@@ -340,21 +369,37 @@ extension Nullable: Codable {
     }
 
     func encode(to encoder: Encoder) throws {
-        var container = encoder.singleValueContainer()
         switch self {
         case .absent:
-            break // Don't encode anything — omit from output
+            // Encoding .absent directly is a programming error. JSONEncoder would emit null,
+            // making .absent indistinguishable from .null on the wire. Container types must
+            // check isAbsent and skip the key entirely — see ServerMetadataState.encode(to:).
+            throw EncodingError.invalidValue(
+                self,
+                EncodingError.Context(
+                    codingPath: encoder.codingPath,
+                    debugDescription: "Nullable.absent must not be encoded directly — check isAbsent before encoding"
+                )
+            )
         case .null:
+            var container = encoder.singleValueContainer()
             try container.encodeNil()
         case let .value(v):
+            var container = encoder.singleValueContainer()
             try container.encode(v)
         }
     }
 }
 
+extension Nullable: Equatable where T: Equatable {}
+extension Nullable: Hashable where T: Hashable {}
+
 /// Metadata state within server/state.
-/// Uses `Nullable` for fields that the spec says can be cleared with explicit null.
-struct ServerMetadataState {
+///
+/// Conforms to `Decodable` and `Encodable` via separate extensions rather than
+/// declaring `Codable` on the struct, because the custom `init(from:)` needs to
+/// distinguish absent keys from explicit nulls using `container.contains(_:)`.
+struct ServerMetadataState: Equatable {
     let timestamp: Int64?
     let title: Nullable<String>
     let artist: Nullable<String>
@@ -364,7 +409,7 @@ struct ServerMetadataState {
     let year: Nullable<Int>
     let track: Nullable<Int>
     let progress: Nullable<MetadataProgress>
-    let `repeat`: Nullable<String>
+    let `repeat`: Nullable<RepeatMode>
     let shuffle: Nullable<Bool>
 
     enum CodingKeys: String, CodingKey {
@@ -385,7 +430,7 @@ struct ServerMetadataState {
         timestamp: Int64? = nil, title: Nullable<String> = .absent, artist: Nullable<String> = .absent,
         albumArtist: Nullable<String> = .absent, album: Nullable<String> = .absent, artworkUrl: Nullable<String> = .absent,
         year: Nullable<Int> = .absent, track: Nullable<Int> = .absent, progress: Nullable<MetadataProgress> = .absent,
-        repeat: Nullable<String> = .absent, shuffle: Nullable<Bool> = .absent
+        repeat: Nullable<RepeatMode> = .absent, shuffle: Nullable<Bool> = .absent
     ) {
         self.timestamp = timestamp
         self.title = title
@@ -413,7 +458,7 @@ extension ServerMetadataState: Decodable {
         year = container.contains(.year) ? try container.decode(Nullable<Int>.self, forKey: .year) : .absent
         track = container.contains(.track) ? try container.decode(Nullable<Int>.self, forKey: .track) : .absent
         progress = container.contains(.progress) ? try container.decode(Nullable<MetadataProgress>.self, forKey: .progress) : .absent
-        `repeat` = container.contains(.repeat) ? try container.decode(Nullable<String>.self, forKey: .repeat) : .absent
+        `repeat` = container.contains(.repeat) ? try container.decode(Nullable<RepeatMode>.self, forKey: .repeat) : .absent
         shuffle = container.contains(.shuffle) ? try container.decode(Nullable<Bool>.self, forKey: .shuffle) : .absent
     }
 }
@@ -437,7 +482,7 @@ extension ServerMetadataState: Encodable {
 }
 
 /// Progress information within metadata
-struct MetadataProgress: Codable {
+struct MetadataProgress: Codable, Equatable {
     /// Current playback position in milliseconds since start of track
     let trackProgress: Int?
     /// Total track length in milliseconds, 0 for unlimited/unknown duration
@@ -461,20 +506,26 @@ struct MetadataProgress: Codable {
 // MARK: - Stream Messages
 
 /// Stream start message
-struct StreamStartMessage: SendspinMessage {
+struct StreamStartMessage: SendspinMessage, Equatable {
     let type = "stream/start"
     let payload: StreamStartPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct StreamStartPayload: Codable {
+struct StreamStartPayload: Codable, Equatable {
     let player: StreamStartPlayer?
     let artwork: StreamStartArtwork?
     let visualizer: StreamStartVisualizer?
 }
 
-struct StreamStartPlayer: Codable {
+/// Player stream configuration within stream/start.
+///
+/// `codec` is `String` rather than `AudioCodec` because this is a server-provided
+/// type — the server may support codecs the client doesn't know about yet. The client
+/// validates the codec when building `AudioFormatSpec` and surfaces a structured
+/// `.unsupportedCodec` error if it's unrecognized.
+struct StreamStartPlayer: Codable, Equatable {
     let codec: String
     let sampleRate: Int
     let channels: Int
@@ -492,12 +543,12 @@ struct StreamStartPlayer: Codable {
 
 /// Artwork stream configuration in stream/start per spec.
 /// Contains per-channel config with resolved dimensions.
-struct StreamStartArtwork: Codable {
+struct StreamStartArtwork: Codable, Equatable {
     /// Configuration for each active artwork channel, array index is the channel number
     let channels: [StreamArtworkChannelConfig]
 }
 
-struct StreamStartVisualizer: Codable {
+struct StreamStartVisualizer: Codable, Equatable {
     // IMPLEMENTATION_NOTE: Implement when visualizer role is added
 
     init() {}
@@ -508,7 +559,7 @@ struct StreamStartVisualizer: Codable {
 }
 
 /// Stream end message — ends streams for specified roles (or all if omitted)
-struct StreamEndMessage: SendspinMessage {
+struct StreamEndMessage: SendspinMessage, Equatable {
     let type = "stream/end"
     let payload: StreamEndPayload
 
@@ -519,8 +570,10 @@ struct StreamEndMessage: SendspinMessage {
     }
 }
 
-struct StreamEndPayload: Codable {
+struct StreamEndPayload: Codable, Equatable {
     /// Roles to end streams for. If nil, ends all active streams.
+    /// Typed as `[String]?` because the spec allows application-specific roles
+    /// (prefixed with `_`), making this an open set.
     let roles: [String]?
 
     init(roles: [String]? = nil) {
@@ -529,15 +582,17 @@ struct StreamEndPayload: Codable {
 }
 
 /// Group update message
-struct GroupUpdateMessage: SendspinMessage {
+struct GroupUpdateMessage: SendspinMessage, Equatable {
     let type = "group/update"
     let payload: GroupUpdatePayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct GroupUpdatePayload: Codable {
-    let playbackState: String?
+struct GroupUpdatePayload: Codable, Equatable {
+    /// Per spec, playback_state is a closed set: `'playing' | 'stopped'`.
+    /// Unlike roles, there's no extensibility mechanism for custom states.
+    let playbackState: PlaybackState?
     let groupId: String?
     let groupName: String?
 
@@ -552,15 +607,17 @@ struct GroupUpdatePayload: Codable {
 
 /// Stream clear message — instructs client to clear buffers without ending the stream.
 /// Used for seek operations.
-struct StreamClearMessage: SendspinMessage {
+struct StreamClearMessage: SendspinMessage, Equatable {
     let type = "stream/clear"
     let payload: StreamClearPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct StreamClearPayload: Codable {
+struct StreamClearPayload: Codable, Equatable {
     /// Which roles to clear. If nil, clears all roles.
+    /// Typed as `[String]?` because the spec allows application-specific roles
+    /// (prefixed with `_`), making this an open set.
     let roles: [String]?
 
     init(roles: [String]? = nil) {
@@ -572,14 +629,14 @@ struct StreamClearPayload: Codable {
 
 /// Client requests a different stream format (upgrade or downgrade).
 /// Available for clients with the player or artwork role.
-struct StreamRequestFormatMessage: SendspinMessage {
+struct StreamRequestFormatMessage: SendspinMessage, Equatable {
     let type = "stream/request-format"
     let payload: StreamRequestFormatPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct StreamRequestFormatPayload: Codable {
+struct StreamRequestFormatPayload: Codable, Equatable {
     /// Player format request (only for clients with player role)
     let player: PlayerFormatRequest?
     /// Artwork format request (only for clients with artwork role)
@@ -591,9 +648,13 @@ struct StreamRequestFormatPayload: Codable {
     }
 }
 
-/// Player format request within stream/request-format per spec
-struct PlayerFormatRequest: Codable {
-    let codec: String?
+/// Player format request within stream/request-format per spec.
+///
+/// `codec` uses `AudioCodec` (not `String`) because this is a client-originated message —
+/// the client only requests codecs it knows about. Compare with ``StreamStartPlayer``
+/// where `codec` is `String` because the server may send codecs the client doesn't recognize.
+struct PlayerFormatRequest: Codable, Equatable {
+    let codec: AudioCodec?
     let channels: Int?
     let sampleRate: Int?
     let bitDepth: Int?
@@ -605,7 +666,7 @@ struct PlayerFormatRequest: Codable {
         case bitDepth = "bit_depth"
     }
 
-    init(codec: String? = nil, channels: Int? = nil, sampleRate: Int? = nil, bitDepth: Int? = nil) {
+    init(codec: AudioCodec? = nil, channels: Int? = nil, sampleRate: Int? = nil, bitDepth: Int? = nil) {
         self.codec = codec
         self.channels = channels
         self.sampleRate = sampleRate
@@ -615,7 +676,7 @@ struct PlayerFormatRequest: Codable {
 
 /// Artwork format request within stream/request-format per spec.
 /// Requests the server to change artwork format for a specific channel.
-struct ArtworkFormatRequest: Codable {
+struct ArtworkFormatRequest: Codable, Equatable {
     /// Channel number (0-3)
     let channel: Int
     /// Artwork source type
@@ -648,27 +709,26 @@ struct ArtworkFormatRequest: Codable {
 // MARK: - Command Messages
 
 /// Command sent from client to server (e.g. play, pause, skip)
-struct ClientCommandMessage: SendspinMessage {
+struct ClientCommandMessage: SendspinMessage, Equatable {
     let type = "client/command"
     let payload: ClientCommandPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ClientCommandPayload: Codable {
+struct ClientCommandPayload: Codable, Equatable {
     let controller: ControllerCommand?
 }
 
-struct ControllerCommand: Codable {
-    /// Command type: play, pause, stop, next, previous, volume, mute,
-    /// repeat_off, repeat_one, repeat_all, shuffle, unshuffle, switch
-    let command: String
-    /// Group volume (0-100), only when command is "volume"
+struct ControllerCommand: Codable, Equatable {
+    /// Command type per spec
+    let command: ControllerCommandType
+    /// Group volume (0-100), only when command is `.volume`
     let volume: Int?
-    /// Group mute state, only when command is "mute"
+    /// Group mute state, only when command is `.mute`
     let mute: Bool?
 
-    init(command: String, volume: Int? = nil, mute: Bool? = nil) {
+    init(command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) {
         self.command = command
         self.volume = volume
         self.mute = mute
@@ -676,14 +736,14 @@ struct ControllerCommand: Codable {
 }
 
 /// Command sent from server to client (e.g. volume, mute, set_static_delay)
-struct ServerCommandMessage: SendspinMessage {
+struct ServerCommandMessage: SendspinMessage, Equatable {
     let type = "server/command"
     let payload: ServerCommandPayload
 
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ServerCommandPayload: Codable {
+struct ServerCommandPayload: Codable, Equatable {
     let player: PlayerCommandObject?
 
     init(player: PlayerCommandObject? = nil) {
@@ -692,14 +752,14 @@ struct ServerCommandPayload: Codable {
 }
 
 /// Player command object within server/command
-struct PlayerCommandObject: Codable {
-    /// Command type: "volume", "mute", or "set_static_delay"
-    let command: String
-    /// Volume value (0-100), present when command is "volume"
+struct PlayerCommandObject: Codable, Equatable {
+    /// Command type per spec
+    let command: PlayerCommand
+    /// Volume value (0-100), present when command is `.volume`
     let volume: Int?
-    /// Mute state, present when command is "mute"
+    /// Mute state, present when command is `.mute`
     let mute: Bool?
-    /// Static delay in ms (0-5000), present when command is "set_static_delay"
+    /// Static delay in ms (0-5000), present when command is `.setStaticDelay`
     let staticDelayMs: Int?
 
     enum CodingKeys: String, CodingKey {
@@ -709,7 +769,7 @@ struct PlayerCommandObject: Codable {
         case staticDelayMs = "static_delay_ms"
     }
 
-    init(command: String, volume: Int? = nil, mute: Bool? = nil, staticDelayMs: Int? = nil) {
+    init(command: PlayerCommand, volume: Int? = nil, mute: Bool? = nil, staticDelayMs: Int? = nil) {
         self.command = command
         self.volume = volume
         self.mute = mute
@@ -720,7 +780,7 @@ struct PlayerCommandObject: Codable {
 // MARK: - Goodbye Messages
 
 /// Client goodbye message (graceful disconnect)
-struct ClientGoodbyeMessage: SendspinMessage {
+struct ClientGoodbyeMessage: SendspinMessage, Equatable {
     let type = "client/goodbye"
     let payload: GoodbyePayload?
 
@@ -744,7 +804,7 @@ public enum GoodbyeReason: String, Codable, Sendable, Hashable {
 }
 
 /// Goodbye payload with optional reason
-struct GoodbyePayload: Codable {
+struct GoodbyePayload: Codable, Equatable {
     let reason: GoodbyeReason?
 
     init(reason: GoodbyeReason? = nil) {
