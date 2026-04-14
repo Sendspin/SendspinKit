@@ -80,7 +80,7 @@ final class CLIPlayer {
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
-            roles: [.player, .metadata, .controller, .artwork],
+            roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,
             artworkConfig: Self.artworkConfig
         )
@@ -339,7 +339,7 @@ final class CLIPlayer {
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
-            roles: [.player, .metadata, .controller, .artwork],
+            roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,
             artworkConfig: Self.artworkConfig
         )

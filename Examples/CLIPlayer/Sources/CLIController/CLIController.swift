@@ -22,7 +22,7 @@ final class CLIController {
         let client = SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
-            roles: [.controller, .metadata]
+            roles: [.controllerV1, .metadataV1]
             // No playerConfig, no artworkConfig — controller-only
         )
         self.client = client
