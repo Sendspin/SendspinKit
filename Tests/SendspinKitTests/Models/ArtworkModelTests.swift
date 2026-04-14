@@ -195,7 +195,7 @@ struct ArtworkModelTests {
     func `ArtworkSupport encodes channels array for client/hello`() throws {
         let support = ArtworkSupport(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400),
+            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
         ])
 
         let encoder = JSONEncoder()
@@ -241,7 +241,7 @@ struct ArtworkModelTests {
             supportedRoles: [.artworkV1],
             playerV1Support: nil,
             artworkV1Support: ArtworkSupport(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
+                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
             ]),
             visualizerV1Support: nil
         )
@@ -421,7 +421,7 @@ struct ArtworkModelTests {
     func `ArtworkConfiguration validates channel count`() {
         // Valid: 1-4 channels
         let config = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
         ])
         #expect(config.channels.count == 1)
 
@@ -429,7 +429,7 @@ struct ArtworkModelTests {
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
             .disabled,
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400),
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400)
         ])
         #expect(config4.channels.count == 4)
     }
@@ -438,12 +438,12 @@ struct ArtworkModelTests {
     func `ArtworkConfiguration equality and hashing`() {
         let channels = [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
-            .disabled,
+            .disabled
         ]
         let a = ArtworkConfiguration(channels: channels)
         let b = ArtworkConfiguration(channels: channels)
         let c = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
+            ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200)
         ])
 
         #expect(a == b)

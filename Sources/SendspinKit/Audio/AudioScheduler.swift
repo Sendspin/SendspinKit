@@ -9,7 +9,7 @@ protocol ClockSyncProtocol: Actor {
 }
 
 /// Statistics tracked by the scheduler
-struct SchedulerStats: Sendable, Equatable {
+struct SchedulerStats: Equatable {
     var received: Int = 0
     var played: Int = 0
     var dropped: Int = 0
@@ -22,7 +22,7 @@ struct SchedulerStats: Sendable, Equatable {
 
 /// A chunk scheduled for playback at a specific time, carrying stream identity
 /// via `generation` for seamless format transitions.
-struct ScheduledChunk: Sendable {
+struct ScheduledChunk {
     let pcmData: Data
     /// Local absolute time in microseconds (from MonotonicClock) when this chunk should play
     let playTimeMicroseconds: Int64

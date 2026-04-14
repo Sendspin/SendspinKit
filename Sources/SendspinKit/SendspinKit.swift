@@ -6,8 +6,13 @@ import Foundation
 /// Error thrown when attempting to start a discovery or advertiser instance that
 /// has been permanently stopped. Create a new instance instead.
 public struct TerminatedError: Error, Sendable, LocalizedError, CustomStringConvertible {
-    public var errorDescription: String? { "Instance has been permanently stopped; create a new one" }
-    public var description: String { errorDescription! }
+    public var errorDescription: String? {
+        "Instance has been permanently stopped; create a new one"
+    }
+
+    public var description: String {
+        errorDescription!
+    }
 }
 
 /// Protocol-level constants from the Sendspin specification.

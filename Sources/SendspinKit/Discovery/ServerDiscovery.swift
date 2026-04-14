@@ -112,7 +112,7 @@ public actor ServerDiscovery {
 
             consecutiveFailures += 1
             guard consecutiveFailures < Self.maxConsecutiveFailures else {
-                // Explicit `self.` required: os.Logger captures via @autoclosure inside an actor.
+                // swiftformat:disable:next redundantSelf
                 Log.discovery.error("\(self.consecutiveFailures) consecutive failures — giving up")
                 terminateStream()
                 return
@@ -299,8 +299,8 @@ public actor ServerDiscovery {
         }
     }
 
-    // Callers should call stopDiscovery() before releasing. The cancel/finish
-    // calls below are thread-safe no-ops if stopDiscovery() was already called.
+    /// Callers should call stopDiscovery() before releasing. The cancel/finish
+    /// calls below are thread-safe no-ops if stopDiscovery() was already called.
     deinit {
         browser?.cancel()
         for connection in pendingResolves {

@@ -13,11 +13,11 @@ opt_in_rules:
   - trailing_comma
 
 # File and function length - adjusted for protocol implementation needs.
-# SendspinClient.swift is ~1150 lines (protocol orchestrator with many message handlers).
-# SendspinMessage.swift is ~880 lines (one struct per protocol message type).
+# SendspinClient.swift is ~1200 lines (protocol orchestrator with many message handlers).
+# SendspinMessage.swift is ~810 lines (one struct per protocol message type).
 file_length:
   warning: 900
-  error: 1200
+  error: 1250
 
 function_body_length:
   warning: 100
@@ -27,8 +27,8 @@ function_body_length:
 # lifecycle, message dispatch, handlers, clock sync, and audio chunk processing.
 # Splitting further would require exposing private state across files.
 type_body_length:
-  warning: 800
-  error: 1000
+  warning: 850
+  error: 1050
 
 # Cyclomatic complexity - adjusted for real-world protocol handling
 cyclomatic_complexity:
@@ -61,6 +61,18 @@ identifier_name:
     - fs  # frameSize (audio callback hot path)
     - sr  # sampleRate (audio callback hot path)
     - dt  # delta time (Kalman filter)
+    - ts  # timespec (MonotonicClock)
+    - cb  # callback (audio hot path)
+    - v1  # version identifiers in tests
+    - v2
+    - a   # test fixtures (equality/hashing tests)
+    - b
+    - c
+  # Swift Testing uses backtick-quoted descriptive function names (`Descriptive name`).
+  # SwiftLint can't distinguish these from regular functions, so we disable the
+  # "starts with lowercase" check globally. Regular function naming is enforced
+  # by code review.
+  validates_start_with_lowercase: off
 
 # Trailing commas - never allow them (matches SwiftFormat config)
 trailing_comma:

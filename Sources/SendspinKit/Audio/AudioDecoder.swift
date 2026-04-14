@@ -185,7 +185,7 @@ class FLACDecoder: AudioDecoder {
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
-    init(sampleRate: Int, channels: Int, bitDepth: Int, header: Data? = nil) throws {
+    init(sampleRate _: Int, channels: Int, bitDepth _: Int, header: Data? = nil) throws {
         self.channels = channels
 
         // Create FLAC stream decoder

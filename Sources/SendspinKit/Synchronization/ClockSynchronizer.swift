@@ -119,5 +119,4 @@ actor ClockSynchronizer: ClockSyncProtocol {
             isValid: true
         )
     }
-
 }

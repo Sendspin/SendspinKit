@@ -14,7 +14,7 @@ import os
 /// When volume is supported, mute is always supported too (we can always
 /// zero the output, whether via AudioQueue gain, hardware volume, or
 /// hardware mute toggle).
-struct VolumeCapabilities: Sendable {
+struct VolumeCapabilities {
     /// Whether this device supports volume (and therefore mute) control
     let supportsVolume: Bool
 

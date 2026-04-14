@@ -9,11 +9,11 @@ private enum FormatError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .invalidChannels(let v):
+        case let .invalidChannels(v):
             "channels must be between 1 and \(AudioFormatSpec.maxChannels), got \(v)"
-        case .invalidSampleRate(let v):
+        case let .invalidSampleRate(v):
             "sample_rate must be between 1 and \(AudioFormatSpec.maxSampleRate) Hz, got \(v)"
-        case .invalidBitDepth(let v):
+        case let .invalidBitDepth(v):
             "bit_depth must be one of \(AudioFormatSpec.supportedBitDepths.sorted()), got \(v)"
         }
     }

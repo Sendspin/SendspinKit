@@ -11,7 +11,9 @@ import Foundation
 /// updates like a service re-registering on a different port.
 public struct DiscoveredServer: Sendable, Identifiable, Equatable, Hashable {
     /// Unique identifier — the Bonjour service name (same as ``name``).
-    public var id: String { name }
+    public var id: String {
+        name
+    }
 
     /// Human-readable server name (also the Bonjour service name)
     public let name: String

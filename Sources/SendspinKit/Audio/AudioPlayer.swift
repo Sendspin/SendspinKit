@@ -52,7 +52,7 @@ private struct LockedState: @unchecked Sendable {
     var pcmRingBuffer: PCMRingBuffer
     var frameSize: Int = 0
 
-    // Last output frame for insert (sample-hold repeat) — fixed allocation
+    /// Last output frame for insert (sample-hold repeat) — fixed allocation
     var lastFrameStorage: UnsafeMutableRawBufferPointer =
         .allocate(byteCount: maxFrameBytes, alignment: 8)
     var lastFrameValid: Bool = false
@@ -114,7 +114,6 @@ private struct LockedState: @unchecked Sendable {
 
 /// Actor managing synchronized audio playback
 actor AudioPlayer {
-
     private var audioQueue: AudioQueueRef? {
         // didSet also fires during init (nil → nil), which is harmless.
         didSet { audioQueueForDeinit = audioQueue }

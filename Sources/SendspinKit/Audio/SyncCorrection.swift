@@ -2,7 +2,7 @@
 // ABOUTME: Computes correction schedule from sync error and sample rate
 
 /// Correction schedule for drop/insert cadence
-struct CorrectionSchedule: Sendable, Equatable {
+struct CorrectionSchedule: Equatable {
     /// Insert one frame every N frames (0 = disabled)
     let insertEveryNFrames: UInt32
     /// Drop one frame every N frames (0 = disabled)
@@ -29,7 +29,7 @@ struct CorrectionSchedule: Sendable, Equatable {
 ///
 /// Purely functional — all stored properties are immutable. No accumulated state
 /// between calls; each `plan()` invocation depends only on its arguments.
-struct CorrectionPlanner: Sendable {
+struct CorrectionPlanner {
     /// Default tuning constants — exposed for test assertions against boundary values.
     static let defaultDeadbandUs: Int64 = 1_500
     static let defaultEngageUs: Int64 = 3_000

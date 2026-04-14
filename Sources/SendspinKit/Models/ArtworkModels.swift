@@ -27,10 +27,10 @@ private enum DimensionError: Error, CustomStringConvertible {
 
     var description: String {
         switch self {
-        case .widthMustBePositive(let v): "media_width must be positive for active channels, got \(v)"
-        case .heightMustBePositive(let v): "media_height must be positive for active channels, got \(v)"
-        case .widthMustBeNonNegative(let v): "media_width must be non-negative, got \(v)"
-        case .heightMustBeNonNegative(let v): "media_height must be non-negative, got \(v)"
+        case let .widthMustBePositive(v): "media_width must be positive for active channels, got \(v)"
+        case let .heightMustBePositive(v): "media_height must be positive for active channels, got \(v)"
+        case let .widthMustBeNonNegative(v): "media_width must be non-negative, got \(v)"
+        case let .heightMustBeNonNegative(v): "media_height must be non-negative, got \(v)"
         }
     }
 }
@@ -50,7 +50,7 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
 
     /// A disabled channel placeholder. Format is `.jpeg` by arbitrary convention;
     /// any format is valid since the server ignores it for `source: .none` channels.
-    // Safe: .none source allows zero dimensions in validateDimensions().
+    /// Safe: `.none` source allows zero dimensions in `validateDimensions()`.
     public static let disabled = ArtworkChannel(source: .none, format: .jpeg, mediaWidth: 0, mediaHeight: 0)
 
     enum CodingKeys: String, CodingKey {
@@ -108,8 +108,8 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
 
         self.source = source
         self.format = format
-        self.mediaWidth = width
-        self.mediaHeight = height
+        mediaWidth = width
+        mediaHeight = height
     }
 }
 

@@ -13,7 +13,7 @@ import os
 /// log stream --level debug --predicate 'subsystem == "com.sendspin.kit"'
 /// log stream --level debug --predicate 'subsystem == "com.sendspin.kit" AND category == "audio"'
 /// ```
-internal enum Log {
+enum Log {
     static let client = Logger(subsystem: "com.sendspin.kit", category: "client")
     static let transport = Logger(subsystem: "com.sendspin.kit", category: "transport")
     static let discovery = Logger(subsystem: "com.sendspin.kit", category: "discovery")

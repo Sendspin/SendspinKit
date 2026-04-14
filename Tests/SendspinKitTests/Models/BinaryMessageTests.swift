@@ -53,7 +53,7 @@ struct BinaryMessageTests {
         (BinaryMessageType.artworkChannel0, 0),
         (BinaryMessageType.artworkChannel1, 1),
         (BinaryMessageType.artworkChannel2, 2),
-        (BinaryMessageType.artworkChannel3, 3),
+        (BinaryMessageType.artworkChannel3, 3)
     ])
     func `Decode artwork channel`(type: BinaryMessageType, expectedChannel: Int) throws {
         let frame = Self.makeFrame(

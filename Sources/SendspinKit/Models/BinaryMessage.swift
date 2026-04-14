@@ -10,7 +10,7 @@ import Foundation
 /// - 16-23: Visualizer role
 /// - 24-191: Reserved for future roles
 /// - 192-255: Application-specific roles
-enum BinaryMessageType: UInt8, Sendable {
+enum BinaryMessageType: UInt8 {
     /// Player role (4-7).
     case audioChunk = 4
 
@@ -35,7 +35,7 @@ enum BinaryMessageType: UInt8, Sendable {
 }
 
 /// Binary message from server.
-struct BinaryMessage: Sendable {
+struct BinaryMessage {
     /// Size of the binary header: 1 byte type + 8 bytes timestamp.
     static let headerSize: Int = 9
 
