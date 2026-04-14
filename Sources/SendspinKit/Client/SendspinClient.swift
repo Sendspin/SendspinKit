@@ -3,6 +3,7 @@
 
 import Foundation
 import Observation
+import os
 
 /// Main Sendspin client
 @Observable
@@ -519,7 +520,7 @@ public final class SendspinClient {
                 }
 
                 // Rebuild AudioQueue and feed pre-buffered chunks
-                fputs("[CLIENT] Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)\n", stderr)
+                Log.client.info("Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)")
                 try? await audioPlayer.start(format: format, codecHeader: pending.1)
 
                 for buffered in preBuffer {
@@ -573,21 +574,21 @@ public final class SendspinClient {
                 let dropN = tSnap.correctionSchedule.dropEveryNFrames
                 let insertN = tSnap.correctionSchedule.insertEveryNFrames
 
-                let bufferFill = String(format: "%.1f", currentStats.bufferFillMs)
-                let offsetFmt = String(format: "%.2f", clockOffsetMs)
-                let rttFmt = String(format: "%.2f", rttMs)
                 let correcting = tSnap.correctionSchedule.isCorrecting
-                fputs(
-                    "[TELEMETRY]"
-                        + " sched=\(framesScheduled) played=\(framesPlayed)"
-                        + " late=\(framesDroppedLate) buf=\(bufferFill)ms"
-                        + " offset=\(offsetFmt)ms rtt=\(rttFmt)ms"
-                        + " queue=\(currentStats.queueSize)"
-                        + " sync=\(syncErrorUs)us"
-                        + " correcting=\(correcting)"
-                        + " drop=\(dropN) insert=\(insertN)\n",
-                    stderr
-                )
+
+                // Telemetry is pre-formatted into a single String because os.Logger's
+                // type checker can't handle this many inline interpolation segments.
+                // The cost (unconditional formatting) is acceptable at the 2s tick rate.
+                let telemetry = "sched=\(framesScheduled) played=\(framesPlayed)"
+                    + " late=\(framesDroppedLate)"
+                    + " buf=\(String(format: "%.1f", currentStats.bufferFillMs))ms"
+                    + " offset=\(String(format: "%.2f", clockOffsetMs))ms"
+                    + " rtt=\(String(format: "%.2f", rttMs))ms"
+                    + " queue=\(currentStats.queueSize)"
+                    + " sync=\(syncErrorUs)us"
+                    + " correcting=\(correcting)"
+                    + " drop=\(dropN) insert=\(insertN)"
+                Log.client.debug("\(telemetry)")
 
                 lastTelemetryStats = currentStats
             }
@@ -606,7 +607,7 @@ public final class SendspinClient {
         if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let type = json["type"] as? String {
             msgType = type
-            fputs("[RX] \(msgType)\n", stderr)
+            Log.client.debug("RX \(msgType)")
         }
 
         // Order matters: messages with required fields before all-optional ones.
@@ -628,7 +629,7 @@ public final class SendspinClient {
             await handleGroupUpdate(message)
         } else {
             let preview = text.prefix(500)
-            fputs("[CLIENT] ❌ Failed to decode message type '\(msgType)': \(preview)\n", stderr)
+            Log.client.error("Failed to decode message type '\(msgType)': \(preview)")
         }
     }
 
@@ -769,14 +770,14 @@ public final class SendspinClient {
 
         // Handle player stream start
         guard let playerInfo = message.payload.player else {
-            fputs("[CLIENT] stream/start: artwork only (no player payload)\n", stderr)
+            Log.client.info("stream/start: artwork only (no player payload)")
             return
         }
         guard let audioPlayer else {
-            fputs("[CLIENT] stream/start: player payload received but audioPlayer is nil!\n", stderr)
+            Log.client.error("stream/start: player payload received but audioPlayer is nil!")
             return
         }
-        fputs("[CLIENT] stream/start: \(playerInfo.codec) \(playerInfo.sampleRate)Hz \(playerInfo.channels)ch \(playerInfo.bitDepth)bit\n", stderr)
+        Log.client.info("stream/start: \(playerInfo.codec) \(playerInfo.sampleRate)Hz \(playerInfo.channels)ch \(playerInfo.bitDepth)bit")
 
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
             connectionState = .error(.unsupportedCodec(playerInfo.codec))
@@ -826,14 +827,14 @@ public final class SendspinClient {
             do {
                 try await audioPlayer.swapDecoder(format: format, codecHeader: codecHeader)
             } catch {
-                fputs("[CLIENT] Decoder swap failed, full restart: \(error)\n", stderr)
+                Log.client.error("Decoder swap failed, full restart: \(error)")
                 pendingFormat = nil
                 pendingCodecHeader = nil
                 try? await audioPlayer.start(format: format, codecHeader: codecHeader)
             }
 
             let oldRate = previousFormat!.sampleRate
-            fputs("[CLIENT] Format change: \(oldRate)Hz → \(format.sampleRate)Hz\n", stderr)
+            Log.client.info("Format change: \(oldRate)Hz → \(format.sampleRate)Hz")
             eventsContinuation.yield(.streamFormatChanged(format))
             try? await sendClientState()
             return

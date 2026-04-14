@@ -3,6 +3,7 @@
 
 import AudioToolbox
 import Foundation
+import os
 
 #if os(macOS)
     import CoreAudio
@@ -50,7 +51,7 @@ struct SoftwareVolumeControl: VolumeControl {
         let gain = AudioPlayer.perceptualGain(volume)
         let status = AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
         if status != noErr {
-            fputs("[VOLUME] AudioQueueSetParameter failed (OSStatus \(status))\n", stderr)
+            Log.volume.error("AudioQueueSetParameter failed (OSStatus \(status))")
         }
     }
 
@@ -59,7 +60,7 @@ struct SoftwareVolumeControl: VolumeControl {
         let gain = muted ? 0.0 : AudioPlayer.perceptualGain(currentVolume)
         let status = AudioQueueSetParameter(queue, kAudioQueueParam_Volume, gain)
         if status != noErr {
-            fputs("[VOLUME] AudioQueueSetParameter (mute) failed (OSStatus \(status))\n", stderr)
+            Log.volume.error("AudioQueueSetParameter (mute) failed (OSStatus \(status))")
         }
     }
 }
@@ -95,7 +96,7 @@ struct SoftwareVolumeControl: VolumeControl {
                     UInt32(MemoryLayout<UInt32>.size), &muteValue
                 )
                 if status != noErr {
-                    fputs("[VOLUME] Hardware mute failed (OSStatus \(status))\n", stderr)
+                    Log.volume.error("Hardware mute failed (OSStatus \(status))")
                 }
             } else {
                 // No hardware mute — fake it by zeroing/restoring volume
@@ -202,7 +203,7 @@ enum VolumeControlFactory {
             #else
                 // iOS/tvOS/watchOS don't expose per-device volume via CoreAudio.
                 // Fall back to software control.
-                fputs("[VOLUME] Hardware volume requested but unavailable on this platform, using software\n", stderr)
+                Log.volume.notice("Hardware volume requested but unavailable on this platform, using software")
                 return (.all, SoftwareVolumeControl())
             #endif
         }

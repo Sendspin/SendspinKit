@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+import os
 
 /// Advertises this client via mDNS and accepts incoming WebSocket connections from servers.
 ///
@@ -139,29 +140,27 @@ public actor ClientAdvertiser {
         case .ready:
             consecutiveFailures = 0
             let actualPort = listener?.port?.rawValue ?? port
-            fputs("[ClientAdvertiser] listening on port \(actualPort), advertising \(SendspinDefaults.clientServiceType)\n", stderr)
+            Log.discovery.info("Listening on port \(actualPort), advertising \(SendspinDefaults.clientServiceType)")
         case let .failed(error):
-            fputs("[ClientAdvertiser] listener failed: \(error)\n", stderr)
+            Log.discovery.error("Listener failed: \(error)")
             listener?.cancel()
             listener = nil
 
             consecutiveFailures += 1
             guard consecutiveFailures < Self.maxConsecutiveFailures else {
-                fputs(
-                    "[ClientAdvertiser] \(consecutiveFailures) consecutive failures — giving up\n",
-                    stderr
-                )
+                // Explicit `self.` required: os.Logger captures via @autoclosure inside an actor.
+                Log.discovery.error("\(self.consecutiveFailures) consecutive failures — giving up")
                 terminateStream()
                 return
             }
             do {
                 try start()
             } catch {
-                fputs("[ClientAdvertiser] restart failed: \(error) — giving up\n", stderr)
+                Log.discovery.error("Restart failed: \(error) — giving up")
                 terminateStream()
             }
         case .cancelled:
-            fputs("[ClientAdvertiser] listener cancelled\n", stderr)
+            Log.discovery.info("Listener cancelled")
         case .setup, .waiting:
             break
         @unknown default:
@@ -170,14 +169,16 @@ public actor ClientAdvertiser {
     }
 
     private func handleNewConnection(_ connection: NWConnection) {
-        fputs("[ClientAdvertiser] incoming connection from \(connection.endpoint)\n", stderr)
+        // NWEndpoint doesn't conform to CustomStringConvertible, so os.Logger's
+        // OSLogInterpolation can't interpolate it directly. String(describing:) is required.
+        Log.discovery.info("Incoming connection from \(String(describing: connection.endpoint))")
 
         connection.stateUpdateHandler = { [weak self] state in
             switch state {
             case .ready:
                 Task { await self?.connectionReady(connection) }
             case let .failed(error):
-                fputs("[ClientAdvertiser] connection from \(connection.endpoint) failed: \(error)\n", stderr)
+                Log.discovery.error("Connection from \(String(describing: connection.endpoint)) failed: \(error)")
                 connection.cancel()
             case .cancelled:
                 break

@@ -304,7 +304,7 @@ actor AudioPlayer {
         }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)"
-        fputs("[AUDIO] AudioQueue started: \(desc)\n", stderr)
+        Log.audio.info("AudioQueue started: \(desc)")
         _isPlaying = true
     }
 

@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+import os
 
 /// WebSocket transport wrapping an NWConnection (inbound, server-initiated connections).
 /// Created by `ClientAdvertiser` when a server connects to the client's WebSocket endpoint.
@@ -177,7 +178,7 @@ public actor NWWebSocketTransport: SendspinTransport {
     /// After a clean close frame, the post-close error is expected — suppress the log.
     private func handleReceiveError(_ error: NWError) {
         if !closeReceived {
-            fputs("[NWTransport] receive error: \(error)\n", stderr)
+            Log.transport.error("Receive error: \(error)")
         }
         finishStreams()
     }

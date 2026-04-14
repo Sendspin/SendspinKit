@@ -3,6 +3,7 @@
 
 import Foundation
 import Network
+import os
 
 /// Discovers Sendspin servers on the local network via mDNS.
 ///
@@ -105,23 +106,21 @@ public actor ServerDiscovery {
         case .ready:
             consecutiveFailures = 0
         case let .failed(error):
-            fputs("[ServerDiscovery] browser failed: \(error)\n", stderr)
+            Log.discovery.error("Browser failed: \(error)")
             browser?.cancel()
             browser = nil
 
             consecutiveFailures += 1
             guard consecutiveFailures < Self.maxConsecutiveFailures else {
-                fputs(
-                    "[ServerDiscovery] \(consecutiveFailures) consecutive failures — giving up\n",
-                    stderr
-                )
+                // Explicit `self.` required: os.Logger captures via @autoclosure inside an actor.
+                Log.discovery.error("\(self.consecutiveFailures) consecutive failures — giving up")
                 terminateStream()
                 return
             }
             do {
                 try startDiscovery()
             } catch {
-                fputs("[ServerDiscovery] restart failed: \(error) — giving up\n", stderr)
+                Log.discovery.error("Restart failed: \(error) — giving up")
                 terminateStream()
             }
         case .setup, .cancelled, .waiting:
@@ -192,7 +191,7 @@ public actor ServerDiscovery {
             try? await Task.sleep(for: Self.resolveTimeout)
             guard !Task.isCancelled else { return }
             guard await self?.isPendingResolve(connection) == true else { return }
-            fputs("[ServerDiscovery] resolve timed out for \(name)\n", stderr)
+            Log.discovery.warning("Resolve timed out for \(name)")
             connection.cancel()
         }
         resolveTimeoutTasks[connectionID] = timeoutTask
@@ -223,7 +222,7 @@ public actor ServerDiscovery {
         // Check for link-local (fe80::/10) directly from raw bytes,
         // avoiding platform-specific in6_addr layout.
         if raw.count >= 2, raw[raw.startIndex] == 0xFE, (raw[raw.startIndex + 1] & 0xC0) == 0x80 {
-            fputs("[ServerDiscovery] link-local IPv6 address detected; zone ID unavailable in URL\n", stderr)
+            Log.discovery.notice("Link-local IPv6 address detected; zone ID unavailable in URL")
         }
 
         var addr = in6_addr()
@@ -252,7 +251,7 @@ public actor ServerDiscovery {
                 hostname = address.debugDescription
             case let .ipv6(address):
                 guard let formatted = Self.formatIPv6(address) else {
-                    fputs("[ServerDiscovery] could not format IPv6 address for \(name)\n", stderr)
+                    Log.discovery.error("Could not format IPv6 address for \(name)")
                     return
                 }
                 hostname = formatted
@@ -274,7 +273,7 @@ public actor ServerDiscovery {
         }
 
         guard let url = URL(string: "ws://\(hostname):\(port)\(path)") else {
-            fputs("[ServerDiscovery] could not form URL for \(hostname):\(port)\(path)\n", stderr)
+            Log.discovery.error("Could not form URL for \(hostname):\(port)\(path)")
             return
         }
 
