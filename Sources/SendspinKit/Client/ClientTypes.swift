@@ -164,8 +164,8 @@ public struct ControllerState: Sendable, Hashable {
 ///
 /// Currently minimal — additional cases will be added as command methods
 /// grow. Runtime errors during streaming surface as
-/// ``ConnectionState/error(_:)`` with a typed ``ClientError`` payload.
-public enum SendspinClientError: Error, LocalizedError {
+/// ``ConnectionState/error(_:)`` with a typed ``StreamingError`` payload.
+public enum SendspinClientError: Error, Sendable, LocalizedError {
     case notConnected
 
     public var errorDescription: String? {
