@@ -74,7 +74,7 @@ do {
         // Client-initiated: discover or connect to provided server URL
         if serverURL == nil {
             print("🔍 Discovering Sendspin servers...")
-            let servers = await SendspinClient.discoverServers(timeout: .seconds(3))
+            let servers = try await SendspinClient.discoverServers(timeout: .seconds(3))
 
             if servers.isEmpty {
                 print("❌ No Sendspin servers found on network")

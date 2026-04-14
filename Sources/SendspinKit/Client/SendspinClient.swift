@@ -588,7 +588,7 @@ public final class SendspinClient {
                     + " sync=\(syncErrorUs)us"
                     + " correcting=\(correcting)"
                     + " drop=\(dropN) insert=\(insertN)"
-                Log.client.debug("\(telemetry)")
+                Log.client.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats
             }

@@ -34,7 +34,7 @@ signal(SIGINT) { _ in
 do {
     if serverURL == nil {
         print("Discovering Sendspin servers...")
-        let servers = await SendspinClient.discoverServers(timeout: .seconds(3))
+        let servers = try await SendspinClient.discoverServers(timeout: .seconds(3))
 
         if servers.isEmpty {
             print("No servers found.")

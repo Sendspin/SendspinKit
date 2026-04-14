@@ -211,6 +211,9 @@ final class CLIPlayer {
                     print("[EVENT] Static delay changed: \(delayMs)ms")
                 }
 
+            case .rawAudioChunk:
+                break // Raw audio passthrough; CLIPlayer uses the decoded pipeline
+
             case let .disconnected(reason):
                 if !useTUI {
                     print("[EVENT] Disconnected: \(reason)")
