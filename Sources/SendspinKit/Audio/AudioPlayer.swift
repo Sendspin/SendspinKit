@@ -327,6 +327,7 @@ actor AudioPlayer {
             state.cursorMicroseconds = 0
             state.cursorRemainder = 0
             state.framesConsumed = 0
+            state.timeSnapshot = nil
         }
     }
 
@@ -375,8 +376,7 @@ actor AudioPlayer {
 
     /// Push a new time filter snapshot for use by the audio callback.
     /// Called from the clock sync path whenever processServerTime updates the filter.
-    /// Forward-only: there is currently no path to clear the snapshot back to nil.
-    /// If server reconnect/reset support is added, this may need a clearing variant.
+    /// Cleared back to nil by `stop()`.
     func updateTimeSnapshot(_ snapshot: TimeFilterSnapshot) {
         lockedState.withLock { $0.timeSnapshot = snapshot }
     }
