@@ -9,6 +9,10 @@ import Foundation
 /// Created by `ClockSynchronizer.snapshot()` and consumed by the audio callback
 /// to compute sync error with microsecond precision. The snapshot is cheap to copy
 /// (6 scalars) and can be stored under any lock the audio thread already holds.
+///
+/// `Sendable` conformance is implicit (all stored properties are `Sendable` types,
+/// internal struct) but is the essential contract of this type — it exists to cross
+/// actor boundaries safely.
 struct TimeFilterSnapshot {
     /// Kalman filter offset estimate (μs): server_time ≈ client_time + offset
     let offset: Double

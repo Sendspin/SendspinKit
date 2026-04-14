@@ -563,8 +563,8 @@ public final class SendspinClient {
                 let framesPlayed = currentStats.played - lastTelemetryStats.played
                 let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
 
-                let offset = await clockSync.statsOffset
-                let rtt = await clockSync.statsRtt
+                let offset = await clockSync.currentOffset
+                let rtt = await clockSync.latestAcceptedRtt
                 let clockOffsetMs = Double(offset) / 1_000.0
                 let rttMs = Double(rtt) / 1_000.0
 

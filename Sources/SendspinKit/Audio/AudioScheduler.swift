@@ -3,11 +3,6 @@
 
 import Foundation
 
-/// Protocol for clock synchronization
-protocol ClockSyncProtocol: Actor {
-    func serverTimeToLocal(_ serverTime: Int64) -> Int64
-}
-
 /// Statistics tracked by the scheduler
 struct SchedulerStats: Equatable {
     var received: Int = 0

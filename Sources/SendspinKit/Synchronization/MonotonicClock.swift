@@ -16,15 +16,18 @@ import Foundation
 /// The Kalman filter math is clock-source-agnostic; it only requires that all
 /// local timestamps come from the same monotonic source.
 ///
-/// The `absoluteMicroseconds` conversion adds a wall-clock anchor captured once
-/// at process start. This epoch offset is used solely for `TimeFilterSnapshot`
-/// compatibility and is never re-read, so NTP adjustments after startup don't
-/// affect it.
+/// The `epochAnchorMicroseconds` offset converts process-relative timestamps to
+/// Unix epoch time. It's captured once at process start and used by
+/// `ClockSynchronizer` and `TimeFilterSnapshot` for absolute time conversion.
+/// Since it's never re-read, NTP adjustments after startup don't affect it.
 enum MonotonicClock {
     /// Wall-clock epoch anchor captured once at process start.
     /// Used to convert process-relative monotonic timestamps to absolute epoch µs
-    /// for `TimeFilterSnapshot` compatibility.
-    private static let epochAnchorMicroseconds: Int64 = {
+    /// for `ClockSynchronizer` and `TimeFilterSnapshot`.
+    ///
+    /// Both `CLOCK_MONOTONIC_RAW` and `CLOCK_REALTIME` are read as close together
+    /// as possible to minimize jitter in the anchor value.
+    static let epochAnchorMicroseconds: Int64 = {
         // Capture both clocks as close together as possible
         var ts = timespec()
         clock_gettime(CLOCK_MONOTONIC_RAW, &ts)
