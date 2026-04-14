@@ -7,7 +7,7 @@ import os
 
 /// WebSocket transport wrapping an NWConnection (inbound, server-initiated connections).
 /// Created by `ClientAdvertiser` when a server connects to the client's WebSocket endpoint.
-public actor NWWebSocketTransport: SendspinTransport {
+actor NWWebSocketTransport: SendspinTransport {
     private var connection: NWConnection?
     private let textContinuation: AsyncStream<String>.Continuation
     private let binaryContinuation: AsyncStream<Data>.Continuation
@@ -19,12 +19,12 @@ public actor NWWebSocketTransport: SendspinTransport {
     /// so we can suppress the noisy (but expected) post-close receive error log.
     private var closeReceived = false
 
-    public nonisolated let textMessages: AsyncStream<String>
-    public nonisolated let binaryMessages: AsyncStream<Data>
+    nonisolated let textMessages: AsyncStream<String>
+    nonisolated let binaryMessages: AsyncStream<Data>
 
     /// Initialize with an already-established NWConnection that has WebSocket framing.
     /// The connection should be in the `.ready` state.
-    public init(connection: NWConnection) {
+    init(connection: NWConnection) {
         self.connection = connection
 
         let (textStream, textCont) = AsyncStream<String>.makeStream()
@@ -37,16 +37,16 @@ public actor NWWebSocketTransport: SendspinTransport {
 
     /// Start receiving messages from the connection.
     /// Must be called after init to begin pumping messages into the async streams.
-    public func startReceiving() {
+    func startReceiving() {
         guard let connection else { return }
         receiveNext(on: connection)
     }
 
-    public var isConnected: Bool {
+    var isConnected: Bool {
         connection?.state == .ready
     }
 
-    public func send(_ message: some Codable & Sendable) async throws {
+    func send(_ message: some Codable & Sendable) async throws {
         guard let connection else {
             throw TransportError.notConnected
         }
@@ -74,7 +74,7 @@ public actor NWWebSocketTransport: SendspinTransport {
         }
     }
 
-    public func sendBinary(_ data: Data) async throws {
+    func sendBinary(_ data: Data) async throws {
         guard let connection else {
             throw TransportError.notConnected
         }
@@ -101,7 +101,7 @@ public actor NWWebSocketTransport: SendspinTransport {
         }
     }
 
-    public func disconnect() async {
+    func disconnect() async {
         connection?.cancel()
         connection = nil
         textContinuation.finish()

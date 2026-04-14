@@ -54,6 +54,11 @@ public enum ClientEvent: Sendable, Equatable {
     /// Format changed mid-stream (e.g. after a `stream/request-format` request)
     case streamFormatChanged(AudioFormatSpec)
     case streamEnded
+    /// Server sent `stream/clear` — buffers have been flushed without ending
+    /// the stream. Typically sent during a seek operation. Consumers should
+    /// reset any time-based UI (progress bars, waveform displays, etc.)
+    /// and wait for fresh metadata with the new position.
+    case streamCleared
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
@@ -71,6 +76,11 @@ public enum ClientEvent: Sendable, Equatable {
     /// Server changed the static delay via `server/command`. The host app should
     /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
     case staticDelayChanged(milliseconds: Int)
+    /// The server that most recently had `playback_state: 'playing'` changed.
+    /// Per spec, clients must persist this across reboots for multi-server
+    /// priority logic. The host app is responsible for persistence — store
+    /// this value and pass it to reconnection/discovery logic as needed.
+    case lastPlayedServerChanged(serverId: String)
     /// Client disconnected from the server (connection lost or explicit disconnect)
     case disconnected(reason: DisconnectReason)
 }
@@ -84,6 +94,20 @@ public struct ServerInfo: Sendable, Hashable {
     public let name: String
     public let version: Int
     public let connectionReason: ConnectionReason
+    /// Roles the server actually activated for this client.
+    /// Use ``hasRole(_:)`` to check whether a specific capability is available.
+    public let activeRoles: Set<VersionedRole>
+
+    /// Whether the server activated the given role for this client.
+    ///
+    /// Convenience for `activeRoles.contains(role)`. Useful in SwiftUI:
+    /// ```swift
+    /// Button("Play") { ... }
+    ///     .disabled(!info.hasRole(.controllerV1))
+    /// ```
+    public func hasRole(_ role: VersionedRole) -> Bool {
+        activeRoles.contains(role)
+    }
 }
 
 /// Group membership and playback state update.
@@ -158,7 +182,7 @@ public struct ControllerState: Sendable, Hashable {
     /// Commands the server currently supports. Check membership with `contains`
     /// to determine which UI controls to enable.
     public let supportedCommands: Set<ControllerCommandType>
-    /// Group volume, range 0–100 per spec (average of all player volumes).
+    /// Group volume, range 0-100 per spec (average of all player volumes).
     /// Clamped on construction from server messages.
     public let volume: Int
     /// Group mute state (`true` only when all players in the group are muted)
@@ -167,16 +191,26 @@ public struct ControllerState: Sendable, Hashable {
 
 /// Errors thrown by `SendspinClient` methods.
 ///
-/// Currently minimal — additional cases will be added as command methods
-/// grow. Runtime errors during streaming surface as
+/// Runtime errors during streaming surface as
 /// ``ConnectionState/error(_:)`` with a typed ``StreamingError`` payload.
-public enum SendspinClientError: Error, Sendable, LocalizedError {
+public enum SendspinClientError: Error, Sendable, Equatable, LocalizedError {
+    /// A method that requires an active connection was called while disconnected.
     case notConnected
+    /// ``SendspinClient/connect(to:)`` or ``SendspinClient/acceptConnection(_:)``
+    /// was called while a connection is already in progress or established.
+    case alreadyConnected
+    /// A command or message could not be sent over the transport.
+    /// The associated string describes the underlying transport error.
+    case sendFailed(String)
 
     public var errorDescription: String? {
         switch self {
         case .notConnected:
             "Not connected to a Sendspin server"
+        case .alreadyConnected:
+            "Already connected or connecting to a Sendspin server"
+        case let .sendFailed(reason):
+            "Failed to send message: \(reason)"
         }
     }
 }

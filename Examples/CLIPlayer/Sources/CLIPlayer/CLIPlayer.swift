@@ -206,9 +206,19 @@ final class CLIPlayer {
                     print("[EVENT] Visualizer data: \(data.count) bytes")
                 }
 
+            case .streamCleared:
+                if !useTUI {
+                    print("[EVENT] Stream cleared (seek)")
+                }
+
             case let .staticDelayChanged(delayMs):
                 if !useTUI {
                     print("[EVENT] Static delay changed: \(delayMs)ms")
+                }
+
+            case let .lastPlayedServerChanged(serverId):
+                if !useTUI {
+                    print("[EVENT] Last played server: \(serverId)")
                 }
 
             case .rawAudioChunk:
@@ -226,6 +236,15 @@ final class CLIPlayer {
         // Event stream ended (client deallocated or connection dropped)
         disconnectedContinuation.yield()
         disconnectedContinuation.finish()
+    }
+
+    /// Run a throwing async body and log the error to stderr if it fails.
+    private nonisolated static func attempt(_ body: () async throws -> Void) async {
+        do {
+            try await body()
+        } catch {
+            fputs("[ERROR] \(error.localizedDescription)\n", stderr)
+        }
     }
 
     private nonisolated static func runCommandLoopStatic(client: SendspinClient, display: StatusDisplay?) async {
@@ -251,35 +270,35 @@ final class CLIPlayer {
                 guard parts.count > 1, let volume = Int(parts[1]) else {
                     continue
                 }
-                await client.setVolume(volume)
+                await attempt { try await client.setVolume(volume) }
                 await display?.updateVolume(volume, muted: false)
 
             case "m", "mute":
-                await client.setMute(true)
+                await attempt { try await client.setMute(true) }
                 await display?.updateVolume(100, muted: true)
 
             case "u", "unmute":
-                await client.setMute(false)
+                await attempt { try await client.setMute(false) }
                 await display?.updateVolume(100, muted: false)
 
             // Controller commands
             case "p", "play":
-                await client.play()
+                await attempt { try await client.play() }
             case "pause":
-                await client.pause()
+                await attempt { try await client.pause() }
             case "s", "stop":
-                await client.stopPlayback()
+                await attempt { try await client.stopPlayback() }
             case "n", "next":
-                await client.next()
+                await attempt { try await client.next() }
             case "b", "prev", "previous":
-                await client.previous()
+                await attempt { try await client.previous() }
             case "gv":
                 guard parts.count > 1, let vol = Int(parts[1]) else { continue }
-                await client.setGroupVolume(vol)
+                await attempt { try await client.setGroupVolume(vol) }
             case "gm":
-                await client.setGroupMute(true)
+                await attempt { try await client.setGroupMute(true) }
             case "gu":
-                await client.setGroupMute(false)
+                await attempt { try await client.setGroupMute(false) }
 
             // Format request: "f flac 48000 24" or partial: "f flac" or "f pcm 44100"
             case "f", "format":
@@ -323,11 +342,13 @@ final class CLIPlayer {
         }
 
         fputs("[FORMAT] Requesting: codec=\(codec?.rawValue ?? "auto") rate=\(sampleRate.map(String.init) ?? "auto") bits=\(bitDepth.map(String.init) ?? "auto")\n", stderr)
-        await client.requestPlayerFormat(
-            codec: codec,
-            sampleRate: sampleRate,
-            bitDepth: bitDepth
-        )
+        await attempt {
+            try await client.requestPlayerFormat(
+                codec: codec,
+                sampleRate: sampleRate,
+                bitDepth: bitDepth
+            )
+        }
     }
 
     /// Listen for incoming server connections (server-initiated path).

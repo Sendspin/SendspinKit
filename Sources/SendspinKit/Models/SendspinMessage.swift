@@ -84,7 +84,7 @@ struct DeviceInfo: Codable, Equatable {
 ///
 /// Used in `player@v1_support.supported_commands`, `client/state` player object's
 /// `supported_commands`, and `server/command` player object's `command` field.
-public enum PlayerCommand: String, Codable, Sendable, Hashable {
+enum PlayerCommand: String, Codable, Hashable {
     /// Set player volume (0-100)
     case volume
     /// Set player mute state

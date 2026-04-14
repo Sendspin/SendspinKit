@@ -105,6 +105,15 @@ final class CLIController {
 
     // MARK: - Command loop
 
+    /// Run a throwing async body and log the error to stderr if it fails.
+    private nonisolated static func attempt(_ body: () async throws -> Void) async {
+        do {
+            try await body()
+        } catch {
+            fputs("[ERROR] \(error.localizedDescription)\n", stderr)
+        }
+    }
+
     private nonisolated static func commandLoop(client: SendspinClient) async {
         while let line = readLine() {
             let parts = line.split(separator: " ")
@@ -112,27 +121,27 @@ final class CLIController {
 
             switch cmd.lowercased() {
             case "p", "play":
-                await client.play()
+                await attempt { try await client.play() }
             case "pause":
-                await client.pause()
+                await attempt { try await client.pause() }
             case "s", "stop":
-                await client.stopPlayback()
+                await attempt { try await client.stopPlayback() }
             case "n", "next":
-                await client.next()
+                await attempt { try await client.next() }
             case "b", "prev", "previous":
-                await client.previous()
+                await attempt { try await client.previous() }
 
             case "v", "vol", "volume":
                 guard parts.count > 1, let vol = Int(parts[1]) else {
                     print("Usage: vol <0-100>")
                     continue
                 }
-                await client.setGroupVolume(vol)
+                await attempt { try await client.setGroupVolume(vol) }
 
             case "m", "mute":
-                await client.setGroupMute(true)
+                await attempt { try await client.setGroupMute(true) }
             case "u", "unmute":
-                await client.setGroupMute(false)
+                await attempt { try await client.setGroupMute(false) }
 
             case "repeat":
                 guard parts.count > 1 else {
@@ -140,19 +149,19 @@ final class CLIController {
                     continue
                 }
                 switch parts[1].lowercased() {
-                case "off": await client.repeatOff()
-                case "one": await client.repeatOne()
-                case "all": await client.repeatAll()
+                case "off": await attempt { try await client.repeatOff() }
+                case "one": await attempt { try await client.repeatOne() }
+                case "all": await attempt { try await client.repeatAll() }
                 default: print("Usage: repeat <off|one|all>")
                 }
 
             case "shuffle":
-                await client.shuffle()
+                await attempt { try await client.shuffle() }
             case "unshuffle":
-                await client.unshuffle()
+                await attempt { try await client.unshuffle() }
 
             case "switch":
-                await client.switchGroup()
+                await attempt { try await client.switchGroup() }
 
             case "q", "quit", "exit":
                 await client.disconnect()

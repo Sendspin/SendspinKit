@@ -46,42 +46,28 @@ struct MultiServerDecisionTests {
     // Observable behavior is tested through ServerInfo.connectionReason tracking.
 
     @Test
-    func `ServerInfo includes connectionReason`() {
+    func `ServerInfo includes connectionReason and activeRoles`() {
         let info = ServerInfo(
             serverId: "server-1",
             name: "Test Server",
             version: 1,
-            connectionReason: .playback
+            connectionReason: .playback,
+            activeRoles: [.playerV1, .controllerV1]
         )
         #expect(info.connectionReason == .playback)
+        #expect(info.activeRoles.contains(.playerV1))
+        #expect(info.activeRoles.contains(.controllerV1))
+        #expect(!info.activeRoles.contains(.metadataV1))
 
         let discovery = ServerInfo(
             serverId: "server-2",
             name: "Other Server",
             version: 1,
-            connectionReason: .discovery
+            connectionReason: .discovery,
+            activeRoles: []
         )
         #expect(discovery.connectionReason == .discovery)
-    }
-
-    @Test
-    func `Last played server persistence`() async {
-        // Save
-        let testId = "test-server-\(UUID().uuidString)"
-        await MainActor.run {
-            SendspinClient.lastPlayedServerId = testId
-        }
-
-        // Read back
-        let stored = await MainActor.run {
-            SendspinClient.lastPlayedServerId
-        }
-        #expect(stored == testId)
-
-        // Clean up
-        await MainActor.run {
-            SendspinClient.lastPlayedServerId = nil
-        }
+        #expect(discovery.activeRoles.isEmpty)
     }
 
     @Test

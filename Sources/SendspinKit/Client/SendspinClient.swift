@@ -33,8 +33,12 @@ public final class SendspinClient {
     /// new-generation chunk arrives.
     private var pendingFormat: AudioFormatSpec?
     private var pendingCodecHeader: Data?
-    private var currentVolume: Int = 100
-    private var currentMuted: Bool = false
+    /// Current player volume (0-100). Observable for UI binding (volume sliders).
+    /// Updated by ``setVolume(_:)`` and by the server via `server/command`.
+    public private(set) var currentVolume: Int = 100
+    /// Current player mute state. Observable for UI binding (mute buttons).
+    /// Updated by ``setMute(_:)`` and by the server via `server/command`.
+    public private(set) var currentMuted: Bool = false
     /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
     /// updated when the server sends a `set_static_delay` command.
     public private(set) var staticDelayMs: Int
@@ -56,9 +60,6 @@ public final class SendspinClient {
     // Multi-server state
     private var currentConnectionReason: ConnectionReason?
     private var currentServerId: String?
-
-    /// Key used to persist the last-played server ID (spec requires persistence across reboots)
-    private static let lastPlayedServerKey = "SendspinKit.lastPlayedServerId"
 
     // Dependencies
     private var transport: (any SendspinTransport)?
@@ -168,9 +169,14 @@ public final class SendspinClient {
     // MARK: - Connection lifecycle
 
     /// Connect to a Sendspin server at the given URL (client-initiated connection).
+    ///
+    /// - Throws: ``SendspinClientError/alreadyConnected`` if not in the
+    ///   `.disconnected` state.
     @MainActor
     public func connect(to url: URL) async throws {
-        guard connectionState == .disconnected else { return }
+        guard connectionState == .disconnected else {
+            throw SendspinClientError.alreadyConnected
+        }
 
         connectionState = .connecting
 
@@ -318,14 +324,6 @@ public final class SendspinClient {
         // will handle server/hello (tracking connectionReason) and stream/start
         connectionState = .connecting
         try await setupConnection(with: newTransport)
-    }
-
-    /// Persist the server that most recently had playback_state: 'playing'.
-    /// Spec: "Clients must persistently store the server_id of the server that
-    /// most recently had playback_state: 'playing' (the 'last played server')."
-    public static var lastPlayedServerId: String? {
-        get { UserDefaults.standard.string(forKey: lastPlayedServerKey) }
-        set { UserDefaults.standard.set(newValue, forKey: lastPlayedServerKey) }
     }
 
     // MARK: - Outbound messages
@@ -663,7 +661,9 @@ public final class SendspinClient {
             serverId: message.payload.serverId,
             name: message.payload.name,
             version: message.payload.version,
-            connectionReason: message.payload.connectionReason
+            connectionReason: message.payload.connectionReason,
+            // Wire format is an array; duplicates (if any) are harmlessly deduplicated.
+            activeRoles: Set(message.payload.activeRoles)
         )
         eventsContinuation.yield(.serverConnected(info))
 
@@ -735,12 +735,14 @@ public final class SendspinClient {
             eventsContinuation.yield(.metadataReceived(merged))
         }
 
+        // try? is deliberate: throws .notConnected if player role not configured
+        // (see handleServerCommand for rationale)
         if let player = message.payload.player {
             if let volume = player.volume {
-                await setVolume(volume)
+                try? await setVolume(volume)
             }
             if let muted = player.muted {
-                await setMute(muted)
+                try? await setMute(muted)
             }
         }
 
@@ -866,24 +868,30 @@ public final class SendspinClient {
             if let audioPlayer {
                 await audioPlayer.clearBuffer()
             }
+            eventsContinuation.yield(.streamCleared)
         }
     }
 
     private func handleServerCommand(_ message: ServerCommandMessage) async {
         guard let playerCmd = message.payload.player else { return }
 
+        // try? is deliberate: these throw .notConnected if audioPlayer is nil
+        // (player role not configured), but the server may send player commands
+        // to any client. Silently ignoring commands for unconfigured roles is
+        // correct — the server doesn't know our role configuration until it
+        // reads our client/hello.
         switch playerCmd.command {
         case .volume:
             if let volume = playerCmd.volume {
-                await setVolume(volume)
+                try? await setVolume(volume)
             }
         case .mute:
             if let mute = playerCmd.mute {
-                await setMute(mute)
+                try? await setMute(mute)
             }
         case .setStaticDelay:
             if let delayMs = playerCmd.staticDelayMs {
-                await setStaticDelay(max(0, min(5_000, delayMs)))
+                try? await setStaticDelay(delayMs)
             }
         }
     }
@@ -911,9 +919,10 @@ public final class SendspinClient {
     }
 
     private func handleGroupUpdate(_ message: GroupUpdateMessage) async {
-        // Per spec: persist server_id when playback_state transitions to 'playing'
+        // Per spec: persist server_id when playback_state transitions to 'playing'.
+        // Emitted as an event so the host app can persist using its own storage.
         if message.payload.playbackState == .playing, let serverId = currentServerId {
-            Self.lastPlayedServerId = serverId
+            eventsContinuation.yield(.lastPlayedServerChanged(serverId: serverId))
         }
 
         // Per spec: "Contains delta updates with only the changed fields.
@@ -1009,14 +1018,34 @@ public final class SendspinClient {
 
     // MARK: - Utilities
 
+    /// Send a message through the transport, wrapping any transport error in
+    /// ``SendspinClientError/sendFailed(_:)`` so consumers get a typed public error.
+    ///
+    /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
+    func sendWrapped(_ message: some Codable & Sendable) async throws {
+        guard let transport else { throw SendspinClientError.notConnected }
+        do {
+            try await transport.send(message)
+        } catch {
+            throw SendspinClientError.sendFailed(error.localizedDescription)
+        }
+    }
+
     private nonisolated func getCurrentMicroseconds() -> Int64 {
         MonotonicClock.nowMicroseconds()
     }
 
-    /// Set playback volume (0-100, perceived loudness per spec)
+    /// Set playback volume (0-100, perceived loudness per spec).
+    ///
+    /// Updates the local audio gain immediately. The server is notified
+    /// best-effort — a failed `client/state` send does not prevent the
+    /// local volume change from taking effect.
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if the player role
+    ///   is not active (client not connected or player role not configured).
     @MainActor
-    public func setVolume(_ volume: Int) async {
-        guard let audioPlayer else { return }
+    public func setVolume(_ volume: Int) async throws {
+        guard let audioPlayer else { throw SendspinClientError.notConnected }
 
         let clamped = max(0, min(100, volume))
         currentVolume = clamped
@@ -1025,10 +1054,16 @@ public final class SendspinClient {
         try? await sendClientState()
     }
 
-    /// Set mute state
+    /// Set mute state.
+    ///
+    /// Updates the local mute state immediately. The server is notified
+    /// best-effort.
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if the player role
+    ///   is not active.
     @MainActor
-    public func setMute(_ muted: Bool) async {
-        guard let audioPlayer else { return }
+    public func setMute(_ muted: Bool) async throws {
+        guard let audioPlayer else { throw SendspinClientError.notConnected }
 
         currentMuted = muted
         await audioPlayer.setMute(muted)
@@ -1037,10 +1072,16 @@ public final class SendspinClient {
     }
 
     /// Set static delay in milliseconds (0-5000).
-    /// Per spec: compensates for delay beyond the audio port (external speakers, amplifiers).
-    /// Emits `.staticDelayChanged` so the host app can persist the new value.
+    ///
+    /// Per spec: compensates for delay beyond the audio port (external speakers,
+    /// amplifiers). Emits `.staticDelayChanged` so the host app can persist the
+    /// new value. The server is notified best-effort — a failed `client/state`
+    /// send does not prevent the local delay change from taking effect.
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
     @MainActor
-    public func setStaticDelay(_ delayMs: Int) async {
+    public func setStaticDelay(_ delayMs: Int) async throws {
+        guard transport != nil else { throw SendspinClientError.notConnected }
         let clamped = max(0, min(5_000, delayMs))
         guard clamped != staticDelayMs else { return }
         staticDelayMs = clamped
@@ -1048,159 +1089,27 @@ public final class SendspinClient {
         try? await sendClientState()
     }
 
-    // MARK: - Player format negotiation
+    // MARK: - Operational state transitions
 
-    /// Request the server to change the audio stream format.
+    /// Atomically transition `clientOperationalState` to `newState` and notify the server.
     ///
-    /// Per spec, the server responds with `stream/start` containing the new format.
-    /// All parameters are optional — omitted fields are filled in by the server
-    /// (typically from the current format or the client's first supported format).
+    /// If the server notification fails, rolls back to the previous state and throws.
+    /// This prevents split-brain where the client's local state diverges from what
+    /// the server believes.
     ///
-    /// **Important:** The requested combination must exist in the client's
-    /// `supported_formats` list from `client/hello`, otherwise the server
-    /// falls back to the current format.
-    ///
-    /// Use cases:
-    /// - Switch codec: `requestPlayerFormat(codec: .flac)`
-    /// - Match source rate: `requestPlayerFormat(sampleRate: 48000)`
-    /// - Full format change: `requestPlayerFormat(codec: .flac, sampleRate: 48000, bitDepth: 24)`
-    /// - Downgrade under load: `requestPlayerFormat(codec: .opus)`
-    @MainActor
-    public func requestPlayerFormat(
-        codec: AudioCodec? = nil,
-        channels: Int? = nil,
-        sampleRate: Int? = nil,
-        bitDepth: Int? = nil
-    ) async {
-        guard let transport else { return }
-
-        let request = PlayerFormatRequest(
-            codec: codec,
-            channels: channels,
-            sampleRate: sampleRate,
-            bitDepth: bitDepth
-        )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(player: request)
-        )
-        try? await transport.send(message)
-    }
-
-    /// Request a specific format from the `supportedFormats` list by exact match.
-    /// This is a convenience that sends all fields, avoiding server-side fill-in ambiguity.
-    @MainActor
-    public func requestPlayerFormat(_ format: AudioFormatSpec) async {
-        await requestPlayerFormat(
-            codec: format.codec,
-            channels: format.channels,
-            sampleRate: format.sampleRate,
-            bitDepth: format.bitDepth
-        )
-    }
-
-    // MARK: - Artwork commands
-
-    /// Request the server to change artwork format for a specific channel.
-    /// The server will respond with stream/start containing the updated config.
-    @MainActor
-    public func requestArtworkFormat(
-        channel: Int,
-        source: ArtworkSource? = nil,
-        format: ImageFormat? = nil,
-        mediaWidth: Int? = nil,
-        mediaHeight: Int? = nil
-    ) async {
-        guard let transport else { return }
-
-        let request = ArtworkFormatRequest(
-            channel: channel,
-            source: source,
-            format: format,
-            mediaWidth: mediaWidth,
-            mediaHeight: mediaHeight
-        )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(artwork: request)
-        )
-        try? await transport.send(message)
-    }
-
-    // MARK: - Controller commands
-
-    /// Send a controller command to the server.
-    /// Only valid if the client has the controller role and the command is in
-    /// the server's `supported_commands`.
-    @MainActor
-    public func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async {
-        guard let transport else { return }
-
-        let controller = ControllerCommand(command: command, volume: volume, mute: mute)
-        let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
-        try? await transport.send(message)
-    }
-
-    /// Convenience: play
-    @MainActor public func play() async {
-        await sendCommand(.play)
-    }
-
-    /// Convenience: pause
-    @MainActor public func pause() async {
-        await sendCommand(.pause)
-    }
-
-    /// Convenience: stop playback
-    @MainActor public func stopPlayback() async {
-        await sendCommand(.stop)
-    }
-
-    /// Convenience: next track
-    @MainActor public func next() async {
-        await sendCommand(.next)
-    }
-
-    /// Convenience: previous track
-    @MainActor public func previous() async {
-        await sendCommand(.previous)
-    }
-
-    /// Convenience: set group volume (0-100)
-    @MainActor public func setGroupVolume(_ volume: Int) async {
-        await sendCommand(.volume, volume: max(0, min(100, volume)))
-    }
-
-    /// Convenience: set group mute
-    @MainActor public func setGroupMute(_ muted: Bool) async {
-        await sendCommand(.mute, mute: muted)
-    }
-
-    /// Convenience: repeat off
-    @MainActor public func repeatOff() async {
-        await sendCommand(.repeatOff)
-    }
-
-    /// Convenience: repeat one track
-    @MainActor public func repeatOne() async {
-        await sendCommand(.repeatOne)
-    }
-
-    /// Convenience: repeat all tracks
-    @MainActor public func repeatAll() async {
-        await sendCommand(.repeatAll)
-    }
-
-    /// Convenience: shuffle playback
-    @MainActor public func shuffle() async {
-        await sendCommand(.shuffle)
-    }
-
-    /// Convenience: unshuffle playback
-    @MainActor public func unshuffle() async {
-        await sendCommand(.unshuffle)
-    }
-
-    /// Convenience: switch to next group
-    @MainActor public func switchGroup() async {
-        await sendCommand(.switch)
+    /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
+    func transitionOperationalState(to newState: ClientOperationalState) async throws {
+        guard transport != nil else { throw SendspinClientError.notConnected }
+        let previous = clientOperationalState
+        clientOperationalState = newState
+        do {
+            try await sendClientState()
+        } catch let error as SendspinClientError {
+            clientOperationalState = previous
+            throw error
+        } catch {
+            clientOperationalState = previous
+            throw SendspinClientError.sendFailed(error.localizedDescription)
+        }
     }
 }

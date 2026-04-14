@@ -89,7 +89,7 @@ private final class StarscreamDelegate: WebSocketDelegate, Sendable {
 }
 
 /// WebSocket transport for Sendspin protocol (outbound, client-initiated connections)
-public actor WebSocketTransport: SendspinTransport {
+actor WebSocketTransport: SendspinTransport {
     private nonisolated let delegate: StarscreamDelegate
     private var webSocket: WebSocket?
     private let url: URL
@@ -98,12 +98,12 @@ public actor WebSocketTransport: SendspinTransport {
     private let encoder = SendspinEncoding.makeEncoder()
 
     /// Stream of incoming text messages (JSON)
-    public nonisolated let textMessages: AsyncStream<String>
+    nonisolated let textMessages: AsyncStream<String>
 
     /// Stream of incoming binary messages (audio, artwork, etc.)
-    public nonisolated let binaryMessages: AsyncStream<Data>
+    nonisolated let binaryMessages: AsyncStream<Data>
 
-    public init(url: URL) {
+    init(url: URL) {
         self.url = url
 
         // Create streams and pass continuations to delegate
@@ -117,7 +117,7 @@ public actor WebSocketTransport: SendspinTransport {
 
     /// Connect to the WebSocket server
     /// - Throws: TransportError if already connected or connection fails
-    public func connect() async throws {
+    func connect() async throws {
         // Prevent multiple connections
         guard webSocket == nil else {
             throw TransportError.alreadyConnected
@@ -146,7 +146,7 @@ public actor WebSocketTransport: SendspinTransport {
     /// Whether the underlying WebSocket connection is alive.
     /// Reads from the lock-protected delegate state — `nonisolated` because
     /// the lock is the actual synchronization mechanism, not actor isolation.
-    public nonisolated var isConnected: Bool {
+    nonisolated var isConnected: Bool {
         delegate.isConnected
     }
 
@@ -155,7 +155,7 @@ public actor WebSocketTransport: SendspinTransport {
     /// Note: the `isConnected` check is best-effort — the connection could drop
     /// between the guard and the write (inherent TOCTOU). Starscream handles
     /// writes to a closing socket gracefully (they're silently dropped).
-    public func send(_ message: some Codable & Sendable) async throws {
+    func send(_ message: some Codable & Sendable) async throws {
         guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
@@ -168,7 +168,7 @@ public actor WebSocketTransport: SendspinTransport {
     }
 
     /// Send a binary message
-    public func sendBinary(_ data: Data) async throws {
+    func sendBinary(_ data: Data) async throws {
         guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
@@ -178,7 +178,7 @@ public actor WebSocketTransport: SendspinTransport {
     /// Disconnect from server.
     /// Delegates to `handleDisconnection` on the delegate for consistent
     /// state management, then nils out the socket.
-    public func disconnect() async {
+    func disconnect() async {
         webSocket?.disconnect()
         webSocket = nil
         delegate.handleDisconnection(error: CancellationError())
@@ -188,7 +188,7 @@ public actor WebSocketTransport: SendspinTransport {
 /// Errors that can occur during WebSocket transport.
 ///
 /// `errorDescription` delegates to `description` — keep both in sync when adding cases.
-public enum TransportError: LocalizedError, CustomStringConvertible {
+enum TransportError: LocalizedError, CustomStringConvertible {
     /// WebSocket is not connected — call connect() first
     case notConnected
 
@@ -201,7 +201,7 @@ public enum TransportError: LocalizedError, CustomStringConvertible {
     /// WebSocket was disconnected by the remote peer
     case disconnected(reason: String, code: UInt16)
 
-    public var description: String {
+    var description: String {
         switch self {
         case .notConnected: "WebSocket is not connected"
         case .alreadyConnected: "WebSocket is already connected"
@@ -210,7 +210,7 @@ public enum TransportError: LocalizedError, CustomStringConvertible {
         }
     }
 
-    public var errorDescription: String? {
+    var errorDescription: String? {
         description
     }
 }

@@ -72,6 +72,56 @@ struct SendspinClientTests {
     }
 
     @Test
+    func `enterExternalSource throws notConnected when disconnected`() async {
+        let client = SendspinClient(
+            clientId: "test-client",
+            name: "Test Client",
+            roles: [.playerV1],
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 1_024,
+                supportedFormats: [
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+                ]
+            )
+        )
+
+        await #expect(throws: SendspinClientError.notConnected) {
+            try await client.enterExternalSource()
+        }
+    }
+
+    @Test
+    func `exitExternalSource throws notConnected when disconnected`() async {
+        let client = SendspinClient(
+            clientId: "test-client",
+            name: "Test Client",
+            roles: [.playerV1],
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 1_024,
+                supportedFormats: [
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+                ]
+            )
+        )
+
+        await #expect(throws: SendspinClientError.notConnected) {
+            try await client.exitExternalSource()
+        }
+    }
+
+    @Test
+    func `alreadyConnected error has correct description`() {
+        let error = SendspinClientError.alreadyConnected
+        #expect(error.errorDescription == "Already connected or connecting to a Sendspin server")
+    }
+
+    @Test
+    func `sendFailed error includes reason`() {
+        let error = SendspinClientError.sendFailed("connection reset")
+        #expect(error.errorDescription == "Failed to send message: connection reset")
+    }
+
+    @Test
     func `AudioScheduler is cleared on disconnect`() async {
         let config = PlayerConfiguration(
             bufferCapacity: 1_024,
