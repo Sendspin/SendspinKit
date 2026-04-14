@@ -1,5 +1,5 @@
-// ABOUTME: Data models for the artwork role in the Sendspin protocol
-// ABOUTME: Defines artwork sources, image formats, channel configs, and client configuration
+// ABOUTME: Wire-format data models for the artwork role in the Sendspin protocol
+// ABOUTME: Defines artwork sources, image formats, and channel configs used across artwork messages
 
 /// Artwork source type per Sendspin spec
 public enum ArtworkSource: String, Codable, Sendable, Hashable {
@@ -18,17 +18,40 @@ public enum ImageFormat: String, Codable, Sendable, Hashable {
     case bmp
 }
 
+/// Dimension validation error for artwork channels.
+private enum DimensionError: Error, CustomStringConvertible {
+    case widthMustBePositive(Int)
+    case heightMustBePositive(Int)
+    case widthMustBeNonNegative(Int)
+    case heightMustBeNonNegative(Int)
+
+    var description: String {
+        switch self {
+        case .widthMustBePositive(let v): "media_width must be positive for active channels, got \(v)"
+        case .heightMustBePositive(let v): "media_height must be positive for active channels, got \(v)"
+        case .widthMustBeNonNegative(let v): "media_width must be non-negative, got \(v)"
+        case .heightMustBeNonNegative(let v): "media_height must be non-negative, got \(v)"
+        }
+    }
+}
+
 /// Configuration for a single artwork channel in client/hello.
 /// Array index determines the channel number (0-3) and corresponding binary message type (8-11).
 public struct ArtworkChannel: Codable, Sendable, Hashable {
     /// Artwork source type
     public let source: ArtworkSource
-    /// Image format
+    /// Image format. Required by the spec even for disabled channels (`source: .none`);
+    /// use ``disabled`` for a convenient placeholder.
     public let format: ImageFormat
     /// Max width in pixels
     public let mediaWidth: Int
     /// Max height in pixels
     public let mediaHeight: Int
+
+    /// A disabled channel placeholder. Format is `.jpeg` by arbitrary convention;
+    /// any format is valid since the server ignores it for `source: .none` channels.
+    // Safe: .none source allows zero dimensions in validateDimensions().
+    public static let disabled = ArtworkChannel(source: .none, format: .jpeg, mediaWidth: 0, mediaHeight: 0)
 
     enum CodingKeys: String, CodingKey {
         case source
@@ -37,18 +60,64 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
         case mediaHeight = "media_height"
     }
 
+    /// Validates dimensions for the given source type.
+    ///
+    /// Active channels require positive dimensions; disabled channels (`.none`) allow zero.
+    private static func validateDimensions(
+        source: ArtworkSource, width: Int, height: Int
+    ) throws(DimensionError) {
+        if source != .none {
+            guard width > 0 else { throw DimensionError.widthMustBePositive(width) }
+            guard height > 0 else { throw DimensionError.heightMustBePositive(height) }
+        } else {
+            guard width >= 0 else { throw DimensionError.widthMustBeNonNegative(width) }
+            guard height >= 0 else { throw DimensionError.heightMustBeNonNegative(height) }
+        }
+    }
+
+    /// Creates an artwork channel configuration.
+    ///
+    /// - Precondition: Active channels (`source` != `.none`) require positive dimensions.
+    ///   Disabled channels (`.none`) allow zero dimensions.
     public init(source: ArtworkSource, format: ImageFormat, mediaWidth: Int, mediaHeight: Int) {
-        precondition(mediaWidth > 0, "media_width must be positive")
-        precondition(mediaHeight > 0, "media_height must be positive")
+        do {
+            try Self.validateDimensions(source: source, width: mediaWidth, height: mediaHeight)
+        } catch {
+            preconditionFailure("\(error)")
+        }
         self.source = source
         self.format = format
         self.mediaWidth = mediaWidth
         self.mediaHeight = mediaHeight
     }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let source = try container.decode(ArtworkSource.self, forKey: .source)
+        let format = try container.decode(ImageFormat.self, forKey: .format)
+        let width = try container.decode(Int.self, forKey: .mediaWidth)
+        let height = try container.decode(Int.self, forKey: .mediaHeight)
+
+        do {
+            try Self.validateDimensions(source: source, width: width, height: height)
+        } catch {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(codingPath: container.codingPath, debugDescription: "\(error)")
+            )
+        }
+
+        self.source = source
+        self.format = format
+        self.mediaWidth = width
+        self.mediaHeight = height
+    }
 }
 
 /// Configuration for a single artwork channel as received in stream/start.
-/// Note: uses `width`/`height` (not `media_width`/`media_height`) per spec.
+///
+/// Uses `width`/`height` (not `media_width`/`media_height`) per spec.
+/// This is a server-provided type — we trust the server's values and
+/// perform no validation beyond what `Decodable` provides.
 public struct StreamArtworkChannelConfig: Codable, Sendable, Hashable {
     /// Artwork source type
     public let source: ArtworkSource
@@ -64,18 +133,5 @@ public struct StreamArtworkChannelConfig: Codable, Sendable, Hashable {
         self.format = format
         self.width = width
         self.height = height
-    }
-}
-
-/// Configuration for the artwork role, provided when creating a SendspinClient.
-/// Mirrors PlayerConfiguration's role as a role-specific config container.
-public struct ArtworkConfiguration: Sendable {
-    /// Supported artwork channels (1-4). Array index is the channel number.
-    public let channels: [ArtworkChannel]
-
-    public init(channels: [ArtworkChannel]) {
-        precondition(!channels.isEmpty, "Must have at least one artwork channel")
-        precondition(channels.count <= 4, "Maximum 4 artwork channels")
-        self.channels = channels
     }
 }

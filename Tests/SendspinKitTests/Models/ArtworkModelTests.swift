@@ -35,18 +35,15 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel with none source for disabled channel`() throws {
-        let channel = ArtworkChannel(
-            source: .none,
-            format: .jpeg,
-            mediaWidth: 1,
-            mediaHeight: 1
-        )
+    func `ArtworkChannel disabled placeholder encodes correctly`() throws {
+        let channel = ArtworkChannel.disabled
 
         let encoder = JSONEncoder()
         let data = try encoder.encode(channel)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["source"] as? String == "none")
+        #expect(json["media_width"] as? Int == 0)
+        #expect(json["media_height"] as? Int == 0)
     }
 
     @Test
@@ -69,12 +66,11 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel supports all source types`() throws {
-        let sources: [ArtworkSource] = [.album, .artist, .none]
+    func `ArtworkChannel supports active and disabled source types`() throws {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
-        for source in sources {
+        for source in [ArtworkSource.album, .artist] {
             let channel = ArtworkChannel(
                 source: source,
                 format: .jpeg,
@@ -85,7 +81,113 @@ struct ArtworkModelTests {
             let decoded = try decoder.decode(ArtworkChannel.self, from: data)
             #expect(decoded.source == source)
         }
+
+        // Disabled channel round-trips with zero dimensions
+        let disabled = ArtworkChannel.disabled
+        let data = try encoder.encode(disabled)
+        let decoded = try decoder.decode(ArtworkChannel.self, from: data)
+        #expect(decoded.source == .none)
+        #expect(decoded.format == .jpeg)
+        #expect(decoded.mediaWidth == 0)
+        #expect(decoded.mediaHeight == 0)
     }
+
+    // MARK: - ArtworkChannel decode validation
+
+    @Test
+    func `ArtworkChannel rejects negative width for active channel via decode`() {
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "media_width": -1, "media_height": 300}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects zero width for active channel via decode`() {
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "media_width": 0, "media_height": 300}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects zero height for active channel via decode`() {
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "media_width": 300, "media_height": 0}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects negative height for active channel via decode`() {
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "media_width": 300, "media_height": -1}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects negative width for none channel via decode`() {
+        let json = Data("""
+        {"source": "none", "format": "jpeg", "media_width": -1, "media_height": 0}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects negative height for none channel via decode`() {
+        let json = Data("""
+        {"source": "none", "format": "jpeg", "media_width": 0, "media_height": -1}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel rejects both dimensions bad for active channel via decode`() {
+        // Documents first-failure-wins: width is checked before height
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "media_width": -1, "media_height": -1}
+        """.utf8)
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel accepts zero dimensions for none channel via decode`() throws {
+        let json = Data("""
+        {"source": "none", "format": "jpeg", "media_width": 0, "media_height": 0}
+        """.utf8)
+
+        let channel = try JSONDecoder().decode(ArtworkChannel.self, from: json)
+        #expect(channel.source == .none)
+        #expect(channel.mediaWidth == 0)
+        #expect(channel.mediaHeight == 0)
+    }
+
+    // Note: precondition failures in the programmatic init (e.g., passing mediaWidth: -1
+    // to ArtworkChannel(source:format:mediaWidth:mediaHeight:)) cannot be tested in
+    // Swift Testing — precondition aborts the process. The Decodable path above exercises
+    // the same validateDimensions() logic with throwing.
 
     // MARK: - ArtworkSupport in client/hello
 
@@ -93,7 +195,7 @@ struct ArtworkModelTests {
     func `ArtworkSupport encodes channels array for client/hello`() throws {
         let support = ArtworkSupport(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
+            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400),
         ])
 
         let encoder = JSONEncoder()
@@ -139,7 +241,7 @@ struct ArtworkModelTests {
             supportedRoles: [.artworkV1],
             playerV1Support: nil,
             artworkV1Support: ArtworkSupport(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
+                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
             ]),
             visualizerV1Support: nil
         )
@@ -209,6 +311,30 @@ struct ArtworkModelTests {
         let message = try decoder.decode(StreamStartMessage.self, from: json)
         let artwork = try #require(message.payload.artwork)
         #expect(artwork.channels[0].source == .none)
+    }
+
+    @Test
+    func `StreamArtworkChannelConfig accepts values that ArtworkChannel would reject`() throws {
+        // StreamArtworkChannelConfig is server-provided — it intentionally has no validation.
+        // This test documents the asymmetry: the server can send zero dimensions for an
+        // active channel (e.g., during format negotiation), and we accept it without error.
+        let config = StreamArtworkChannelConfig(
+            source: .album,
+            format: .jpeg,
+            width: 0,
+            height: 0
+        )
+        #expect(config.source == .album)
+        #expect(config.width == 0)
+        #expect(config.height == 0)
+
+        // Also verify it decodes from JSON without validation
+        let json = Data("""
+        {"source": "album", "format": "jpeg", "width": -1, "height": -1}
+        """.utf8)
+        let decoded = try JSONDecoder().decode(StreamArtworkChannelConfig.self, from: json)
+        #expect(decoded.width == -1)
+        #expect(decoded.height == -1)
     }
 
     // MARK: - StreamRequestFormat (artwork)
@@ -295,17 +421,38 @@ struct ArtworkModelTests {
     func `ArtworkConfiguration validates channel count`() {
         // Valid: 1-4 channels
         let config = ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
         ])
         #expect(config.channels.count == 1)
 
         let config4 = ArtworkConfiguration(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
-            ArtworkChannel(source: .none, format: .bmp, mediaWidth: 100, mediaHeight: 100),
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400)
+            .disabled,
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400),
         ])
         #expect(config4.channels.count == 4)
+    }
+
+    @Test
+    func `ArtworkConfiguration equality and hashing`() {
+        let channels = [
+            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
+            .disabled,
+        ]
+        let a = ArtworkConfiguration(channels: channels)
+        let b = ArtworkConfiguration(channels: channels)
+        let c = ArtworkConfiguration(channels: [
+            ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
+        ])
+
+        #expect(a == b)
+        #expect(a != c)
+
+        // Verify Hashable: equal values deduplicate in a Set
+        let set: Set = [a, b]
+        #expect(set.count == 1)
+        #expect(!set.contains(c))
     }
 
     // MARK: - Wire format interoperability
