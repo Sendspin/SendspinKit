@@ -36,7 +36,9 @@ struct SendspinTimeFilter {
     /// Whether the drift estimate is statistically significant (SNR gate)
     private(set) var useDrift: Bool = false
 
-    /// Number of measurements processed
+    /// Number of measurements processed (saturates at `minSamplesForForgetting`).
+    /// Acts as a warm-up counter: once it reaches `minSamplesForForgetting`,
+    /// adaptive forgetting engages and the count stops incrementing.
     private(set) var count: UInt8 = 0
 
     // MARK: - Configuration (immutable after init)
@@ -139,7 +141,7 @@ struct SendspinTimeFilter {
         // --- Prediction step ---
         let predictedOffset = offset + drift * dt
 
-        let newDriftCovariance = driftCovariance + dt * driftProcessVariance
+        var newDriftCovariance = driftCovariance + dt * driftProcessVariance
         var newOffsetDriftCovariance = offsetDriftCovariance + driftCovariance * dt
         var newOffsetCovariance = offsetCovariance
             + 2.0 * offsetDriftCovariance * dt
@@ -150,16 +152,14 @@ struct SendspinTimeFilter {
         let residual = measurement - predictedOffset
 
         if count < minSamplesForForgetting {
-            // Still in warm-up: just increment count (saturating at UInt8.max)
-            count = count &+ 1
-            if count == 0 { count = UInt8.max } // handle overflow
+            count += 1
         } else {
             let maxResidualCutoff = clampedMaxError * adaptiveForgettingCutoff
             if abs(residual) > maxResidualCutoff {
-                // Inflate covariances to allow faster adaptation
+                // Inflate all three predicted covariances to allow faster adaptation
+                newDriftCovariance *= forgetVarianceFactor
+                newOffsetDriftCovariance *= forgetVarianceFactor
                 newOffsetCovariance *= forgetVarianceFactor
-                newOffsetDriftCovariance *= forgetVarianceFactor // C++ applies to cross-term too
-                // Note: C++ multiplies all three predicted covariances
             }
         }
 
@@ -214,6 +214,14 @@ struct SendspinTimeFilter {
     /// Whether the filter has received at least one measurement
     var isInitialized: Bool {
         count > 0
+    }
+
+    /// Estimated standard deviation of the offset in microseconds.
+    /// Equivalent to C++ `get_error()`. Returns `nil` before the first measurement.
+    var estimatedError: Double? {
+        guard isInitialized else { return nil }
+        assert(offsetCovariance >= 0, "Covariance matrix lost positive-semidefiniteness")
+        return sqrt(max(offsetCovariance, 0.0))
     }
 
     /// Reset the filter to its initial state

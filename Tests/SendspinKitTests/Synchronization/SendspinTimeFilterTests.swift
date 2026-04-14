@@ -202,6 +202,7 @@ struct SendspinTimeFilterTests {
         #expect(filter.drift == 0.0)
         #expect(filter.offsetCovariance == .infinity)
         #expect(filter.useDrift == false)
+        #expect(filter.estimatedError == nil)
     }
 
     // MARK: - Adaptive forgetting
@@ -248,5 +249,145 @@ struct SendspinTimeFilterTests {
 
         // Raw covariance should decrease (even if integer-rounded error doesn't)
         #expect(covarianceAfterFifty < covarianceAfterOne)
+    }
+
+    // MARK: - Adaptive forgetting (active path)
+
+    @Test
+    func `adaptive forgetting inflates covariance on large residual`() {
+        // Use minSamples=5 so we don't need 100 warmup measurements
+        var filter = SendspinTimeFilter(minSamples: 5)
+
+        // Warm up past minSamples with consistent offset of 1000μs
+        for i in 0 ..< 10 {
+            let t = Int64((i + 1) * 100_000)
+            filter.update(timeAdded: t, measurement: 1_000.0, maxError: 50.0)
+        }
+
+        let offsetCovarianceBefore = filter.offsetCovariance
+        let driftCovarianceBefore = filter.driftCovariance
+
+        // Inject a measurement with a 9000μs jump from predicted offset.
+        // With maxError=50 and cutoff=0.75, forgetting triggers when |residual| > 37.5μs.
+        // Residual ≈ 9000 >> 37.5, so all three covariances should be inflated.
+        filter.update(timeAdded: 1_100_000, measurement: 10_000.0, maxError: 50.0)
+
+        // With covariance inflation, offset should jump closer to the outlier (10_000)
+        // than to the prior value (~1_000). Midpoint is 5_500.
+        #expect(filter.offset > 5_500.0, "Offset should be closer to outlier than prior")
+
+        // Both offset and drift covariance should grow after forgetting fires.
+        // The Kalman update step deflates covariance, but with such a massive residual
+        // the inflation should dominate.
+        #expect(
+            filter.offsetCovariance > offsetCovarianceBefore,
+            "Offset covariance should grow after forgetting fires on a large residual"
+        )
+        #expect(
+            filter.driftCovariance > driftCovarianceBefore,
+            "Drift covariance should grow after forgetting fires (was missing before bug fix)"
+        )
+    }
+
+    // MARK: - Count behavior
+
+    @Test
+    func `count saturates at minSamplesForForgetting`() {
+        // The first two updates set count directly (1, then 2) via special-case
+        // init paths. Subsequent updates increment count in the warm-up branch
+        // until it reaches minSamplesForForgetting, after which adaptive
+        // forgetting engages and count stops incrementing.
+        let minSamples: UInt8 = 10
+        var filter = SendspinTimeFilter(minSamples: minSamples)
+
+        // Feed well past minSamples
+        for i in 0 ..< 50 {
+            let t = Int64((i + 1) * 100_000)
+            filter.update(timeAdded: t, measurement: 500.0, maxError: 10.0)
+        }
+
+        #expect(filter.count == minSamples)
+    }
+
+    // MARK: - Drift-aware time conversion
+
+    @Test
+    func `time conversion accounts for drift when significant`() {
+        // Use a low significance threshold so drift passes the SNR gate more easily
+        var filter = SendspinTimeFilter(driftSignificanceThreshold: 0.5)
+        let trueDrift = 0.1 // 100,000 ppm — very strong drift to dominate noise
+
+        // Feed measurements with strong, consistent drift and tight error bounds.
+        // 100 iterations is sufficient given the extreme signal-to-noise ratio.
+        for i in 0 ..< 100 {
+            let t = Int64((i + 1) * 10_000) // 10ms apart
+            let measuredOffset = 1_000.0 + trueDrift * Double(t)
+            filter.update(timeAdded: t, measurement: measuredOffset, maxError: 5.0)
+        }
+
+        // With a very large, consistent drift and low threshold, SNR gate should open
+        #expect(filter.useDrift, "Drift should be statistically significant")
+
+        // Verify that server time diverges from a naive offset-only computation
+        let futureClient: Int64 = 10_000_000 // 10s in the future
+        let serverTime = filter.computeServerTime(futureClient)
+        let naiveServer = futureClient + Int64(filter.offset.rounded())
+
+        // With drift active, the computed server time should differ from naive
+        #expect(
+            abs(serverTime - naiveServer) > 100,
+            "Drift should meaningfully affect time conversion at 10s extrapolation"
+        )
+    }
+
+    // MARK: - Estimated error
+
+    @Test
+    func `estimatedError is nil before first measurement`() {
+        let filter = SendspinTimeFilter()
+        #expect(filter.estimatedError == nil)
+    }
+
+    @Test
+    func `estimatedError matches known value after first measurement`() throws {
+        var filter = SendspinTimeFilter()
+        filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
+
+        // After first measurement: offsetCovariance = maxError² = 2500
+        // estimatedError = √2500 = 50.0 (exactly representable in IEEE 754)
+        let error = try #require(filter.estimatedError)
+        #expect(error == 50.0)
+    }
+
+    @Test
+    func `estimatedError is positive and finite after Kalman updates`() throws {
+        var filter = SendspinTimeFilter()
+
+        for i in 0 ..< 20 {
+            let t = Int64((i + 1) * 100_000)
+            filter.update(timeAdded: t, measurement: 1_000.0, maxError: 100.0)
+        }
+
+        let error = try #require(filter.estimatedError)
+        // After 20 consistent measurements, error should be well below the initial
+        // measurement uncertainty of 100μs but still positive
+        #expect(error > 0.0)
+        #expect(error < 100.0, "Error should be below initial measurement uncertainty after convergence")
+    }
+
+    @Test
+    func `estimatedError decreases with more measurements`() throws {
+        var filter = SendspinTimeFilter(processStdDev: 0.001, driftProcessStdDev: 0.0001)
+
+        filter.update(timeAdded: 100_000, measurement: 1_000.0, maxError: 500.0)
+        let errorAfterOne = try #require(filter.estimatedError)
+
+        for i in 1 ..< 50 {
+            let t = Int64((i + 1) * 100_000)
+            filter.update(timeAdded: t, measurement: 1_000.0, maxError: 500.0)
+        }
+
+        let errorAfterFifty = try #require(filter.estimatedError)
+        #expect(errorAfterFifty < errorAfterOne)
     }
 }
