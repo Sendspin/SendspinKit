@@ -63,6 +63,7 @@ identifier_name:
     - dt  # delta time (Kalman filter)
     - ts  # timespec (MonotonicClock)
     - cb  # callback (audio hot path)
+    - rc  # return code (POSIX convention)
     - v1  # version identifiers in tests
     - v2
     - a   # test fixtures (equality/hashing tests)
