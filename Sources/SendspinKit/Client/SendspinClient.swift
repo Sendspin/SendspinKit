@@ -115,16 +115,16 @@ public final class SendspinClient {
     /// call `stopDiscovery()` when done.
     ///
     /// ```swift
-    /// let discovery = await SendspinClient.discoverServers()
+    /// let discovery = try await SendspinClient.discoverServers()
     /// for await servers in discovery.servers {
     ///     print("Found \(servers.count) server(s)")
     /// }
     /// // Later:
     /// await discovery.stopDiscovery()
     /// ```
-    public nonisolated static func discoverServers() async -> ServerDiscovery {
+    public nonisolated static func discoverServers() async throws -> ServerDiscovery {
         let discovery = ServerDiscovery()
-        await discovery.startDiscovery()
+        try await discovery.startDiscovery()
         return discovery
     }
 
@@ -136,8 +136,8 @@ public final class SendspinClient {
     ///
     /// - Parameter timeout: How long to search for servers (default: 3 seconds)
     /// - Returns: Array of discovered servers
-    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async -> [DiscoveredServer] {
-        let discovery = await discoverServers()
+    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
+        let discovery = try await discoverServers()
 
         return await withTaskGroup(of: [DiscoveredServer].self) { group in
             var latestServers: [DiscoveredServer] = []

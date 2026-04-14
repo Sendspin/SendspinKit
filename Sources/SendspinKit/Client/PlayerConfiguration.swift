@@ -1,10 +1,8 @@
 // ABOUTME: Configuration for player role capabilities
 // ABOUTME: Specifies buffer capacity, supported audio formats, and volume control mode
 
-import Foundation
-
 /// How the player handles volume and mute commands from the server.
-public enum VolumeMode: Sendable {
+public enum VolumeMode: Sendable, Hashable {
     /// Software volume via AudioQueue gain (works everywhere).
     /// Always advertises `volume` and `mute` in `supported_commands`.
     case software
