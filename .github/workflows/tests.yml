@@ -1,15 +1,36 @@
-name: Tests and Coverage
+name: CI
 
 on:
   push:
-    branches: [ main, develop ]
+    branches: [main, develop]
   pull_request:
-    branches: [ main, develop ]
+    branches: [main, develop]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: Lint
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: brew install swiftformat swiftlint
+
+      - name: SwiftFormat (lint mode)
+        run: swiftformat --lint .
+
+      - name: SwiftLint
+        run: swiftlint lint --strict
+
   test:
-    name: Run Tests with Coverage
+    name: Test
     runs-on: macos-latest
 
     steps:
@@ -19,30 +40,50 @@ jobs:
       - name: Show Swift version
         run: swift --version
 
-      - name: Install SwiftFormat
-        run: brew install swiftformat
-
-      - name: Install SwiftLint
-        run: brew install swiftlint
-
-      - name: Run SwiftFormat (lint mode)
-        run: swiftformat --lint .
-
-      - name: Run SwiftLint
-        run: swiftlint lint --strict
-
-      - name: Run tests with coverage
-        env:
-          SKIP_INTEGRATION_TESTS: 1
+      - name: Run all tests with coverage
         run: swift test --enable-code-coverage
 
-      - name: Generate coverage report
+      - name: Generate LCOV report
         run: |
+          BIN=$(find .build/debug -name "SendspinKitPackageTests" -type f -not -path "*.build/*" -not -path "*.product/*" -not -path "*.derived/*" | head -1)
           xcrun llvm-cov export \
             -format="lcov" \
-            .build/debug/ResonateKitPackageTests.xctest/Contents/MacOS/ResonateKitPackageTests \
+            "$BIN" \
             -instr-profile .build/debug/codecov/default.profdata \
             > coverage.lcov
+
+      - name: Generate coverage summary
+        id: coverage
+        run: |
+          BIN=$(find .build/debug -name "SendspinKitPackageTests" -type f -not -path "*.build/*" -not -path "*.product/*" -not -path "*.derived/*" | head -1)
+
+          xcrun llvm-cov report \
+            "$BIN" \
+            -instr-profile .build/debug/codecov/default.profdata \
+            > coverage-report.txt
+
+          COVERAGE=$(grep TOTAL coverage-report.txt | awk '{print $NF}')
+          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
+
+          echo "### Test Coverage Report" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Overall Coverage: $COVERAGE**" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat coverage-report.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Check coverage threshold
+        run: |
+          COVERAGE=$(echo "${{ steps.coverage.outputs.coverage }}" | sed 's/%//')
+          THRESHOLD=40
+
+          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
+            echo "::error::Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
+            exit 1
+          else
+            echo "Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+          fi
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v4
@@ -50,29 +91,6 @@ jobs:
           files: ./coverage.lcov
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
-
-      - name: Generate coverage summary
-        id: coverage
-        run: |
-          xcrun llvm-cov report \
-            .build/debug/ResonateKitPackageTests.xctest/Contents/MacOS/ResonateKitPackageTests \
-            -instr-profile .build/debug/codecov/default.profdata \
-            > coverage-report.txt
-
-          # Extract coverage percentage
-          COVERAGE=$(xcrun llvm-cov report \
-            .build/debug/ResonateKitPackageTests.xctest/Contents/MacOS/ResonateKitPackageTests \
-            -instr-profile .build/debug/codecov/default.profdata | \
-            grep TOTAL | awk '{print $10}')
-
-          echo "coverage=$COVERAGE" >> $GITHUB_OUTPUT
-          echo "### Test Coverage Report" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**Overall Coverage: $COVERAGE**" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          cat coverage-report.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
 
       - name: Comment PR with coverage
         if: github.event_name == 'pull_request'
@@ -83,27 +101,26 @@ jobs:
             const coverage = '${{ steps.coverage.outputs.coverage }}';
             const report = fs.readFileSync('coverage-report.txt', 'utf8');
 
-            const comment = `## 📊 Test Coverage Report
-
-            **Overall Coverage: ${coverage}**
-
-            <details>
-            <summary>Detailed Coverage Report</summary>
-
-            \`\`\`
-            ${report}
-            \`\`\`
-
-            </details>
-
-            🤖 Generated with [Claude Code](https://claude.com/claude-code)
-            `;
+            const body = [
+              `## Test Coverage Report`,
+              ``,
+              `**Overall Coverage: ${coverage}**`,
+              ``,
+              `<details>`,
+              `<summary>Detailed Coverage Report</summary>`,
+              ``,
+              '```',
+              report.trim(),
+              '```',
+              ``,
+              `</details>`,
+            ].join('\n');
 
             github.rest.issues.createComment({
               issue_number: context.issue.number,
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: comment
+              body: body
             });
 
       - name: Upload coverage artifacts
@@ -114,47 +131,3 @@ jobs:
             coverage.lcov
             coverage-report.txt
           retention-days: 30
-
-      - name: Check coverage threshold
-        run: |
-          COVERAGE=$(xcrun llvm-cov report \
-            .build/debug/MusicAssistantKitPackageTests.xctest/Contents/MacOS/MusicAssistantKitPackageTests \
-            -instr-profile .build/debug/codecov/default.profdata | \
-            grep TOTAL | awk '{print $10}' | sed 's/%//')
-
-          THRESHOLD=40
-
-          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
-            echo "❌ Coverage $COVERAGE% is below threshold $THRESHOLD%"
-            exit 1
-          else
-            echo "✅ Coverage $COVERAGE% meets threshold $THRESHOLD%"
-          fi
-
-  integration-test:
-    name: Integration Tests
-    runs-on: macos-latest
-    # Only run if server is available (skip on forks without secrets)
-    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Run integration tests
-        env:
-          MA_TEST_HOST: ${{ secrets.MA_TEST_HOST || 'localhost' }}
-          MA_TEST_PORT: ${{ secrets.MA_TEST_PORT || '8095' }}
-        run: swift test --filter "WebSocket Connection Integration Tests"
-        continue-on-error: true  # Don't fail if server unavailable
-
-      - name: Integration test summary
-        env:
-          MA_TEST_HOST: ${{ secrets.MA_TEST_HOST || 'localhost' }}
-          MA_TEST_PORT: ${{ secrets.MA_TEST_PORT || '8095' }}
-        run: |
-          echo "### Integration Tests" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Host:** ${MA_TEST_HOST:-localhost}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Port:** ${MA_TEST_PORT:-8095}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Note:** Integration tests run separately and may fail if server is unavailable" >> $GITHUB_STEP_SUMMARY
