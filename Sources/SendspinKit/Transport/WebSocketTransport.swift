@@ -137,9 +137,24 @@ actor WebSocketTransport: SendspinTransport {
         // Store the continuation under the lock, then kick off connect().
         // If Starscream fires .connected synchronously (unlikely but not contractually
         // impossible), CheckedContinuation handles resume-before-suspension correctly.
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            delegate.state.withLock { $0.connectionContinuation = continuation }
-            socket.connect()
+        //
+        // withTaskCancellationHandler ensures the continuation is always resumed:
+        // if the calling task is cancelled while awaiting, we consume the continuation
+        // under the lock and resume with CancellationError. If Starscream already
+        // consumed it (connected or errored), the lock ensures we don't double-resume.
+        let capturedDelegate = delegate
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                capturedDelegate.state.withLock { $0.connectionContinuation = continuation }
+                socket.connect()
+            }
+        } onCancel: {
+            let continuation = capturedDelegate.state.withLock { state -> CheckedContinuation<Void, Error>? in
+                let cont = state.connectionContinuation
+                state.connectionContinuation = nil
+                return cont
+            }
+            continuation?.resume(throwing: CancellationError())
         }
     }
 
