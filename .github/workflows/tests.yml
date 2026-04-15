@@ -45,21 +45,28 @@ jobs:
 
       - name: Generate LCOV report
         run: |
-          BIN=$(find .build/debug -name "SendspinKitPackageTests" -type f -not -path "*.build/*" -not -path "*.product/*" -not -path "*.derived/*" | head -1)
+          BIN=$(find .build -path "*/SendspinKitPackageTests.xctest/Contents/MacOS/SendspinKitPackageTests" -type f | head -1)
+          if [ -z "$BIN" ]; then
+            echo "::error::Could not find SendspinKitPackageTests binary"
+            find .build -name "SendspinKitPackageTests" -type f
+            exit 1
+          fi
+          PROFDATA=$(find .build -name "default.profdata" -type f | head -1)
           xcrun llvm-cov export \
             -format="lcov" \
             "$BIN" \
-            -instr-profile .build/debug/codecov/default.profdata \
+            -instr-profile "$PROFDATA" \
             > coverage.lcov
 
       - name: Generate coverage summary
         id: coverage
         run: |
-          BIN=$(find .build/debug -name "SendspinKitPackageTests" -type f -not -path "*.build/*" -not -path "*.product/*" -not -path "*.derived/*" | head -1)
+          BIN=$(find .build -path "*/SendspinKitPackageTests.xctest/Contents/MacOS/SendspinKitPackageTests" -type f | head -1)
+          PROFDATA=$(find .build -name "default.profdata" -type f | head -1)
 
           xcrun llvm-cov report \
             "$BIN" \
-            -instr-profile .build/debug/codecov/default.profdata \
+            -instr-profile "$PROFDATA" \
             > coverage-report.txt
 
           COVERAGE=$(grep TOTAL coverage-report.txt | awk '{print $NF}')
