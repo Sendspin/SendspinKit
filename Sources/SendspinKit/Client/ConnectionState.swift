@@ -39,7 +39,19 @@ public enum StreamingError: Error, Sendable, Hashable, LocalizedError, CustomDeb
     }
 }
 
-/// Connection state of the Sendspin client
+/// Connection state of the Sendspin client.
+///
+/// Transitions:
+/// - `.disconnected` → `.connecting` (via `connect(to:)` or `acceptConnection(_:)`)
+/// - `.connecting` → `.connected` (after successful handshake)
+/// - `.connected` → `.error(_:)` (unsupported codec, audio failure, invalid format)
+/// - `.connected` → `.disconnected` (explicit `disconnect()` or connection lost)
+/// - `.error(_:)` → `.disconnected` (via `disconnect()`)
+///
+/// **Recovering from `.error`:** The transport is still alive but playback is broken.
+/// Call ``SendspinClient/disconnect(reason:)`` followed by ``SendspinClient/connect(to:)``
+/// to recover. The client does not auto-recover because the host app may want to show
+/// an error UI or switch to a different server.
 public enum ConnectionState: Sendable, Equatable {
     case disconnected
     case connecting

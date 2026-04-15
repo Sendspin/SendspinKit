@@ -76,7 +76,7 @@ extension SendspinClient {
 
 extension SendspinClient {
     func handleServerHello(_ message: ServerHelloMessage) async {
-        connectionState = .connected
+        updateConnectionState(.connected)
 
         // Track server identity and connection reason for multi-server logic
         currentServerId = message.payload.serverId
@@ -156,7 +156,7 @@ extension SendspinClient {
                 repeatMode: metadata.repeat.merge(previous: prev?.repeatMode),
                 shuffle: metadata.shuffle.merge(previous: prev?.shuffle)
             )
-            currentMetadata = merged
+            updateMetadata(merged)
             eventsContinuation.yield(.metadataReceived(merged))
         }
 
@@ -184,7 +184,7 @@ extension SendspinClient {
                 volume: vol,
                 muted: muted
             )
-            currentControllerState = state
+            updateControllerState(state)
             eventsContinuation.yield(.controllerStateUpdated(state))
         }
     }
@@ -208,7 +208,7 @@ extension SendspinClient {
         Log.client.info("stream/start: \(playerInfo.codec) \(playerInfo.sampleRate)Hz \(playerInfo.channels)ch \(playerInfo.bitDepth)bit")
 
         guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
-            connectionState = .error(.unsupportedCodec(playerInfo.codec))
+            updateConnectionState(.error(.unsupportedCodec(playerInfo.codec)))
             clientOperationalState = .error
             try? await sendClientState()
             return
@@ -223,7 +223,7 @@ extension SendspinClient {
                 bitDepth: playerInfo.bitDepth
             )
         } catch {
-            connectionState = .error(.invalidFormat(error.errorDescription ?? "\(error)"))
+            updateConnectionState(.error(.invalidFormat(error.errorDescription ?? "\(error)")))
             clientOperationalState = .error
             try? await sendClientState()
             return
@@ -233,7 +233,7 @@ extension SendspinClient {
         if let headerBase64 = playerInfo.codecHeader {
             codecHeader = Data(base64Encoded: headerBase64)
         }
-        currentCodecHeader = codecHeader
+        updateCodecHeader(codecHeader)
         shouldEmitRawAudio = playerConfig?.emitRawAudioEvents ?? false
 
         let wasPlaying = await audioPlayer.isPlaying
@@ -257,7 +257,7 @@ extension SendspinClient {
             streamGeneration &+= 1
             pendingFormat = format
             pendingCodecHeader = codecHeader
-            currentStreamFormat = format
+            updateStreamFormat(format)
 
             // Swap decoder for new incoming chunks
             do {
@@ -279,7 +279,7 @@ extension SendspinClient {
 
         do {
             try await audioPlayer.start(format: format, codecHeader: codecHeader)
-            currentStreamFormat = format
+            updateStreamFormat(format)
             clientOperationalState = .synchronized
             await audioScheduler?.startScheduling()
 
@@ -288,7 +288,7 @@ extension SendspinClient {
             }
             try? await sendClientState()
         } catch {
-            connectionState = .error(.audioStartFailed(error.localizedDescription))
+            updateConnectionState(.error(.audioStartFailed(error.localizedDescription)))
             clientOperationalState = .error
             try? await sendClientState()
         }
@@ -340,8 +340,8 @@ extension SendspinClient {
                 await audioScheduler?.clear()
                 await audioPlayer.stop()
             }
-            currentStreamFormat = nil
-            currentCodecHeader = nil
+            updateStreamFormat(nil)
+            updateCodecHeader(nil)
         }
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
@@ -369,7 +369,7 @@ extension SendspinClient {
             groupName: message.payload.groupName ?? prev?.groupName ?? "",
             playbackState: playbackState
         )
-        currentGroup = info
+        updateGroup(info)
         eventsContinuation.yield(.groupUpdated(info))
     }
 }

@@ -19,14 +19,18 @@ public final class SendspinClient {
     let volumeCapabilities: VolumeCapabilities
     let volumeControl: VolumeControl
 
-    // All properties below are `internal` (not `private`) so that extension files
-    // in the same module (SendspinClient+Commands.swift, SendspinClient+MessageHandling.swift)
-    // can access them. They are NOT part of the public API — only `public` properties are.
+    // Public-readable, privately-settable state. Extension files in the same module
+    // mutate these through internal setter methods below (e.g. `updateConnectionState`),
+    // keeping the mutation surface controlled and auditable.
 
-    /// State
-    public internal(set) var connectionState: ConnectionState = .disconnected
+    /// Connection lifecycle state. Observe this (via `@Observable`) to update UI
+    /// for connecting/connected/error/disconnected transitions.
+    ///
+    /// If the state enters `.error(_:)`, the transport is still alive but playback
+    /// is broken. Call ``disconnect(reason:)`` followed by ``connect(to:)`` to recover.
+    public private(set) var connectionState: ConnectionState = .disconnected
     /// The audio format currently being streamed by the server, or nil if no stream is active.
-    public internal(set) var currentStreamFormat: AudioFormatSpec?
+    public private(set) var currentStreamFormat: AudioFormatSpec?
     var clientOperationalState: ClientOperationalState = .synchronized
     var isAutoStarting = false
     var isClockSynced = false
@@ -52,14 +56,14 @@ public final class SendspinClient {
 
     /// Accumulated state (merged from server deltas per spec)
     /// Current track metadata, accumulated from `server/state` deltas.
-    public internal(set) var currentMetadata: TrackMetadata?
+    public private(set) var currentMetadata: TrackMetadata?
     /// Current group info, accumulated from `group/update` deltas.
-    public internal(set) var currentGroup: GroupInfo?
+    public private(set) var currentGroup: GroupInfo?
     /// Current controller state from the server.
-    public internal(set) var currentControllerState: ControllerState?
+    public private(set) var currentControllerState: ControllerState?
     /// Codec header for the current stream (e.g. FLAC streaminfo), if any.
     /// Set when `stream/start` carries a `codec_header` field; cleared on `stream/end`.
-    public internal(set) var currentCodecHeader: Data?
+    public private(set) var currentCodecHeader: Data?
 
     // Multi-server state
     var currentConnectionReason: ConnectionReason?
@@ -112,6 +116,36 @@ public final class SendspinClient {
 
     deinit {
         eventsContinuation.finish()
+    }
+
+    // MARK: - Internal state setters
+
+    // Extension files (SendspinClient+MessageHandling.swift, SendspinClient+Commands.swift)
+    // use these methods to mutate `public private(set)` properties. This keeps all
+    // mutation in named methods rather than scattered direct assignments.
+
+    func updateConnectionState(_ state: ConnectionState) {
+        connectionState = state
+    }
+
+    func updateStreamFormat(_ format: AudioFormatSpec?) {
+        currentStreamFormat = format
+    }
+
+    func updateMetadata(_ metadata: TrackMetadata?) {
+        currentMetadata = metadata
+    }
+
+    func updateGroup(_ group: GroupInfo?) {
+        currentGroup = group
+    }
+
+    func updateControllerState(_ state: ControllerState?) {
+        currentControllerState = state
+    }
+
+    func updateCodecHeader(_ header: Data?) {
+        currentCodecHeader = header
     }
 
     /// Continuously discover Sendspin servers on the local network.
@@ -293,10 +327,10 @@ public final class SendspinClient {
 
         clientOperationalState = .synchronized
         isClockSynced = false
-        currentVolume = 100
+        currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
         currentMuted = false
-        currentStreamFormat = nil
-        currentCodecHeader = nil
+        updateStreamFormat(nil)
+        updateCodecHeader(nil)
         shouldEmitRawAudio = false
         pendingFormat = nil
         pendingCodecHeader = nil
