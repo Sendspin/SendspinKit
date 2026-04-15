@@ -76,7 +76,10 @@ struct SoftwareVolumeControl: VolumeControl {
         func setVolume(_ volume: Float, on _: AudioQueueRef?) {
             let deviceID = Self.defaultOutputDevice()
             guard deviceID != kAudioObjectUnknown else { return }
-            Self.setVolumeOnDevice(max(0.0, min(1.0, volume)), device: deviceID)
+            // Apply the same perceptual gain curve as software volume so that
+            // volume 50% sounds equally loud regardless of volume mode.
+            let gain = AudioPlayer.perceptualGain(max(0.0, min(1.0, volume)))
+            Self.setVolumeOnDevice(gain, device: deviceID)
         }
 
         func setMute(_ muted: Bool, currentVolume: Float, on _: AudioQueueRef?) {
@@ -99,9 +102,10 @@ struct SoftwareVolumeControl: VolumeControl {
                     Log.volume.error("Hardware mute failed (OSStatus \(status))")
                 }
             } else {
-                // No hardware mute — fake it by zeroing/restoring volume
-                let target = muted ? 0.0 : max(0.0, min(1.0, currentVolume))
-                Self.setVolumeOnDevice(target, device: deviceID)
+                // No hardware mute — fake it by zeroing/restoring volume.
+                // Apply perceptual curve for consistency with setVolume.
+                let gain = muted ? Float(0.0) : AudioPlayer.perceptualGain(max(0.0, min(1.0, currentVolume)))
+                Self.setVolumeOnDevice(gain, device: deviceID)
             }
         }
 

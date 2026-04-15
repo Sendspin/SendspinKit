@@ -656,12 +656,21 @@ public final class SendspinClient {
         MonotonicClock.nowMicroseconds()
     }
 
-    /// Set playback volume (0-100, perceived loudness per spec).
+    /// Set playback volume (0–100, perceived loudness per spec).
+    ///
+    /// The integer range 0–100 matches the Sendspin wire format. Internally,
+    /// the value is converted to a 0.0–1.0 float and passed through a 1.5-power
+    /// perceptual gain curve (see ``AudioPlayer/perceptualGain(_:)``) before
+    /// being applied to either the AudioQueue (software mode) or the hardware
+    /// device (hardware mode). This ensures volume 50 sounds roughly half as
+    /// loud as volume 100, regardless of volume mode.
     ///
     /// Updates the local audio gain immediately. The server is notified
     /// best-effort — a failed `client/state` send does not prevent the
     /// local volume change from taking effect.
     ///
+    /// - Parameter volume: Volume level (0–100). Values outside this range
+    ///   are clamped.
     /// - Throws: ``SendspinClientError/notConnected`` if the player role
     ///   is not active (client not connected or player role not configured).
     @MainActor
