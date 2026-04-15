@@ -2,26 +2,29 @@
 // ABOUTME: Converts compressed audio to PCM for playback, handles 24-bit unpacking
 
 @preconcurrency import AVFoundation
+import FLAC
 import Foundation
 import Opus
-import FLAC
 
 /// Audio decoder protocol
-public protocol AudioDecoder {
+protocol AudioDecoder {
     func decode(_ data: Data) throws -> Data
 }
 
-/// PCM decoder supporting 16-bit and 24-bit formats
-public class PCMDecoder: AudioDecoder {
+/// PCM decoder supporting 16-bit and 24-bit formats.
+///
+/// Uses a class (not struct) to hold a reusable buffer for 24-bit unpacking,
+/// avoiding per-call heap allocation. Only accessed from the AudioPlayer actor.
+class PCMDecoder: AudioDecoder {
     private let bitDepth: Int
-    private let channels: Int
+    /// Reusable buffer for 24-bit → 32-bit unpacking. Not used for 16-bit/32-bit passthrough.
+    private var outputBuffer: [Int32] = []
 
-    public init(bitDepth: Int, channels: Int) {
+    init(bitDepth: Int, channels _: Int) {
         self.bitDepth = bitDepth
-        self.channels = channels
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         switch bitDepth {
         case 16:
             // 16-bit PCM - pass through (already correct format)
@@ -40,6 +43,9 @@ public class PCMDecoder: AudioDecoder {
         }
     }
 
+    /// Unpack 3-byte little-endian 24-bit samples into left-justified Int32
+    /// for AudioQueue (which expects 32-bit containers for 24-bit audio).
+    /// Uses a persistent output buffer to avoid per-call heap allocation.
     private func decode24Bit(_ data: Data) throws -> Data {
         let bytesPerSample = 3
         guard data.count % bytesPerSample == 0 else {
@@ -50,28 +56,47 @@ public class PCMDecoder: AudioDecoder {
         }
 
         let sampleCount = data.count / bytesPerSample
-        let bytes = [UInt8](data)
 
-        // Unpack 24-bit samples to Int32 (4 bytes per sample)
-        var samples = [Int32]()
-        samples.reserveCapacity(sampleCount)
+        outputBuffer.removeAll(keepingCapacity: true)
+        outputBuffer.reserveCapacity(sampleCount)
 
-        for i in 0 ..< sampleCount {
-            let sample = PCMUtilities.unpack24Bit(bytes, offset: i * bytesPerSample)
-            samples.append(sample)
+        return data.withUnsafeBytes { src in
+            let base = src.baseAddress!.assumingMemoryBound(to: UInt8.self)
+
+            for i in 0 ..< sampleCount {
+                let off = i * bytesPerSample
+                var value = Int32(base[off])
+                    | (Int32(base[off + 1]) << 8)
+                    | (Int32(base[off + 2]) << 16)
+
+                // Sign extend: if bit 23 is set, the value is negative
+                if value & 0x80_0000 != 0 {
+                    value |= ~0xFF_FFFF
+                }
+
+                // Left-shift into 32-bit range for AudioQueue
+                outputBuffer.append(value << 8)
+            }
+
+            return outputBuffer.withUnsafeBytes { Data($0) }
         }
-
-        // Convert Int32 array to Data
-        return samples.withUnsafeBytes { Data($0) }
     }
 }
 
 /// Opus decoder using libopus via swift-opus package
-public class OpusDecoder: AudioDecoder {
+///
+/// **Threading contract:** Not thread-safe. Like `FLACDecoder`, this must be used
+/// from a single serial context. In practice it is only accessed from `AudioPlayer`
+/// (an actor). `Opus.Decoder` from swift-opus wraps a C `OpusDecoder*` and handles
+/// its own cleanup in `deinit`.
+class OpusDecoder: AudioDecoder {
     private let decoder: Opus.Decoder
     private let channels: Int
+    /// Reusable buffer for float→int32 conversion. Cleared and refilled on each
+    /// decode() call, but keeps its heap allocation across calls to avoid churn.
+    private var int32Buffer: [Int32] = []
 
-    public init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
+    init(sampleRate: Int, channels: Int, bitDepth _: Int) throws {
         self.channels = channels
 
         // Create AVAudioFormat for Opus decoder
@@ -87,13 +112,13 @@ public class OpusDecoder: AudioDecoder {
 
         // Create opus decoder (validates sample rate internally)
         do {
-            self.decoder = try Opus.Decoder(format: format)
+            decoder = try Opus.Decoder(format: format)
         } catch {
             throw AudioDecoderError.formatCreationFailed("Opus decoder: \(error.localizedDescription)")
         }
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         // Decode Opus packet to AVAudioPCMBuffer
         let pcmBuffer: AVAudioPCMBuffer
         do {
@@ -102,63 +127,82 @@ public class OpusDecoder: AudioDecoder {
             throw AudioDecoderError.conversionFailed("Opus decode failed: \(error.localizedDescription)")
         }
 
-        // swift-opus outputs float32 in AVAudioPCMBuffer
-        // Convert float32 → int32 (24-bit left-justified format)
+        // swift-opus outputs interleaved float32 into floatChannelData[0].
+        // opus_decode_float always writes interleaved samples (L R L R...),
+        // and swift-opus passes floatChannelData![0] as the output pointer.
+        // The buffer format is interleaved, so floatChannelData has exactly
+        // one pointer — accessing [1] etc. would be out of bounds.
         guard let floatChannelData = pcmBuffer.floatChannelData else {
             throw AudioDecoderError.conversionFailed("No float channel data in decoded buffer")
         }
 
         let frameLength = Int(pcmBuffer.frameLength)
         let totalSamples = frameLength * channels
-        var int32Samples = [Int32](repeating: 0, count: totalSamples)
+
+        // Reuse the persistent buffer to avoid per-call heap allocation.
+        // removeAll(keepingCapacity:) preserves the underlying storage.
+        int32Buffer.removeAll(keepingCapacity: true)
+        int32Buffer.reserveCapacity(totalSamples)
 
         // Convert interleaved float32 samples to int32
-        // float range [-1.0, 1.0] → int32 range [Int32.min, Int32.max]
-        if channels == 1 {
-            // Mono: direct conversion
-            let floatData = floatChannelData[0]
-            for i in 0..<frameLength {
-                let floatSample = floatData[i]
-                int32Samples[i] = Int32(floatSample * Float(Int32.max))
-            }
-        } else {
-            // Stereo or multi-channel: interleave
-            for channel in 0..<channels {
-                let floatData = floatChannelData[channel]
-                for frame in 0..<frameLength {
-                    let floatSample = floatData[frame]
-                    let sampleIndex = frame * channels + channel
-                    int32Samples[sampleIndex] = Int32(floatSample * Float(Int32.max))
-                }
-            }
+        // float range [-1.0, 1.0] -> int32 range [Int32.min, Int32.max]
+        //
+        // Clamping is required because Float(Int32.max) rounds up to 2147483648.0,
+        // so a sample of exactly 1.0 would overflow Int32 without clamping.
+        let floatData = floatChannelData[0]
+        for i in 0 ..< totalSamples {
+            int32Buffer.append(clampFloatToInt32(floatData[i]))
         }
 
         // Convert [Int32] to Data
-        return int32Samples.withUnsafeBytes { Data($0) }
+        return int32Buffer.withUnsafeBytes { Data($0) }
+    }
+
+    /// Convert a float sample in [-1.0, 1.0] to Int32 range with safe clamping.
+    private func clampFloatToInt32(_ sample: Float) -> Int32 {
+        // Float(Int32.max) rounds up to 2147483648.0 (not representable as Int32),
+        // so a sample of exactly 1.0 produces a scaled value that overflows Int32.
+        // The Int64 intermediate + clamping handles this: 1.0 maps to Int32.max,
+        // and any out-of-range values (e.g. from hot signals) are clamped rather
+        // than trapping.
+        let scaled = sample * Float(Int32.max)
+        return Int32(clamping: Int64(scaled))
     }
 }
 
 /// FLAC decoder using libFLAC via flac-binary-xcframework
-public class FLACDecoder: AudioDecoder {
+///
+/// **Threading contract:** This type is *not* thread-safe. It must be used
+/// from a single serial context (e.g. an actor). The C callbacks registered
+/// with libFLAC are synchronous — they fire during `FLAC__stream_decoder_process_single`
+/// on the same thread as `decode()`, so no concurrent access to mutable state occurs.
+///
+/// **Unmanaged safety:** `passUnretained(self)` is used to pass `self` as the
+/// C callback client data. This is safe because the libFLAC decoder (`self.decoder`)
+/// is owned by this instance and callbacks only fire during `decode()`, which
+/// requires `self` to be alive. If this class ever becomes failable after the
+/// `Unmanaged` call in `init`, this assumption would break.
+class FLACDecoder: AudioDecoder {
     private var decoder: UnsafeMutablePointer<FLAC__StreamDecoder>?
-    private let sampleRate: Int
     private let channels: Int
-    private let bitDepth: Int
-    private var pendingData: Data = Data()
+
+    /// Pending compressed data waiting for libFLAC to consume.
+    /// Uses an index-based sliding window: `readOffset` tracks the libFLAC
+    /// read position, and we compact the buffer when the consumed prefix
+    /// exceeds half the total size, avoiding O(n) removeFirst on every decode.
+    private var pendingData: Data = .init()
     private var decodedSamples: [Int32] = []
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
-    public init(sampleRate: Int, channels: Int, bitDepth: Int) throws {
-        self.sampleRate = sampleRate
+    init(sampleRate _: Int, channels: Int, bitDepth _: Int, header: Data? = nil) throws {
         self.channels = channels
-        self.bitDepth = bitDepth
 
         // Create FLAC stream decoder
         guard let flacDecoder = FLAC__stream_decoder_new() else {
             throw AudioDecoderError.formatCreationFailed("Failed to create FLAC stream decoder")
         }
-        self.decoder = flacDecoder
+        decoder = flacDecoder
 
         // Initialize decoder with callbacks
         // We need to use Unmanaged to pass self to C callbacks
@@ -166,28 +210,28 @@ public class FLACDecoder: AudioDecoder {
 
         let initStatus = FLAC__stream_decoder_init_stream(
             decoder,
-            { decoder, buffer, bytes, clientData -> FLAC__StreamDecoderReadStatus in
-                guard let clientData = clientData else {
+            { _, buffer, bytes, clientData -> FLAC__StreamDecoderReadStatus in
+                guard let clientData else {
                     return FLAC__STREAM_DECODER_READ_STATUS_ABORT
                 }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 return selfRef.readCallback(buffer: buffer, bytes: bytes)
             },
-            nil,  // seek callback (optional)
-            nil,  // tell callback (optional)
-            nil,  // length callback (optional)
-            nil,  // eof callback (optional)
-            { decoder, frame, buffer, clientData -> FLAC__StreamDecoderWriteStatus in
-                guard let clientData = clientData else {
+            nil, // seek callback (optional)
+            nil, // tell callback (optional)
+            nil, // length callback (optional)
+            nil, // eof callback (optional)
+            { _, frame, buffer, clientData -> FLAC__StreamDecoderWriteStatus in
+                guard let clientData else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 return selfRef.writeCallback(frame: frame, buffer: buffer)
             },
-            nil,  // metadata callback (optional)
-            { decoder, status, clientData in
+            nil, // metadata callback (optional)
+            { _, status, clientData in
                 // Error callback - store error for later checking
-                guard let clientData = clientData else { return }
+                guard let clientData else { return }
                 let selfRef = Unmanaged<FLACDecoder>.fromOpaque(clientData).takeUnretainedValue()
                 selfRef.lastError = status
             },
@@ -198,22 +242,27 @@ public class FLACDecoder: AudioDecoder {
             FLAC__stream_decoder_delete(flacDecoder)
             throw AudioDecoderError.formatCreationFailed("FLAC decoder init failed: \(initStatus)")
         }
+
+        // Prepend the codec header (fLaC magic + STREAMINFO) so the decoder
+        // can parse the stream. Without this, libFLAC can't decode any frames.
+        if let header {
+            pendingData.append(header)
+        }
     }
 
-    public func decode(_ data: Data) throws -> Data {
+    func decode(_ data: Data) throws -> Data {
         // Append new data to pending buffer
         pendingData.append(data)
         decodedSamples.removeAll(keepingCapacity: true)
         lastError = nil
 
         // Process single frame
-        guard let decoder = decoder else {
+        guard let decoder else {
             throw AudioDecoderError.conversionFailed("FLAC decoder not initialized")
         }
 
         // CRITICAL: readOffset tracks decoder's position in pendingData
         // DON'T reset to 0 - decoder maintains internal state and continues from last position
-        // The readCallback will be called and will read from readOffset
 
         // Process blocks until we get audio samples
         // First block is always STREAMINFO metadata, subsequent blocks are audio frames
@@ -235,14 +284,22 @@ public class FLACDecoder: AudioDecoder {
                 break
             }
 
-            // If readOffset didn't advance, we need more data (for streaming use case)
-            if readOffset == startOffset && iterations > 1 {
+            // If readOffset hasn't advanced at all since this decode() call started,
+            // the decoder needs more data than we have. We check against startOffset
+            // (not the previous iteration) because the normal flow is: iteration 1
+            // processes a metadata block (advances offset, no samples), iteration 2
+            // processes the audio frame (advances offset, produces samples). Tracking
+            // per-iteration would incorrectly break after the metadata block.
+            if readOffset == startOffset, iterations > 1 {
                 break
             }
 
-            // Safety limit to prevent infinite loops
+            // Safety limit: 100 process_single calls without producing samples
+            // means something is deeply wrong with the stream data.
             if iterations > 100 {
-                break
+                throw AudioDecoderError.conversionFailed(
+                    "FLAC decode stalled: \(iterations) iterations without audio output"
+                )
             }
         }
 
@@ -251,20 +308,25 @@ public class FLACDecoder: AudioDecoder {
             throw AudioDecoderError.conversionFailed("FLAC decoder error: \(error)")
         }
 
-        // Remove consumed bytes from pending buffer to prevent memory leak
-        // Only remove bytes that were actually read during THIS decode() call
+        // Compact the pending buffer: instead of removing consumed bytes every
+        // call (O(n) with Data.removeFirst), we let the consumed prefix grow
+        // and only compact when it exceeds half the buffer. This amortises the
+        // copy cost over many decode() calls.
         let bytesConsumed = readOffset - startOffset
-        if bytesConsumed > 0 {
-            pendingData.removeFirst(bytesConsumed)
-            readOffset = startOffset  // Adjust readOffset to account for removed bytes
+        if bytesConsumed > 0, readOffset > pendingData.count / 2 {
+            pendingData.removeFirst(readOffset)
+            readOffset = 0
         }
 
         // Return decoded samples as Data
         return decodedSamples.withUnsafeBytes { Data($0) }
     }
 
-    private func readCallback(buffer: UnsafeMutablePointer<FLAC__byte>?, bytes: UnsafeMutablePointer<Int>?) -> FLAC__StreamDecoderReadStatus {
-        guard let buffer = buffer, let bytes = bytes else {
+    private func readCallback(
+        buffer: UnsafeMutablePointer<FLAC__byte>?,
+        bytes: UnsafeMutablePointer<Int>?
+    ) -> FLAC__StreamDecoderReadStatus {
+        guard let buffer, let bytes else {
             return FLAC__STREAM_DECODER_READ_STATUS_ABORT
         }
 
@@ -277,7 +339,8 @@ public class FLACDecoder: AudioDecoder {
 
         // Copy data from pending buffer
         pendingData.withUnsafeBytes { srcBytes in
-            let src = srcBytes.baseAddress!.advanced(by: readOffset)
+            guard let base = srcBytes.baseAddress else { return }
+            let src = base.advanced(by: readOffset)
             memcpy(buffer, src, bytesToRead)
         }
 
@@ -287,35 +350,37 @@ public class FLACDecoder: AudioDecoder {
         return FLAC__STREAM_DECODER_READ_STATUS_CONTINUE
     }
 
-    private func writeCallback(frame: UnsafePointer<FLAC__Frame>?, buffer: UnsafePointer<UnsafePointer<FLAC__int32>?>?) -> FLAC__StreamDecoderWriteStatus {
-        guard let frame = frame, let buffer = buffer else {
+    private func writeCallback(
+        frame: UnsafePointer<FLAC__Frame>?,
+        buffer: UnsafePointer<UnsafePointer<FLAC__int32>?>?
+    ) -> FLAC__StreamDecoderWriteStatus {
+        guard let frame, let buffer else {
             return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
         }
 
         let blocksize = Int(frame.pointee.header.blocksize)
+        // Use the frame's actual bit depth, not the init parameter.
+        // During format transitions, old FLAC frames may be decoded by a
+        // new decoder initialized with a different bit depth. The frame
+        // header always has the correct value.
+        let frameBitsPerSample = Int(frame.pointee.header.bits_per_sample)
+        let shift = 32 - frameBitsPerSample
 
-        // FLAC outputs int32 samples per channel
-        // Interleave channels if stereo
-        for i in 0..<blocksize {
-            for channel in 0..<channels {
+        // FLAC outputs int32 samples per channel — interleave for AudioQueue.
+        // We use `channels` from init (not the frame header) because FLAC
+        // encodes channel count in STREAMINFO, which is fixed for the entire
+        // stream. Unlike bit depth, channel count can't vary per frame.
+        decodedSamples.reserveCapacity(decodedSamples.count + blocksize * channels)
+        for i in 0 ..< blocksize {
+            for channel in 0 ..< channels {
                 guard let channelBuffer = buffer[channel] else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
                 let sample = channelBuffer[i]
 
-                // Normalize based on bit depth
-                // FLAC int32 samples are right-aligned, shift to match our format
-                let normalizedSample: Int32
-                if bitDepth == 16 {
-                    // 16-bit: shift left 8 bits (to 24-bit position)
-                    normalizedSample = sample << 8
-                } else if bitDepth == 24 {
-                    // 24-bit: already correct position
-                    normalizedSample = sample
-                } else {
-                    // 32-bit or other: pass through
-                    normalizedSample = sample
-                }
+                // FLAC outputs right-aligned samples in Int32.
+                // Shift left to fill the full 32-bit range for AudioQueue.
+                let normalizedSample = shift > 0 ? sample << Int32(shift) : sample
 
                 decodedSamples.append(normalizedSample)
             }
@@ -325,7 +390,7 @@ public class FLACDecoder: AudioDecoder {
     }
 
     deinit {
-        if let decoder = decoder {
+        if let decoder {
             FLAC__stream_decoder_finish(decoder)
             FLAC__stream_decoder_delete(decoder)
         }
@@ -333,31 +398,42 @@ public class FLACDecoder: AudioDecoder {
 }
 
 /// Creates decoder for specified codec
-public enum AudioDecoderFactory {
-    public static func create(
+enum AudioDecoderFactory {
+    static func create(
         codec: AudioCodec,
         sampleRate: Int,
         channels: Int,
         bitDepth: Int,
-        header _: Data?
+        header: Data?
     ) throws -> AudioDecoder {
         switch codec {
         case .pcm:
-            return PCMDecoder(bitDepth: bitDepth, channels: channels)
+            PCMDecoder(bitDepth: bitDepth, channels: channels)
         case .opus:
-            return try OpusDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
+            try OpusDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
         case .flac:
-            return try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth)
+            try FLACDecoder(sampleRate: sampleRate, channels: channels, bitDepth: bitDepth, header: header)
         }
     }
 }
 
 /// Audio decoder errors
-public enum AudioDecoderError: Error {
+enum AudioDecoderError: Error, LocalizedError {
     case unsupportedBitDepth(Int)
     case invalidDataSize(expected: String, actual: Int)
     case formatCreationFailed(String)
-    case converterCreationFailed
-    case bufferCreationFailed
     case conversionFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case let .unsupportedBitDepth(depth):
+            "Unsupported bit depth: \(depth)"
+        case let .invalidDataSize(expected, actual):
+            "Invalid data size: expected \(expected), got \(actual) bytes"
+        case let .formatCreationFailed(detail):
+            "Audio format creation failed: \(detail)"
+        case let .conversionFailed(detail):
+            "Audio conversion failed: \(detail)"
+        }
+    }
 }

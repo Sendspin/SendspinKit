@@ -19,7 +19,8 @@ let package = Package(
         .package(url: "https://github.com/daltoniam/Starscream.git", from: "4.0.0"),
         .package(url: "https://github.com/alta/swift-opus.git", from: "0.0.2"),
         .package(url: "https://github.com/sbooth/flac-binary-xcframework.git", from: "0.1.0"),
-        .package(url: "https://github.com/sbooth/ogg-binary-xcframework.git", from: "0.1.0")
+        .package(url: "https://github.com/sbooth/ogg-binary-xcframework.git", from: "0.1.0"),
+        .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3")
     ],
     targets: [
         .target(

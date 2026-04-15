@@ -1,152 +1,93 @@
-// ABOUTME: Timestamp-based audio playback scheduler with priority queue
-// ABOUTME: Converts server timestamps to local time and schedules precise playback
+// ABOUTME: Timestamp-based audio chunk scheduler with sorted queue
+// ABOUTME: Converts server timestamps to local time and yields chunks when due
 
 import Foundation
 
-/// Protocol for clock synchronization
-public protocol ClockSyncProtocol: Actor {
-    func serverTimeToLocal(_ serverTime: Int64) -> Int64
-}
-
 /// Statistics tracked by the scheduler
-public struct SchedulerStats: Sendable {
-    public let received: Int
-    public let played: Int
-    public let dropped: Int
-    public let droppedLate: Int // Frames dropped because they were >50ms late
-    public let droppedOther: Int // Frames dropped due to queue overflow
-
-    public init(received: Int = 0, played: Int = 0, dropped: Int = 0, droppedLate: Int = 0, droppedOther: Int = 0) {
-        self.received = received
-        self.played = played
-        self.dropped = dropped
-        self.droppedLate = droppedLate
-        self.droppedOther = droppedOther
-    }
+struct SchedulerStats: Equatable {
+    var received: Int = 0
+    var played: Int = 0
+    var dropped: Int = 0
+    var droppedLate: Int = 0
+    var queueSize: Int = 0
+    /// Total buffered duration: time from now until the last queued chunk's
+    /// play time (milliseconds). Zero when the queue is empty.
+    var bufferFillMs: Double = 0.0
 }
 
-/// Detailed statistics including queue size and buffer metrics
-public struct DetailedSchedulerStats: Sendable {
-    public let received: Int
-    public let played: Int
-    public let dropped: Int
-    public let droppedLate: Int
-    public let droppedOther: Int
-    public let queueSize: Int
-    public let bufferFillMs: Double // Current buffer fill in milliseconds
-
-    public init(
-        received: Int = 0,
-        played: Int = 0,
-        dropped: Int = 0,
-        droppedLate: Int = 0,
-        droppedOther: Int = 0,
-        queueSize: Int = 0,
-        bufferFillMs: Double = 0.0
-    ) {
-        self.received = received
-        self.played = played
-        self.dropped = dropped
-        self.droppedLate = droppedLate
-        self.droppedOther = droppedOther
-        self.queueSize = queueSize
-        self.bufferFillMs = bufferFillMs
-    }
-}
-
-/// A chunk scheduled for playback at a specific time
-public struct ScheduledChunk: Sendable {
-    public let pcmData: Data
-    public let playTime: Date
-    public let originalTimestamp: Int64
+/// A chunk scheduled for playback at a specific time, carrying stream identity
+/// via `generation` for seamless format transitions.
+struct ScheduledChunk {
+    let pcmData: Data
+    /// Local absolute time in microseconds (from MonotonicClock) when this chunk should play
+    let playTimeMicroseconds: Int64
+    let originalTimestamp: Int64
+    /// Stream generation — incremented on format changes so the output loop
+    /// can distinguish old-format from new-format chunks.
+    let generation: UInt64
 }
 
 /// Actor managing timestamp-based audio playback scheduling
-public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
-    private let clockSync: ClockSync
-    private let playbackWindow: TimeInterval
-    private let maxQueueSize: Int
+actor AudioScheduler {
+    private let clockSync: any ClockSyncProtocol
+    /// Playback window in microseconds — chunks within ±this window of "now" are played
+    private let playbackWindowUs: Int64
     private var queue: [ScheduledChunk] = []
-    private var schedulerStats: SchedulerStats
+    /// Index of the next chunk to consume. Using an index avoids O(n) shifts
+    /// from `removeFirst()`. The prefix is compacted when it exceeds half the
+    /// array to prevent unbounded growth.
+    private var readIndex: Int = 0
+    private var counters = SchedulerStats()
     private var timerTask: Task<Void, Never>?
 
     // AsyncStream for output
     private let chunkContinuation: AsyncStream<ScheduledChunk>.Continuation
-    public let scheduledChunks: AsyncStream<ScheduledChunk>
+    let scheduledChunks: AsyncStream<ScheduledChunk>
 
-    public init(
-        clockSync: ClockSync,
-        playbackWindow: TimeInterval = 0.05,
-        maxQueueSize: Int = 100
+    init(
+        clockSync: any ClockSyncProtocol,
+        playbackWindow: TimeInterval = 0.05
     ) {
         self.clockSync = clockSync
-        self.playbackWindow = playbackWindow
-        self.maxQueueSize = maxQueueSize
-        schedulerStats = SchedulerStats()
+        playbackWindowUs = Int64(playbackWindow * 1_000_000)
 
         // Create AsyncStream
         (scheduledChunks, chunkContinuation) = AsyncStream.makeStream()
     }
 
     /// Schedule a PCM chunk for playback
-    public func schedule(pcm: Data, serverTimestamp: Int64) async {
-        let receivedCount = schedulerStats.received
-
-        // Convert server timestamp to local playback time
+    func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
+        // Convert server timestamp to local playback time (absolute µs from MonotonicClock)
         let localTimeMicros = await clockSync.serverTimeToLocal(serverTimestamp)
-        let localTimeSeconds = Double(localTimeMicros) / 1_000_000.0
-        let playTime = Date(timeIntervalSince1970: localTimeSeconds)
-
-        // Log first 10 chunks with detailed timing info
-        if receivedCount < 10 {
-            let now = Date()
-            let delay = playTime.timeIntervalSince(now)
-            let delayMs = Int(delay * 1000)
-
-            // Chunk #\(receivedCount): server_ts=\(serverTimestamp)μs,
-            // delay=\(delayMs)ms, queue_size=\(queue.count)
-        }
 
         let chunk = ScheduledChunk(
             pcmData: pcm,
-            playTime: playTime,
-            originalTimestamp: serverTimestamp
+            playTimeMicroseconds: localTimeMicros,
+            originalTimestamp: serverTimestamp,
+            generation: generation
         )
 
-        // Enforce queue size limit
-        while queue.count >= maxQueueSize {
-            queue.removeFirst()
-            schedulerStats = SchedulerStats(
-                received: schedulerStats.received,
-                played: schedulerStats.played,
-                dropped: schedulerStats.dropped + 1,
-                droppedLate: schedulerStats.droppedLate,
-                droppedOther: schedulerStats.droppedOther + 1
-            )
-            // print("[SCHEDULER] Queue overflow: dropped oldest chunk")
-        }
+        // No queue size limit: the server already respects our buffer_capacity
+        // from client/hello, so it won't send more than we can handle. Chunks are
+        // consumed by the audio callback as their play timestamps arrive.
+        // Dropping future chunks here would cause silence when servers pre-buffer
+        // aggressively (e.g., Music Assistant sends 25+ seconds ahead).
 
         // Insert into sorted position
         insertSorted(chunk)
 
-        schedulerStats = SchedulerStats(
-            received: schedulerStats.received + 1,
-            played: schedulerStats.played,
-            dropped: schedulerStats.dropped,
-            droppedLate: schedulerStats.droppedLate,
-            droppedOther: schedulerStats.droppedOther
-        )
+        counters.received += 1
     }
 
-    /// Insert chunk maintaining sorted order by playTime
+    /// Insert chunk maintaining sorted order by playTime.
+    /// Binary search runs over the unconsumed portion (`readIndex..<queue.count`).
     private func insertSorted(_ chunk: ScheduledChunk) {
-        // Find the insertion point using binary search
-        var low = 0
+        var low = readIndex
         var high = queue.count
 
         while low < high {
             let mid = (low + high) / 2
-            if queue[mid].playTime < chunk.playTime {
+            if queue[mid].playTimeMicroseconds < chunk.playTimeMicroseconds {
                 low = mid + 1
             } else {
                 high = mid
@@ -156,52 +97,64 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
         queue.insert(chunk, at: low)
     }
 
-    /// Get queued chunks (for testing)
-    public func getQueuedChunks() -> [ScheduledChunk] {
-        return queue
+    /// Number of unconsumed chunks in the queue.
+    private var activeCount: Int {
+        queue.count - readIndex
     }
 
-    /// Get current statistics
-    public var stats: SchedulerStats {
-        return schedulerStats
+    /// Queued chunks (for testing)
+    var queuedChunks: [ScheduledChunk] {
+        Array(queue[readIndex...])
     }
 
-    /// Get detailed statistics including queue size and buffer metrics
-    public func getDetailedStats() -> DetailedSchedulerStats {
-        // Calculate buffer fill: time until next chunk should play
-        let now = Date()
-        let bufferFillMs: Double
-        if let nextChunk = queue.first {
-            bufferFillMs = max(0, nextChunk.playTime.timeIntervalSince(now) * 1000.0)
-        } else {
-            bufferFillMs = 0.0
+    /// Statistics snapshot including queue size and buffer fill.
+    var stats: SchedulerStats {
+        var snapshot = counters
+        snapshot.queueSize = activeCount
+
+        let nowUs = MonotonicClock.absoluteMicroseconds()
+        if let lastChunk = queue.last {
+            snapshot.bufferFillMs = max(0, Double(lastChunk.playTimeMicroseconds - nowUs) / 1_000.0)
         }
 
-        return DetailedSchedulerStats(
-            received: schedulerStats.received,
-            played: schedulerStats.played,
-            dropped: schedulerStats.dropped,
-            droppedLate: schedulerStats.droppedLate,
-            droppedOther: schedulerStats.droppedOther,
-            queueSize: queue.count,
-            bufferFillMs: bufferFillMs
-        )
+        return snapshot
     }
 
     /// Start the scheduling timer loop
-    public func startScheduling() {
+    func startScheduling() {
         guard timerTask == nil else { return }
 
         timerTask = Task {
             while !Task.isCancelled {
                 checkQueue()
-                try? await Task.sleep(for: .milliseconds(10))
+
+                // Smart sleep: wait until the next chunk is due instead of
+                // polling at a fixed interval.
+                let sleepDuration: Duration
+                if readIndex < queue.count {
+                    let next = queue[readIndex]
+                    let nowUs = MonotonicClock.absoluteMicroseconds()
+                    let delayUs = next.playTimeMicroseconds - nowUs - playbackWindowUs
+                    if delayUs > 0 {
+                        // Cap at playbackWindow so new arrivals aren't delayed too long
+                        let cappedDelayUs = min(delayUs, playbackWindowUs)
+                        sleepDuration = .microseconds(cappedDelayUs)
+                    } else {
+                        // Chunk is due now or overdue — tight loop briefly to drain
+                        sleepDuration = .milliseconds(1)
+                    }
+                } else {
+                    // Empty queue — no rush, check back in 50ms
+                    sleepDuration = .milliseconds(50)
+                }
+
+                try? await Task.sleep(for: sleepDuration)
             }
         }
     }
 
     /// Stop the scheduler timer (but keep stream alive for next start)
-    public func stop() {
+    func stop() {
         timerTask?.cancel()
         timerTask = nil
         // Don't call chunkContinuation.finish() here - that would permanently
@@ -209,55 +162,50 @@ public actor AudioScheduler<ClockSync: ClockSyncProtocol> {
     }
 
     /// Permanently finish the scheduler (call on disconnect only)
-    public func finish() {
+    func finish() {
         stop()
         chunkContinuation.finish()
     }
 
     /// Clear all queued chunks
-    public func clear() {
+    func clear() {
         queue.removeAll()
-        // print("[SCHEDULER] Queue cleared")
+        readIndex = 0
+    }
+
+    /// Compact the consumed prefix when it exceeds half the array,
+    /// preventing unbounded growth of dead entries.
+    private func compactIfNeeded() {
+        if readIndex > queue.count / 2, readIndex > 0 {
+            queue.removeFirst(readIndex)
+            readIndex = 0
+        }
     }
 
     /// Check queue and output ready chunks
     private func checkQueue() {
-        let now = Date()
+        let nowUs = MonotonicClock.absoluteMicroseconds()
 
-        while let next = queue.first {
-            let delay = next.playTime.timeIntervalSince(now)
+        while readIndex < queue.count {
+            let next = queue[readIndex]
+            let delayUs = next.playTimeMicroseconds - nowUs
 
-            if delay > playbackWindow {
+            if delayUs > playbackWindowUs {
                 // Too early, wait
                 break
-            } else if delay < -playbackWindow {
+            } else if delayUs < -playbackWindowUs {
                 // Too late, drop
-                queue.removeFirst()
-                schedulerStats = SchedulerStats(
-                    received: schedulerStats.received,
-                    played: schedulerStats.played,
-                    dropped: schedulerStats.dropped + 1,
-                    droppedLate: schedulerStats.droppedLate + 1,
-                    droppedOther: schedulerStats.droppedOther
-                )
-
-                // Log first 10 drops
-                if schedulerStats.droppedLate <= 10 {
-                    // print("[SCHEDULER] Dropped late chunk: \(Int(-delay * 1000))ms late")
-                }
+                readIndex += 1
+                counters.dropped += 1
+                counters.droppedLate += 1
             } else {
-                // Ready to play (within ±50ms window)
-                let chunk = queue.removeFirst()
-                chunkContinuation.yield(chunk)
-
-                schedulerStats = SchedulerStats(
-                    received: schedulerStats.received,
-                    played: schedulerStats.played + 1,
-                    dropped: schedulerStats.dropped,
-                    droppedLate: schedulerStats.droppedLate,
-                    droppedOther: schedulerStats.droppedOther
-                )
+                // Ready to play (within ±window)
+                readIndex += 1
+                chunkContinuation.yield(next)
+                counters.played += 1
             }
         }
+
+        compactIfNeeded()
     }
 }

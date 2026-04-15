@@ -2,114 +2,109 @@
 // ABOUTME: Provides AsyncStreams for text (JSON) and binary messages
 
 import Foundation
+import os
 import Starscream
 
-// Delegate to handle WebSocket events and receiving
-private final class StarscreamDelegate: WebSocketDelegate, @unchecked Sendable {
+/// Mutable state shared between the actor and the Starscream callback queue.
+/// Protected by `OSAllocatedUnfairLock` so `StarscreamDelegate` can be
+/// properly `Sendable` without `@unchecked`.
+private struct DelegateState {
+    var connectionContinuation: CheckedContinuation<Void, Error>?
+    var connected: Bool = false
+}
+
+/// Delegate to handle WebSocket events and receiving.
+///
+/// All mutable state lives in a lock-protected `DelegateState`, making this
+/// class genuinely `Sendable` — no `@unchecked` needed. The lock is held
+/// briefly (just setting a bool or consuming a continuation), so contention
+/// is negligible.
+private final class StarscreamDelegate: WebSocketDelegate, Sendable {
     let textContinuation: AsyncStream<String>.Continuation
     let binaryContinuation: AsyncStream<Data>.Continuation
-    var connectionContinuation: CheckedContinuation<Void, Error>?
+    let state = OSAllocatedUnfairLock(initialState: DelegateState())
 
     init(textContinuation: AsyncStream<String>.Continuation, binaryContinuation: AsyncStream<Data>.Continuation) {
         self.textContinuation = textContinuation
         self.binaryContinuation = binaryContinuation
-        // Logging disabled for TUI mode
+    }
+
+    /// Whether the WebSocket is connected. Thread-safe read.
+    var isConnected: Bool {
+        state.withLock { $0.connected }
     }
 
     func didReceive(event: WebSocketEvent, client _: any WebSocketClient) {
-        // Verbose logging disabled for production - uncomment for debugging
-        // print("[STARSCREAM] didReceive called with event: \(event)")
         switch event {
         case .connected:
-            // Logging disabled for TUI mode
-            connectionContinuation?.resume()
-            connectionContinuation = nil
-
-        case .disconnected:
-            // Logging disabled for TUI mode
-            // If we were waiting for connection, fail it
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
+            let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+                state.connected = true
+                let cont = state.connectionContinuation
+                state.connectionContinuation = nil
+                return cont
             }
-            textContinuation.finish()
-            binaryContinuation.finish()
+            continuation?.resume()
+
+        case let .disconnected(reason, code):
+            handleDisconnection(error: TransportError.disconnected(reason: reason, code: code))
+
+        case .cancelled, .peerClosed:
+            handleDisconnection(error: TransportError.connectionFailed)
+
+        case let .error(error):
+            handleDisconnection(error: error ?? TransportError.connectionFailed)
 
         case let .text(string):
-            // High-frequency event - logging disabled
             textContinuation.yield(string)
 
         case let .binary(data):
-            // High-frequency event - logging disabled
             binaryContinuation.yield(data)
 
-        case .ping:
-            // High-frequency event - logging disabled
+        case .ping, .pong, .viabilityChanged, .reconnectSuggested:
             break
-
-        case .pong:
-            // High-frequency event - logging disabled
-            break
-
-        case .viabilityChanged:
-            // Logging disabled for TUI mode
-            break
-
-        case .reconnectSuggested:
-            // Logging disabled for TUI mode
-            break
-
-        case .cancelled:
-            // Logging disabled for TUI mode
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
-
-        case .error:
-            // Logging disabled for TUI mode
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
-
-        case .peerClosed:
-            // Logging disabled for TUI mode
-            if let continuation = connectionContinuation {
-                continuation.resume(throwing: TransportError.connectionFailed)
-                connectionContinuation = nil
-            }
-            textContinuation.finish()
-            binaryContinuation.finish()
         }
+    }
+
+    // MARK: - Disconnection (called by Starscream callbacks AND the actor's disconnect())
+
+    /// Mark as disconnected, finish streams, and resume any pending connection
+    /// continuation.
+    ///
+    /// The continuation is consumed under the lock, then resumed outside it
+    /// to avoid deadlock if the resumed task synchronously re-enters.
+    /// Multiple concurrent calls are safe: the lock ensures only one caller
+    /// gets the continuation, and `AsyncStream.Continuation.finish()` is
+    /// idempotent.
+    func handleDisconnection(error: Error) {
+        let continuation = state.withLock { state -> CheckedContinuation<Void, Error>? in
+            state.connected = false
+            let cont = state.connectionContinuation
+            state.connectionContinuation = nil
+            return cont
+        }
+        continuation?.resume(throwing: error)
+        textContinuation.finish()
+        binaryContinuation.finish()
     }
 }
 
-/// WebSocket transport for Sendspin protocol
-public actor WebSocketTransport {
+/// WebSocket transport for Sendspin protocol (outbound, client-initiated connections)
+actor WebSocketTransport: SendspinTransport {
     private nonisolated let delegate: StarscreamDelegate
     private var webSocket: WebSocket?
     private let url: URL
 
+    /// Confined to actor isolation — do not pass across isolation boundaries.
+    private let encoder = SendspinEncoding.makeEncoder()
+
     /// Stream of incoming text messages (JSON)
-    public nonisolated let textMessages: AsyncStream<String>
+    nonisolated let textMessages: AsyncStream<String>
 
     /// Stream of incoming binary messages (audio, artwork, etc.)
-    public nonisolated let binaryMessages: AsyncStream<Data>
+    nonisolated let binaryMessages: AsyncStream<Data>
 
-    public init(url: URL) {
-        // Ensure URL has proper WebSocket path if not specified
-        if url.path.isEmpty || url.path == "/" {
-            // Append recommended Sendspin endpoint path
-            let components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
-            self.url = components.url ?? url
-        } else {
-            self.url = url
-        }
+    init(url: URL) {
+        self.url = url
 
         // Create streams and pass continuations to delegate
         let (textStream, textCont) = AsyncStream<String>.makeStream()
@@ -122,7 +117,7 @@ public actor WebSocketTransport {
 
     /// Connect to the WebSocket server
     /// - Throws: TransportError if already connected or connection fails
-    public func connect() async throws {
+    func connect() async throws {
         // Prevent multiple connections
         guard webSocket == nil else {
             throw TransportError.alreadyConnected
@@ -137,63 +132,100 @@ public actor WebSocketTransport {
         socket.callbackQueue = DispatchQueue(label: "com.sendspin.websocket", qos: .userInitiated)
         socket.delegate = delegate
 
-        // Logging disabled for TUI mode
         webSocket = socket
 
-        // Wait for connection to complete
-        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
-            delegate.connectionContinuation = continuation
-            socket.connect()
+        // Store the continuation under the lock, then kick off connect().
+        // If Starscream fires .connected synchronously (unlikely but not contractually
+        // impossible), CheckedContinuation handles resume-before-suspension correctly.
+        //
+        // withTaskCancellationHandler ensures the continuation is always resumed:
+        // if the calling task is cancelled while awaiting, we consume the continuation
+        // under the lock and resume with CancellationError. If Starscream already
+        // consumed it (connected or errored), the lock ensures we don't double-resume.
+        let capturedDelegate = delegate
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+                capturedDelegate.state.withLock { $0.connectionContinuation = continuation }
+                socket.connect()
+            }
+        } onCancel: {
+            let continuation = capturedDelegate.state.withLock { state -> CheckedContinuation<Void, Error>? in
+                let cont = state.connectionContinuation
+                state.connectionContinuation = nil
+                return cont
+            }
+            continuation?.resume(throwing: CancellationError())
         }
     }
 
-    /// Check if currently connected
-    public var isConnected: Bool {
-        return webSocket != nil
+    /// Whether the underlying WebSocket connection is alive.
+    /// Reads from the lock-protected delegate state — `nonisolated` because
+    /// the lock is the actual synchronization mechanism, not actor isolation.
+    nonisolated var isConnected: Bool {
+        delegate.isConnected
     }
 
-    /// Send a text message (JSON)
-    public func send<T: SendspinMessage>(_ message: T) async throws {
-        guard let webSocket = webSocket else {
+    /// Send a text message (JSON).
+    ///
+    /// Note: the `isConnected` check is best-effort — the connection could drop
+    /// between the guard and the write (inherent TOCTOU). Starscream handles
+    /// writes to a closing socket gracefully (they're silently dropped).
+    func send(_ message: some Codable & Sendable) async throws {
+        guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
 
-        let encoder = JSONEncoder()
-        encoder.keyEncodingStrategy = .convertToSnakeCase
+        // JSONEncoder always produces valid UTF-8.
         let data = try encoder.encode(message)
-        guard let text = String(data: data, encoding: .utf8) else {
-            throw TransportError.encodingFailed
-        }
-        // Logging disabled for TUI mode
+        // swiftlint:disable:next optional_data_string_conversion
+        let text = String(decoding: data, as: UTF8.self)
         webSocket.write(string: text)
     }
 
     /// Send a binary message
-    public func sendBinary(_ data: Data) async throws {
-        guard let webSocket = webSocket else {
+    func sendBinary(_ data: Data) async throws {
+        guard let webSocket, isConnected else {
             throw TransportError.notConnected
         }
         webSocket.write(data: data)
     }
 
-    /// Disconnect from server
-    public func disconnect() async {
+    /// Disconnect from server.
+    /// Delegates to `handleDisconnection` on the delegate for consistent
+    /// state management, then nils out the socket.
+    func disconnect() async {
         webSocket?.disconnect()
         webSocket = nil
+        delegate.handleDisconnection(error: CancellationError())
     }
 }
 
-/// Errors that can occur during WebSocket transport
-public enum TransportError: Error {
-    /// Failed to encode message to UTF-8 string
-    case encodingFailed
-
-    /// WebSocket is not connected - call connect() first
+/// Errors that can occur during WebSocket transport.
+///
+/// `errorDescription` delegates to `description` — keep both in sync when adding cases.
+enum TransportError: LocalizedError, CustomStringConvertible {
+    /// WebSocket is not connected — call connect() first
     case notConnected
 
-    /// Already connected - call disconnect() before reconnecting
+    /// Already connected — call disconnect() before reconnecting
     case alreadyConnected
 
     /// Connection failed during handshake
     case connectionFailed
+
+    /// WebSocket was disconnected by the remote peer
+    case disconnected(reason: String, code: UInt16)
+
+    var description: String {
+        switch self {
+        case .notConnected: "WebSocket is not connected"
+        case .alreadyConnected: "WebSocket is already connected"
+        case .connectionFailed: "WebSocket connection failed"
+        case let .disconnected(reason, code): "WebSocket disconnected (code \(code): \(reason))"
+        }
+    }
+
+    var errorDescription: String? {
+        description
+    }
 }

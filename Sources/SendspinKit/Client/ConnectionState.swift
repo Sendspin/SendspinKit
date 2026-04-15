@@ -3,25 +3,58 @@
 
 import Foundation
 
-/// Connection state of the Sendspin client
-public enum ConnectionState: Sendable {
+/// Errors that occur during an active stream, putting the client into a degraded state.
+///
+/// These are distinct from ``SendspinClientError``, which covers API-level errors
+/// like calling methods while disconnected. ``StreamingError`` represents conditions
+/// where the connection is alive but playback cannot proceed.
+public enum StreamingError: SendspinError, Hashable, LocalizedError, CustomDebugStringConvertible {
+    /// Server sent a codec this client doesn't support
+    case unsupportedCodec(String)
+    /// Server sent audio format parameters that don't pass validation
+    case invalidFormat(String)
+    /// AudioQueue failed to start (e.g. no audio device available)
+    case audioStartFailed(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case let .unsupportedCodec(codec):
+            "Unsupported codec: \(codec)"
+        case let .invalidFormat(reason):
+            "Invalid audio format: \(reason)"
+        case let .audioStartFailed(reason):
+            "Failed to start audio: \(reason)"
+        }
+    }
+
+    public var debugDescription: String {
+        switch self {
+        case let .unsupportedCodec(codec):
+            "StreamingError.unsupportedCodec(\(codec))"
+        case let .invalidFormat(reason):
+            "StreamingError.invalidFormat(\(reason))"
+        case let .audioStartFailed(reason):
+            "StreamingError.audioStartFailed(\(reason))"
+        }
+    }
+}
+
+/// Connection state of the Sendspin client.
+///
+/// Transitions:
+/// - `.disconnected` → `.connecting` (via `connect(to:)` or `acceptConnection(_:)`)
+/// - `.connecting` → `.connected` (after successful handshake)
+/// - `.connected` → `.error(_:)` (unsupported codec, audio failure, invalid format)
+/// - `.connected` → `.disconnected` (explicit `disconnect()` or connection lost)
+/// - `.error(_:)` → `.disconnected` (via `disconnect()`)
+///
+/// **Recovering from `.error`:** The transport is still alive but playback is broken.
+/// Call ``SendspinClient/disconnect(reason:)`` followed by ``SendspinClient/connect(to:)``
+/// to recover. The client does not auto-recover because the host app may want to show
+/// an error UI or switch to a different server.
+public enum ConnectionState: Sendable, Equatable {
     case disconnected
     case connecting
     case connected
-    case error(String) // Store error description instead of Error to maintain Sendable
-}
-
-extension ConnectionState: Equatable {
-    public static func == (lhs: ConnectionState, rhs: ConnectionState) -> Bool {
-        switch (lhs, rhs) {
-        case (.disconnected, .disconnected),
-             (.connecting, .connecting),
-             (.connected, .connected):
-            return true
-        case let (.error(lhsError), .error(rhsError)):
-            return lhsError == rhsError
-        default:
-            return false
-        }
-    }
+    case error(StreamingError)
 }

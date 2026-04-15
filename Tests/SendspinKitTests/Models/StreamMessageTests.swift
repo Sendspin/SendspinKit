@@ -2,10 +2,9 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("Stream Message Tests")
 struct StreamMessageTests {
-    @Test("Decode stream/start message")
-    func streamStartDecoding() throws {
+    @Test
+    func decodeStreamStartMessage() throws {
         let json = """
         {
             "type": "stream/start",
@@ -28,7 +27,7 @@ struct StreamMessageTests {
 
         #expect(message.type == "stream/start")
         #expect(message.payload.player?.codec == "opus")
-        #expect(message.payload.player?.sampleRate == 48000)
+        #expect(message.payload.player?.sampleRate == 48_000)
         #expect(message.payload.player?.channels == 2)
         #expect(message.payload.player?.bitDepth == 16)
         #expect(message.payload.player?.codecHeader == "AQIDBA==")

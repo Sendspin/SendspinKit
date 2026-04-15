@@ -1,48 +1,48 @@
 // ABOUTME: Unit tests for FLAC audio decoder
-// ABOUTME: Validates FLAC frame decoding and int32 PCM output format
+// ABOUTME: Validates FLAC decoder creation across standard and hi-res formats
 
-import Testing
+import Foundation
 @testable import SendspinKit
+import Testing
 
-@Suite("FLAC Decoder Tests")
 struct FLACDecoderTests {
-    @Test("Create FLAC decoder with standard format")
-    func decoderCreation() throws {
+    @Test
+    func createFLACDecoderViaFactory() throws {
         // Standard FLAC format: 44.1kHz stereo 16-bit
+        // Validates factory creates a FLACDecoder for .flac codec
         let decoder = try AudioDecoderFactory.create(
             codec: .flac,
-            sampleRate: 44100,
+            sampleRate: 44_100,
             channels: 2,
             bitDepth: 16,
             header: nil
         )
 
-        #expect(decoder != nil)
+        #expect(decoder is FLACDecoder)
     }
 
-    @Test("Create hi-res FLAC decoder")
-    func hiResDecoder() throws {
+    @Test
+    func createHiResFLACDecoder() throws {
         // Hi-res FLAC: 96kHz stereo 24-bit
-        let decoder = try FLACDecoder(
-            sampleRate: 96000,
+        // Validates that libFLAC accepts hi-res parameters without error
+        _ = try FLACDecoder(
+            sampleRate: 96_000,
             channels: 2,
             bitDepth: 24
         )
-
-        #expect(decoder != nil)
     }
 
-    @Test("FLAC decoder validates creation")
-    func decoderValidation() throws {
-        let decoder = try FLACDecoder(
-            sampleRate: 44100,
+    @Test
+    func flacDecoderCreationWithHeader() throws {
+        // Validates that a decoder can be created with a codec header prepended.
+        // Note: FLAC requires a valid stream (fLaC magic + STREAMINFO) to decode
+        // actual frames. Full integration tests with real FLAC data belong elsewhere.
+        let fakeHeader = Data([0x66, 0x4C, 0x61, 0x43]) // "fLaC" magic bytes
+        _ = try FLACDecoder(
+            sampleRate: 44_100,
             channels: 2,
-            bitDepth: 16
+            bitDepth: 16,
+            header: fakeHeader
         )
-
-        // Note: FLAC requires full stream for decoding (not just frames)
-        // This test validates the decoder exists and can be created
-        // Full integration test with real FLAC data should be in integration tests
-        #expect(decoder != nil)
     }
 }

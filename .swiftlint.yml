@@ -1,25 +1,34 @@
-# SwiftLint Configuration for ResonateKit
+# SwiftLint Configuration for SendspinKit
+
+excluded:
+  - .build
+  - Examples
 
 # Disabled rules
 disabled_rules:
-  - todo # We use IMPLEMENTATION_NOTE instead, but allow legacy TODOs temporarily
+  - todo
 
 # Opt-in rules
 opt_in_rules:
   - trailing_comma
 
-# File and function length - adjusted for protocol implementation needs
+# File and function length - adjusted for protocol implementation needs.
+# SendspinClient.swift is ~1200 lines (protocol orchestrator with many message handlers).
+# SendspinMessage.swift is ~810 lines (one struct per protocol message type).
 file_length:
-  warning: 800
-  error: 1000
+  warning: 900
+  error: 1250
 
 function_body_length:
   warning: 100
   error: 150
 
+# SendspinClient is the protocol orchestrator — its class body holds connection
+# lifecycle, message dispatch, handlers, clock sync, and audio chunk processing.
+# Splitting further would require exposing private state across files.
 type_body_length:
-  warning: 600
-  error: 800
+  warning: 850
+  error: 1050
 
 # Cyclomatic complexity - adjusted for real-world protocol handling
 cyclomatic_complexity:
@@ -42,6 +51,25 @@ identifier_name:
     - id
     - to
     - db
+    - i   # loop counter
+    - t   # time variable in tests
+    - v   # value in decode/encode
+    - p   # payload destructuring
+    - b0  # byte unpacking
+    - b1
+    - b2
+    - fs  # frameSize (audio callback hot path)
+    - sr  # sampleRate (audio callback hot path)
+    - dt  # delta time (Kalman filter)
+    - ts  # timespec (MonotonicClock)
+    - cb  # callback (audio hot path)
+    - rc  # return code (POSIX convention)
+    - v1  # version identifiers in tests
+    - v2
+    - a   # test fixtures (equality/hashing tests)
+    - b
+    - c
+  validates_start_with_lowercase: warning
 
 # Trailing commas - never allow them (matches SwiftFormat config)
 trailing_comma:
@@ -51,3 +79,18 @@ trailing_comma:
 large_tuple:
   warning: 4
   error: 5
+
+# Force casts are acceptable in test assertions (JSON parsing, etc.)
+force_cast:
+  severity: warning
+
+# Custom rules
+custom_rules:
+  # Backtick-quoted function names with spaces require Swift 6.2+.
+  # CI runs Swift 6.1, so these will fail to parse there.
+  # Remove this rule when the CI toolchain is bumped to 6.2+.
+  no_backtick_space_func_names:
+    name: "No backtick function names with spaces"
+    regex: 'func\s+`[^`]*\s[^`]*`\s*\('
+    message: "Backtick function names with spaces require Swift 6.2+. Use camelCase identifiers instead."
+    severity: error

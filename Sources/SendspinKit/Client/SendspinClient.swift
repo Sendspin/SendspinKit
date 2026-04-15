@@ -3,75 +3,185 @@
 
 import Foundation
 import Observation
+import os
 
 /// Main Sendspin client
 @Observable
 @MainActor
 public final class SendspinClient {
     // Configuration
-    private let clientId: String
-    private let name: String
-    private let roles: Set<VersionedRole>
-    private let playerConfig: PlayerConfiguration?
+    let clientId: String
+    let name: String
+    let roles: Set<VersionedRole>
+    let playerConfig: PlayerConfiguration?
+    let artworkConfig: ArtworkConfiguration?
+    /// Resolved volume capabilities and control implementation
+    let volumeCapabilities: VolumeCapabilities
+    let volumeControl: VolumeControl
 
-    // State
+    // Public-readable, privately-settable state. Extension files in the same module
+    // mutate these through internal setter methods below (e.g. `updateConnectionState`),
+    // keeping the mutation surface controlled and auditable.
+
+    /// Connection lifecycle state. Observe this (via `@Observable`) to update UI
+    /// for connecting/connected/error/disconnected transitions.
+    ///
+    /// If the state enters `.error(_:)`, the transport is still alive but playback
+    /// is broken. Call ``disconnect(reason:)`` followed by ``connect(to:)`` to recover.
     public private(set) var connectionState: ConnectionState = .disconnected
-    private var playerState: PlayerStateValue = .synchronized
-    private var isAutoStarting = false // Prevent multiple simultaneous auto-starts
-    private var currentVolume: Float = 1.0
-    private var currentMuted: Bool = false
+    /// The audio format currently being streamed by the server, or nil if no stream is active.
+    public private(set) var currentStreamFormat: AudioFormatSpec?
+    var clientOperationalState: ClientOperationalState = .synchronized
+    var isAutoStarting = false
+    var isClockSynced = false
+    /// Incremented on format changes so the scheduler output loop can detect the boundary.
+    var streamGeneration: UInt64 = 0
+    /// Deferred format + codec header for seamless mid-stream format transitions.
+    /// Set in handleStreamStart; consumed by runSchedulerOutput when the first
+    /// new-generation chunk arrives.
+    var pendingFormat: AudioFormatSpec?
+    var pendingCodecHeader: Data?
+    /// Current player volume (0-100). Observable for UI binding (volume sliders).
+    /// Updated by ``setVolume(_:)`` and by the server via `server/command`.
+    public private(set) var currentVolume: Int = 100
+    /// Current player mute state. Observable for UI binding (mute buttons).
+    /// Updated by ``setMute(_:)`` and by the server via `server/command`.
+    public private(set) var currentMuted: Bool = false
+    /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
+    /// updated when the server sends a `set_static_delay` command.
+    public private(set) var staticDelayMs: Int
+    var artworkStreamActive = false
+    /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
+    var shouldEmitRawAudio = false
+
+    /// Accumulated state (merged from server deltas per spec)
+    /// Current track metadata, accumulated from `server/state` deltas.
+    public private(set) var currentMetadata: TrackMetadata?
+    /// Current group info, accumulated from `group/update` deltas.
+    public private(set) var currentGroup: GroupInfo?
+    /// Current controller state from the server.
+    public private(set) var currentControllerState: ControllerState?
+    /// Codec header for the current stream (e.g. FLAC streaminfo), if any.
+    /// Set when `stream/start` carries a `codec_header` field; cleared on `stream/end`.
+    public private(set) var currentCodecHeader: Data?
+
+    // Multi-server state
+    var currentConnectionReason: ConnectionReason?
+    var currentServerId: String?
 
     // Dependencies
-    private var transport: WebSocketTransport?
-    private var clockSync: ClockSynchronizer?
-    private var audioScheduler: AudioScheduler<ClockSynchronizer>?
-    private var bufferManager: BufferManager?
-    private var audioPlayer: AudioPlayer?
+    var transport: (any SendspinTransport)?
+    var clockSync: ClockSynchronizer?
+    var audioScheduler: AudioScheduler?
+    var audioPlayer: AudioPlayer?
 
     // Task management
-    private var messageLoopTask: Task<Void, Never>?
-    private var clockSyncTask: Task<Void, Never>?
-    private var schedulerOutputTask: Task<Void, Never>?
-    private var schedulerStatsTask: Task<Void, Never>?
+    var messageLoopTask: Task<Void, Never>?
+    var clockSyncTask: Task<Void, Never>?
+    var schedulerOutputTask: Task<Void, Never>?
+    var syncTelemetryTask: Task<Void, Never>?
 
     // Event stream
-    private let eventsContinuation: AsyncStream<ClientEvent>.Continuation
+    let eventsContinuation: AsyncStream<ClientEvent>.Continuation
     public let events: AsyncStream<ClientEvent>
 
     public init(
         clientId: String,
         name: String,
         roles: Set<VersionedRole>,
-        playerConfig: PlayerConfiguration? = nil
-    ) {
+        playerConfig: PlayerConfiguration? = nil,
+        artworkConfig: ArtworkConfiguration? = nil
+    ) throws(ConfigurationError) {
+        if roles.contains(.playerV1), playerConfig == nil {
+            throw .playerRoleRequiresConfiguration
+        }
+        if roles.contains(.artworkV1), artworkConfig == nil {
+            throw .artworkRoleRequiresConfiguration
+        }
+
         self.clientId = clientId
         self.name = name
         self.roles = roles
         self.playerConfig = playerConfig
+        self.artworkConfig = artworkConfig
+        staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
+
+        // Resolve volume mode into concrete capabilities and control implementation
+        let resolved = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software)
+        volumeCapabilities = resolved.capabilities
+        volumeControl = resolved.control
 
         (events, eventsContinuation) = AsyncStream.makeStream()
-
-        // Validate configuration
-        if roles.contains(.playerV1) {
-            precondition(playerConfig != nil, "Player role requires playerConfig")
-        }
     }
 
     deinit {
         eventsContinuation.finish()
     }
 
-    /// Discover Sendspin servers on the local network
+    // MARK: - Internal state setters
+
+    // Extension files (SendspinClient+MessageHandling.swift, SendspinClient+Commands.swift)
+    // use these methods to mutate `public private(set)` properties. This keeps all
+    // mutation in named methods rather than scattered direct assignments.
+
+    func updateConnectionState(_ state: ConnectionState) {
+        connectionState = state
+    }
+
+    func updateStreamFormat(_ format: AudioFormatSpec?) {
+        currentStreamFormat = format
+    }
+
+    func updateMetadata(_ metadata: TrackMetadata?) {
+        currentMetadata = metadata
+    }
+
+    func updateGroup(_ group: GroupInfo?) {
+        currentGroup = group
+    }
+
+    func updateControllerState(_ state: ControllerState?) {
+        currentControllerState = state
+    }
+
+    func updateCodecHeader(_ header: Data?) {
+        currentCodecHeader = header
+    }
+
+    /// Continuously discover Sendspin servers on the local network.
+    ///
+    /// Returns a `ServerDiscovery` whose `servers` stream emits an updated list
+    /// whenever servers appear or disappear. The caller owns the lifecycle —
+    /// call `stopDiscovery()` when done.
+    ///
+    /// ```swift
+    /// let discovery = try await SendspinClient.discoverServers()
+    /// for await servers in discovery.servers {
+    ///     print("Found \(servers.count) server(s)")
+    /// }
+    /// // Later:
+    /// await discovery.stopDiscovery()
+    /// ```
+    public nonisolated static func discoverServers() async throws -> ServerDiscovery {
+        let discovery = ServerDiscovery()
+        try await discovery.startDiscovery()
+        return discovery
+    }
+
+    /// Discover Sendspin servers on the local network (one-shot with timeout).
+    ///
+    /// Convenience wrapper that browses for `timeout`, then returns whatever was found.
+    /// For continuous discovery (live-updating server list), use `discoverServers()`
+    /// which returns a `ServerDiscovery` with an async stream.
+    ///
     /// - Parameter timeout: How long to search for servers (default: 3 seconds)
     /// - Returns: Array of discovered servers
-    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async -> [DiscoveredServer] {
-        let discovery = ServerDiscovery()
-        await discovery.startDiscovery()
+    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
+        let discovery = try await discoverServers()
 
         return await withTaskGroup(of: [DiscoveredServer].self) { group in
             var latestServers: [DiscoveredServer] = []
 
-            // Collect servers for the timeout period
             group.addTask {
                 var collected: [DiscoveredServer] = []
                 for await discoveredServers in discovery.servers {
@@ -80,14 +190,12 @@ public final class SendspinClient {
                 return collected
             }
 
-            // Timeout task
             group.addTask {
                 try? await Task.sleep(for: timeout)
                 await discovery.stopDiscovery()
                 return []
             }
 
-            // Wait for all tasks and collect results
             for await result in group where !result.isEmpty {
                 latestServers = result
             }
@@ -96,18 +204,45 @@ public final class SendspinClient {
         }
     }
 
-    /// Connect to Sendspin server
+    // MARK: - Connection lifecycle
+
+    /// Connect to a Sendspin server at the given URL (client-initiated connection).
+    ///
+    /// - Throws: ``SendspinClientError/alreadyConnected`` if not in the
+    ///   `.disconnected` state.
     @MainActor
     public func connect(to url: URL) async throws {
-        // Prevent multiple connections
         guard connectionState == .disconnected else {
-            return
+            throw SendspinClientError.alreadyConnected
         }
 
         connectionState = .connecting
 
-        // Create dependencies
         let transport = WebSocketTransport(url: url)
+        try await transport.connect()
+
+        try await setupConnection(with: transport)
+    }
+
+    /// Accept an incoming server connection (server-initiated connection).
+    /// Used with `ClientAdvertiser` when servers connect to this client.
+    ///
+    /// If the client is already connected to a server, the multi-server decision
+    /// logic from the spec is applied after the handshake completes.
+    @MainActor
+    public func acceptConnection(_ transport: any SendspinTransport) async throws {
+        if connectionState == .disconnected {
+            connectionState = .connecting
+            try await setupConnection(with: transport)
+        } else {
+            // Already connected — run handshake on new connection, then decide
+            try await handleCompetingConnection(transport)
+        }
+    }
+
+    /// Common setup for both client-initiated and server-initiated connections.
+    @MainActor
+    private func setupConnection(with transport: any SendspinTransport) async throws {
         let clockSync = ClockSynchronizer()
         let audioScheduler = AudioScheduler(clockSync: clockSync)
 
@@ -115,675 +250,530 @@ public final class SendspinClient {
         self.clockSync = clockSync
         self.audioScheduler = audioScheduler
 
-        // Create buffer manager and audio player if player role
-        if roles.contains(.playerV1), let playerConfig = playerConfig {
-            let bufferManager = BufferManager(capacity: playerConfig.bufferCapacity)
-            let audioPlayer = AudioPlayer(bufferManager: bufferManager, clockSync: clockSync)
+        if roles.contains(.playerV1), let playerConfig {
+            // PCM ring buffer holds decompressed audio for the AudioQueue pipeline.
+            // Size it relative to the compressed buffer: compressed audio expands ~10-20x
+            // when decoded, but we only need ~2-3s of headroom. Use half the compressed
+            // capacity as a reasonable default (512KB for a typical 1MB buffer).
+            let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
+            let audioPlayer = AudioPlayer(
+                pcmBufferCapacity: pcmBufferCapacity,
+                volumeControl: volumeControl,
+                processCallback: playerConfig.processCallback
+            )
 
-            self.bufferManager = bufferManager
             self.audioPlayer = audioPlayer
 
-            // Initialize client state from audio player
-            currentVolume = await audioPlayer.volume
             currentMuted = await audioPlayer.muted
+
+            // Set eagerly so raw audio events are emitted even for chunks that
+            // arrive before stream/start is processed (binary and text messages
+            // are consumed by parallel tasks, so binary chunks can race ahead).
+            shouldEmitRawAudio = playerConfig.emitRawAudioEvents
         }
 
-        // Connect WebSocket
-        try await transport.connect()
-
-        // Send client/hello
         try await sendClientHello()
 
-        // Capture streams before detaching (they're nonisolated)
         let textStream = transport.textMessages
         let binaryStream = transport.binaryMessages
 
-        // Start message loop (detached from MainActor)
         messageLoopTask = Task.detached { [weak self] in
             await self?.runMessageLoop(textStream: textStream, binaryStream: binaryStream)
         }
 
-        // Don't start clock sync yet - wait for server/hello first
-        // Initial sync will be triggered in handleServerHello()
+        // Clock sync starts after server/hello is received (in handleServerHello)
 
-        // Start scheduler output consumer (detached from MainActor)
         schedulerOutputTask = Task.detached { [weak self] in
             await self?.runSchedulerOutput()
         }
 
-        // Start scheduler stats logging (detached from MainActor)
-        schedulerStatsTask = Task.detached { [weak self] in
-            await self?.logSchedulerStats()
+        syncTelemetryTask = Task.detached { [weak self] in
+            await self?.runSyncCorrectionAndTelemetry()
         }
-
-        // Update state (will be set to .connected when server/hello received)
     }
 
-    /// Perform initial clock synchronization
-    /// Does multiple sync rounds to establish offset and drift before audio starts
+    /// Disconnect from the server.
+    ///
+    /// Sends a `client/goodbye` message with the given reason before tearing down
+    /// the connection. The goodbye delivery is best-effort — if the transport fails
+    /// to send it (e.g., the connection is already dead), disconnection proceeds
+    /// normally without throwing.
+    ///
+    /// - Parameter reason: Why the client is disconnecting. Defaults to `.shutdown`.
     @MainActor
-    private func performInitialSync() async throws {
-        // print("[CLIENT] performInitialSync ENTERED")
-        guard let transport = transport, let clockSync = clockSync else {
-            // print("[CLIENT] performInitialSync EXITING - missing transport or clockSync")
-            throw SendspinClientError.notConnected
+    public func disconnect(reason: GoodbyeReason = .shutdown) async {
+        // Send client/goodbye before tearing down (best-effort)
+        if let transport {
+            let goodbye = ClientGoodbyeMessage(
+                payload: GoodbyePayload(reason: reason)
+            )
+            try? await transport.send(goodbye)
         }
 
-        // print("[CLIENT] Performing initial clock synchronization...")
-
-        // Do 5 quick sync rounds to establish offset and drift
-        for syncRound in 0 ..< 5 {
-            let now = getCurrentMicroseconds()
-            // performInitialSync round \(syncRound+1): sending client/time with t1=\(now)
-
-            let payload = ClientTimePayload(clientTransmitted: now)
-            let message = ClientTimeMessage(payload: payload)
-
-            try await transport.send(message)
-
-            // Wait briefly for response (up to 500ms)
-            // Note: Response will be processed by message loop
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-
-        // Wait a bit more to ensure last responses are processed
-        try? await Task.sleep(for: .milliseconds(200))
-
-        let offset = await clockSync.statsOffset
-        let rtt = await clockSync.statsRtt
-        let quality = await clockSync.statsQuality
-        // print("[CLIENT] Initial clock sync complete: offset=\(offset)μs, rtt=\(rtt)μs, quality=\(quality)")
-        // print("[CLIENT] performInitialSync EXITED")
-    }
-
-    /// Disconnect from server
-    @MainActor
-    public func disconnect() async {
-        // Cancel all tasks
         messageLoopTask?.cancel()
         clockSyncTask?.cancel()
         schedulerOutputTask?.cancel()
-        schedulerStatsTask?.cancel()
+        syncTelemetryTask?.cancel()
         messageLoopTask = nil
         clockSyncTask = nil
         schedulerOutputTask = nil
-        schedulerStatsTask = nil
+        syncTelemetryTask = nil
 
-        // Stop audio
-        if let audioPlayer = audioPlayer {
+        if let audioPlayer {
             await audioPlayer.stop()
         }
 
-        // Finish scheduler permanently on disconnect
-        if audioScheduler != nil {
-            // print("[CLIENT] Finishing AudioScheduler on disconnect")
-            await audioScheduler?.finish()
-            // print("[CLIENT] Clearing AudioScheduler queue on disconnect")
-            await audioScheduler?.clear()
-        }
-
-        // Disconnect transport
+        await audioScheduler?.finish()
+        await audioScheduler?.clear()
         await transport?.disconnect()
 
-        // Clean up
         transport = nil
         clockSync = nil
         audioScheduler = nil
-        bufferManager = nil
         audioPlayer = nil
 
-        // Reset player state
-        playerState = .synchronized
-        currentVolume = 1.0
+        clientOperationalState = .synchronized
+        isClockSynced = false
+        currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
         currentMuted = false
+        updateStreamFormat(nil)
+        updateCodecHeader(nil)
+        shouldEmitRawAudio = false
+        pendingFormat = nil
+        pendingCodecHeader = nil
+        artworkStreamActive = false
+        currentConnectionReason = nil
+        currentServerId = nil
+        currentMetadata = nil
+        currentControllerState = nil
+        // Don't clear currentGroup — spec says group membership persists across reconnections
 
         connectionState = .disconnected
+        eventsContinuation.yield(.disconnected(reason: .explicit(reason)))
     }
 
-    @MainActor
-    private func sendClientHello() async throws {
-        guard let transport = transport else {
-            throw SendspinClientError.notConnected
-        }
+    // MARK: - Multi-server logic
 
-        // Build player support if player role
+    /// Handle a competing server connection per the spec's multi-server rules.
+    ///
+    /// The spec says to complete the handshake with the new server before deciding.
+    /// However, reading server/hello from a separate stream would consume other
+    /// messages (like stream/start) that the normal message loop needs. Instead,
+    /// we take a simpler approach: switch to the new server unconditionally and
+    /// let the normal handleServerHello track the connection reason. If the old
+    /// server had playback priority, it will reconnect and reclaim us.
+    ///
+    /// This matches the real-world behavior: servers reconnect with
+    /// connection_reason: playback when they need a client for playback.
+    @MainActor
+    private func handleCompetingConnection(_ newTransport: any SendspinTransport) async throws {
+        // Disconnect old server with 'another_server'
+        await disconnect(reason: .anotherServer)
+
+        // Set up normally with new transport — the regular message loop
+        // will handle server/hello (tracking connectionReason) and stream/start
+        connectionState = .connecting
+        try await setupConnection(with: newTransport)
+    }
+
+    // MARK: - Outbound messages
+
+    /// Build the client/hello payload (used by both connect paths)
+    private func buildClientHelloPayload() -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
-        if roles.contains(.playerV1), let playerConfig = playerConfig {
+        if roles.contains(.playerV1), let playerConfig {
             playerV1Support = PlayerSupport(
                 supportedFormats: playerConfig.supportedFormats,
                 bufferCapacity: playerConfig.bufferCapacity,
-                supportedCommands: [.volume, .mute]
+                supportedCommands: volumeCapabilities.playerCommands
             )
         }
 
-        let payload = ClientHelloPayload(
+        var artworkV1Support: ArtworkSupport?
+        if roles.contains(.artworkV1), let artworkConfig {
+            artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
+        }
+
+        return ClientHelloPayload(
             clientId: clientId,
             name: name,
             deviceInfo: DeviceInfo.current,
             version: 1,
             supportedRoles: Array(roles),
             playerV1Support: playerV1Support,
-            metadataV1Support: roles.contains(.metadataV1) ? MetadataSupport() : nil,
-            artworkV1Support: roles.contains(.artworkV1) ? ArtworkSupport() : nil,
+            artworkV1Support: artworkV1Support,
             visualizerV1Support: roles.contains(.visualizerV1) ? VisualizerSupport() : nil
         )
-
-        let message = ClientHelloMessage(payload: payload)
-        try await transport.send(message)
     }
 
-    private func sendClientState() async throws {
-        guard let transport = transport else {
+    @MainActor
+    private func sendClientHello() async throws {
+        guard let transport else {
             throw SendspinClientError.notConnected
         }
 
-        // Only send if we have player role
-        guard roles.contains(.playerV1) else {
-            return
+        let payload = buildClientHelloPayload()
+        try await transport.send(ClientHelloMessage(payload: payload))
+    }
+
+    func sendClientState() async throws {
+        guard let transport else {
+            throw SendspinClientError.notConnected
         }
 
-        // Convert volume from 0.0-1.0 to 0-100 (with rounding)
-        let volumeInt = Int((currentVolume * 100).rounded())
+        var playerStateObject: PlayerStateObject?
+        if roles.contains(.playerV1) {
+            // Values are already validated (clamped on set), so this should never throw.
+            playerStateObject = try PlayerStateObject(
+                volume: currentVolume,
+                muted: currentMuted,
+                staticDelayMs: staticDelayMs,
+                supportedCommands: [.setStaticDelay]
+            )
+        }
 
-        let playerStateObject = PlayerStateObject(
-            state: playerState,
-            volume: volumeInt,
-            muted: currentMuted
+        let payload = ClientStatePayload(
+            state: clientOperationalState,
+            player: playerStateObject
         )
-
-        let payload = ClientStatePayload(player: playerStateObject)
-        let message = ClientStateMessage(payload: payload)
-
-        try await transport.send(message)
+        try await transport.send(ClientStateMessage(payload: payload))
     }
+
+    // MARK: - Clock synchronization
+
+    /// Perform initial clock synchronization (5 quick rounds)
+    @MainActor
+    func performInitialSync() async throws {
+        guard let transport, let clockSync else {
+            throw SendspinClientError.notConnected
+        }
+
+        for _ in 0 ..< 5 {
+            let now = getCurrentMicroseconds()
+            let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
+            try await transport.send(message)
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+
+        try? await Task.sleep(for: .milliseconds(200))
+
+        // Only mark synced if at least one sample was accepted
+        if await clockSync.hasSynced {
+            isClockSynced = true
+            await audioScheduler?.clear()
+        }
+        // Otherwise the continuous sync loop will eventually succeed
+    }
+
+    nonisolated func runClockSync() async {
+        guard let transport = await transport else { return }
+
+        while !Task.isCancelled {
+            do {
+                let now = getCurrentMicroseconds()
+                let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
+                try await transport.send(message)
+            } catch {
+                break // Connection lost
+            }
+
+            try? await Task.sleep(for: .seconds(5))
+        }
+    }
+
+    // MARK: - Message loop
 
     private nonisolated func runMessageLoop(
         textStream: AsyncStream<String>,
         binaryStream: AsyncStream<Data>
     ) async {
-        // print("[CLIENT] Starting message loop")
-        // print("[CLIENT] Got streams, creating task group")
-
         await withTaskGroup(of: Void.self) { group in
-            // print("[CLIENT] Task group created")
-
-            // Text message handler
             group.addTask { [weak self] in
-                // print("[CLIENT] Text message task starting...")
-                guard let self = self else {
-                    // print("[CLIENT] Self is nil in text task")
-                    return
-                }
-                // print("[CLIENT] Text message handler started, beginning iteration")
-
+                guard let self else { return }
                 for await text in textStream {
-                    // print("[CLIENT] Got text message in loop")
-                    await self.handleTextMessage(text)
+                    await handleTextMessage(text)
                 }
-                // print("[CLIENT] Text message handler ended")
             }
 
-            // Binary message handler
             group.addTask { [weak self] in
-                // print("[CLIENT] Binary message task starting...")
-                guard let self = self else {
-                    // print("[CLIENT] Self is nil in binary task")
-                    return
-                }
-                // print("[CLIENT] Binary message handler started, beginning iteration")
-
+                guard let self else { return }
                 for await data in binaryStream {
-                    // print("[CLIENT] Got binary message in loop")
-                    await self.handleBinaryMessage(data)
+                    await handleBinaryMessage(data)
                 }
-                // print("[CLIENT] Binary message handler ended")
             }
-
-            // print("[CLIENT] Both tasks added to group")
         }
-        // print("[CLIENT] Message loop exited")
+
+        // Both streams ended — connection was lost (not an explicit disconnect,
+        // which cancels this task before streams end naturally)
+        await MainActor.run { [weak self] in
+            guard let self else { return }
+            if connectionState != .disconnected {
+                connectionState = .disconnected
+                eventsContinuation.yield(.disconnected(reason: .connectionLost))
+            }
+        }
     }
 
-    private nonisolated func runClockSync() async {
-        // print("[CLIENT] runClockSync ENTERED")
-        guard let transport = await transport else {
-            // print("[CLIENT] runClockSync EXITING - no transport")
-            return
-        }
+    // MARK: - Scheduler output
 
-        while !Task.isCancelled {
-            // print("[CLIENT] runClockSync loop iteration")
-            // Send client/time every 5 seconds
-            do {
-                let now = getCurrentMicroseconds()
-
-                let payload = ClientTimePayload(clientTransmitted: now)
-                let message = ClientTimeMessage(payload: payload)
-
-                try await transport.send(message)
-            } catch {
-                // Connection lost
-                // print("[CLIENT] runClockSync connection lost: \(error)")
-                break
-            }
-
-            // Wait 5 seconds
-            try? await Task.sleep(for: .seconds(5))
-        }
-        // print("[CLIENT] runClockSync EXITED")
-    }
+    /// Number of chunks to pre-buffer before rebuilding the AudioQueue during
+    /// a format transition. This gives the AudioQueue headroom so the sync
+    /// correction doesn't engage aggressively on the first few samples.
+    /// 2 chunks ≈ 200ms — enough headroom without overshooting.
+    private nonisolated static let formatTransitionPreBuffer = 2
 
     private nonisolated func runSchedulerOutput() async {
         guard let audioScheduler = await audioScheduler,
               let audioPlayer = await audioPlayer
-        else {
-            return
-        }
+        else { return }
+
+        var activeGeneration: UInt64 = await streamGeneration
 
         for await chunk in audioScheduler.scheduledChunks {
-            do {
-                try await audioPlayer.playPCM(chunk.pcmData)
-            } catch {
-                // print("[CLIENT] Failed to play scheduled chunk: \(error)")
+            if chunk.generation != activeGeneration {
+                if chunk.generation < activeGeneration {
+                    // Old-generation chunk after a format change already happened.
+                    // This shouldn't occur since old chunks have earlier timestamps,
+                    // but discard just in case.
+                    continue
+                }
+
+                // New generation — first chunk decoded in the new format.
+                // Accumulate a few chunks before rebuilding the AudioQueue
+                // so we have buffer headroom for clean sync convergence.
+                let pending = await MainActor.run { () -> (AudioFormatSpec?, Data?) in
+                    let fmt = self.pendingFormat
+                    let hdr = self.pendingCodecHeader
+                    self.pendingFormat = nil
+                    self.pendingCodecHeader = nil
+                    return (fmt, hdr)
+                }
+
+                activeGeneration = chunk.generation
+
+                guard let format = pending.0 else {
+                    try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+                    continue
+                }
+
+                // Pre-buffer: collect this chunk + one more before switching
+                var preBuffer: [(pcm: Data, timestamp: Int64)] = [
+                    (chunk.pcmData, chunk.originalTimestamp)
+                ]
+
+                for await nextChunk in audioScheduler.scheduledChunks {
+                    preBuffer.append((nextChunk.pcmData, nextChunk.originalTimestamp))
+                    if preBuffer.count >= Self.formatTransitionPreBuffer {
+                        break
+                    }
+                }
+
+                // Rebuild AudioQueue and feed pre-buffered chunks
+                Log.client.info("Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)")
+                try? await audioPlayer.start(format: format, codecHeader: pending.1)
+
+                for buffered in preBuffer {
+                    try? await audioPlayer.playPCM(buffered.pcm, serverTimestamp: buffered.timestamp)
+                }
+                continue
             }
+            try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
         }
     }
 
-    private nonisolated func logSchedulerStats() async {
-        var lastStats = DetailedSchedulerStats()
+    /// Polls for reanchor requests from the audio callback and logs telemetry.
+    /// Sync correction is now computed inside the AudioQueue callback itself,
+    /// so this loop only handles rare reanchor events and periodic logging.
+    private nonisolated func runSyncCorrectionAndTelemetry() async {
+        var lastTelemetryStats = SchedulerStats()
+        var tickCount = 0
 
         while !Task.isCancelled {
-            // Wait 1 second between stats logs (as per telemetry requirements)
-            try? await Task.sleep(for: .seconds(1))
+            // 500ms poll — reanchors are rare events, no need to check faster.
+            // Telemetry logs every 4th tick (2s).
+            try? await Task.sleep(for: .milliseconds(500))
+            tickCount += 1
 
             guard let audioScheduler = await audioScheduler,
-                  let clockSync = await clockSync else { continue }
+                  let clockSync = await clockSync,
+                  let audioPlayer = await audioPlayer else { continue }
 
-            let currentStats = await audioScheduler.getDetailedStats()
+            // --- Poll for reanchor requests from the audio callback ---
+            if let reanchorTarget = await audioPlayer.pollReanchor() {
+                await audioPlayer.reanchorCursor(to: reanchorTarget)
+            }
 
-            // Only log if we've received chunks
-            if currentStats.received > 0 {
-                // Calculate per-second deltas
-                let framesScheduled = currentStats.received - lastStats.received
-                let framesPlayed = currentStats.played - lastStats.played
-                let framesDroppedLate = currentStats.droppedLate - lastStats.droppedLate
-                let framesDroppedOther = currentStats.droppedOther - lastStats.droppedOther
+            // --- Telemetry (every 2s = every 4 ticks) ---
+            if tickCount % 4 == 0 {
+                let currentStats = await audioScheduler.stats
+                guard currentStats.received > 0 else { continue }
 
-                // Get clock sync stats
-                let offset = await clockSync.statsOffset
-                let rtt = await clockSync.statsRtt
-                let clockOffsetMs = Double(offset) / 1000.0
-                let rttMs = Double(rtt) / 1000.0
+                let framesScheduled = currentStats.received - lastTelemetryStats.received
+                let framesPlayed = currentStats.played - lastTelemetryStats.played
+                let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
 
-                // Telemetry format as per requirements
-                // framesScheduled=\(framesScheduled), framesPlayed=\(framesPlayed),
-                // framesDroppedLate=\(framesDroppedLate), framesDroppedOther=\(framesDroppedOther),
-                // bufferFillMs=\(String(format: "%.1f", currentStats.bufferFillMs)),
-                // clockOffsetMs=\(String(format: "%.2f", clockOffsetMs)),
-                // rttMs=\(String(format: "%.2f", rttMs)), queueSize=\(currentStats.queueSize)
+                let offset = await clockSync.currentOffset
+                let rtt = await clockSync.latestAcceptedRtt
+                let clockOffsetMs = Double(offset) / 1_000.0
+                let rttMs = Double(rtt) / 1_000.0
 
-                lastStats = currentStats
+                // Read sync error computed by the audio callback (precise, no actor jitter)
+                let tSnap = await audioPlayer.telemetrySnapshot
+                let syncErrorUs = tSnap.syncErrorUs
+                let dropN = tSnap.correctionSchedule.dropEveryNFrames
+                let insertN = tSnap.correctionSchedule.insertEveryNFrames
+
+                let correcting = tSnap.correctionSchedule.isCorrecting
+
+                // Telemetry is pre-formatted into a single String because os.Logger's
+                // type checker can't handle this many inline interpolation segments.
+                // The cost (unconditional formatting) is acceptable at the 2s tick rate.
+                let telemetry = "sched=\(framesScheduled) played=\(framesPlayed)"
+                    + " late=\(framesDroppedLate)"
+                    + " buf=\(String(format: "%.1f", currentStats.bufferFillMs))ms"
+                    + " offset=\(String(format: "%.2f", clockOffsetMs))ms"
+                    + " rtt=\(String(format: "%.2f", rttMs))ms"
+                    + " queue=\(currentStats.queueSize)"
+                    + " sync=\(syncErrorUs)us"
+                    + " correcting=\(correcting)"
+                    + " drop=\(dropN) insert=\(insertN)"
+                Log.client.debug("\(telemetry, privacy: .public)")
+
+                lastTelemetryStats = currentStats
             }
         }
     }
 
-    private nonisolated func handleTextMessage(_ text: String) async {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
+    // MARK: - Utilities
 
-        guard let data = text.data(using: .utf8) else {
-            return
-        }
-
-        // Extract message type for logging
-        var msgType = "unknown"
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let type = json["type"] as? String {
-            msgType = type
-            fputs("[RX] \(msgType)\n", stderr)
-        }
-
-        // Try to decode message type
-        // Note: In production, we'd use a discriminated union decoder
-        // For now, try each message type
-
-        // IMPORTANT: Order matters! Messages with more specific/required fields must come before
-        // messages with all-optional fields, otherwise the all-optional ones will match everything.
-
-        if let message = try? decoder.decode(ServerHelloMessage.self, from: data), message.type == msgType {
-            await handleServerHello(message)
-        } else if let message = try? decoder.decode(ServerTimeMessage.self, from: data), message.type == msgType {
-            await handleServerTime(message)
-        } else if let message = try? decoder.decode(StreamStartMessage.self, from: data), message.type == msgType {
-            await handleStreamStart(message)
-        } else if let message = try? decoder.decode(StreamEndMessage.self, from: data), message.type == msgType {
-            await handleStreamEnd(message)
-        } else if let message = try? decoder.decode(StreamMetadataMessage.self, from: data), message.type == msgType {
-            await handleStreamMetadata(message)
-        } else if let message = try? decoder.decode(GroupUpdateMessage.self, from: data), message.type == msgType {
-            await handleGroupUpdate(message)
-        } else if let message = try? decoder.decode(SessionUpdateMessage.self, from: data), message.type == msgType {
-            await handleSessionUpdate(message)
-        } else {
-            // Unknown message type - log to stderr to avoid breaking TUI
-            // Show first 500 chars to debug
-            let preview = text.prefix(500)
-            fputs("[CLIENT] ❌ Failed to decode message type '\(msgType)': \(preview)\n", stderr)
-        }
-    }
-
-    private nonisolated func handleBinaryMessage(_ data: Data) async {
-        guard let message = BinaryMessage(data: data) else {
-            // print("[CLIENT] ❌ Failed to parse binary message")
-            return
-        }
-
-        switch message.type {
-        case .audioChunk:
-            // Call on MainActor - this will queue but maintain order
-            await handleAudioChunkNonisolated(message)
-
-        case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
-            // Artwork channels are types 8-11, so channel = rawValue - 8
-            let channel = Int(message.type.rawValue - 8)
-            eventsContinuation.yield(.artworkReceived(channel: channel, data: message.data))
-
-        case .visualizerData:
-            eventsContinuation.yield(.visualizerData(message.data))
-        }
-    }
-
-    private func handleServerHello(_ message: ServerHelloMessage) async {
-        // print("[CLIENT] handleServerHello ENTERED")
-        connectionState = .connected
-
-        let info = ServerInfo(
-            serverId: message.payload.serverId,
-            name: message.payload.name,
-            version: message.payload.version
-        )
-
-        eventsContinuation.yield(.serverConnected(info))
-
-        // Send initial client state after receiving server hello (required by spec)
-        try? await sendClientState()
-
-        // Now that handshake is complete, start clock synchronization
-        // print("[CLIENT] handleServerHello calling performInitialSync...")
-        try? await performInitialSync()
-
-        // Start continuous clock sync loop
-        // print("[CLIENT] handleServerHello starting runClockSync task...")
-        clockSyncTask = Task.detached { [weak self] in
-            await self?.runClockSync()
-        }
-        // print("[CLIENT] handleServerHello EXITED")
-    }
-
-    private func handleServerTime(_ message: ServerTimeMessage) async {
-        // print("[CLIENT] handleServerTime ENTERED")
-        guard let clockSync = clockSync else {
-            // print("[CLIENT] handleServerTime EXITING - no clockSync")
-            return
-        }
-
-        let now = getCurrentMicroseconds()
-
-        await clockSync.processServerTime(
-            clientTransmitted: message.payload.clientTransmitted,
-            serverReceived: message.payload.serverReceived,
-            serverTransmitted: message.payload.serverTransmitted,
-            clientReceived: now
-        )
-        // print("[CLIENT] handleServerTime processed sync response")
-    }
-
-    private func handleStreamStart(_ message: StreamStartMessage) async {
-        guard let playerInfo = message.payload.player else {
-            return
-        }
-
-        // Stream format: \(playerInfo.codec) \(playerInfo.sampleRate)Hz
-        // \(playerInfo.channels)ch \(playerInfo.bitDepth)bit
-
-        guard let audioPlayer = audioPlayer else {
-            // print("[CLIENT] ❌ No audio player available")
-            return
-        }
-
-        // Parse codec
-        guard let codec = AudioCodec(rawValue: playerInfo.codec) else {
-            // print("[CLIENT] ❌ Unsupported codec: \(playerInfo.codec)")
-            connectionState = .error("Unsupported codec: \(playerInfo.codec)")
-            playerState = .error
-            try? await sendClientState() // Notify server of error state
-            return
-        }
-
-        let format = AudioFormatSpec(
-            codec: codec,
-            channels: playerInfo.channels,
-            sampleRate: playerInfo.sampleRate,
-            bitDepth: playerInfo.bitDepth
-        )
-
-        // Decode codec header if present
-        var codecHeader: Data?
-        if let headerBase64 = playerInfo.codecHeader {
-            codecHeader = Data(base64Encoded: headerBase64)
-        }
-
-        // Check if already playing to avoid duplicate events
-        let wasPlaying = await audioPlayer.isPlaying
-
+    /// Send a message through the transport, wrapping any transport error in
+    /// ``SendspinClientError/sendFailed(_:)`` so consumers get a typed public error.
+    ///
+    /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
+    func sendWrapped(_ message: some Codable & Sendable) async throws {
+        guard let transport else { throw SendspinClientError.notConnected }
         do {
-            try await audioPlayer.start(format: format, codecHeader: codecHeader)
-            playerState = .synchronized
-            await audioScheduler?.startScheduling()
-
-            // Only yield event if this was a new stream start (not a format re-announcement)
-            if !wasPlaying {
-                eventsContinuation.yield(.streamStarted(format))
-            }
-            try? await sendClientState()
+            try await transport.send(message)
         } catch {
-            connectionState = .error("Failed to start audio: \(error.localizedDescription)")
-            playerState = .error
-            try? await sendClientState()
+            throw SendspinClientError.sendFailed(error.localizedDescription)
         }
     }
 
-    private func handleStreamEnd(_: StreamEndMessage) async {
-        guard let audioPlayer = audioPlayer else { return }
-
-        await audioScheduler?.stop()
-        await audioScheduler?.clear()
-        await audioPlayer.stop()
-        playerState = .synchronized
-        eventsContinuation.yield(.streamEnded)
+    nonisolated func getCurrentMicroseconds() -> Int64 {
+        MonotonicClock.nowMicroseconds()
     }
 
-    private func handleGroupUpdate(_ message: GroupUpdateMessage) async {
-        if let groupId = message.payload.groupId,
-           let groupName = message.payload.groupName {
-            let info = GroupInfo(
-                groupId: groupId,
-                groupName: groupName,
-                playbackState: message.payload.playbackState
-            )
-
-            eventsContinuation.yield(.groupUpdated(info))
-        }
-    }
-
-    private func handleStreamMetadata(_ message: StreamMetadataMessage) async {
-        let metadata = TrackMetadata(
-            title: message.payload.title,
-            artist: message.payload.artist,
-            album: message.payload.album,
-            albumArtist: nil,
-            track: nil,
-            duration: nil,
-            year: nil,
-            artworkUrl: message.payload.artworkUrl
-        )
-        eventsContinuation.yield(.metadataReceived(metadata))
-    }
-
-    private func handleSessionUpdate(_ message: SessionUpdateMessage) async {
-        // Session updates contain richer metadata than stream/metadata
-        if let sessionMetadata = message.payload.metadata {
-            let metadata = TrackMetadata(
-                title: sessionMetadata.title,
-                artist: sessionMetadata.artist,
-                album: sessionMetadata.album,
-                albumArtist: sessionMetadata.albumArtist,
-                track: sessionMetadata.track,
-                duration: sessionMetadata.trackDuration,
-                year: sessionMetadata.year,
-                artworkUrl: sessionMetadata.artworkUrl
-            )
-            eventsContinuation.yield(.metadataReceived(metadata))
-        }
-    }
-
-    private nonisolated func handleAudioChunkNonisolated(_ message: BinaryMessage) async {
-        // This wrapper allows calling from nonisolated context
-        // It properly awaits the MainActor call to maintain ordering
-        await handleAudioChunk(message)
-    }
-
-    private func handleAudioChunk(_ message: BinaryMessage) async {
-        guard let audioPlayer = audioPlayer,
-              let audioScheduler = audioScheduler
-        else {
-            // print("[CLIENT] ⚠️ Received audio chunk but player not started (missing stream/start?)")
-            return
-        }
-
-        // Auto-start player if not already started (some servers don't send stream/start)
-        // Use flag to prevent multiple simultaneous auto-starts
-        let isPlaying = await audioPlayer.isPlaying
-        if !isPlaying, !isAutoStarting {
-            isAutoStarting = true
-
-            // Use highest priority format (first in supportedFormats list) for auto-start
-            // This ensures hi-res formats (192k/24, 96k/24) are preferred over 48k/16
-            // Server will send stream/start with negotiated format if different
-            guard let defaultFormat = playerConfig?.supportedFormats.first else {
-                // print("[CLIENT] ❌ No supported formats configured")
-                isAutoStarting = false
-                return
-            }
-
-            // print("[CLIENT] 🎵 Auto-starting with highest priority format: \(defaultFormat.codec.rawValue) \(defaultFormat.sampleRate)Hz \(defaultFormat.channels)ch \(defaultFormat.bitDepth)bit")
-            do {
-                try await audioPlayer.start(format: defaultFormat, codecHeader: nil)
-                playerState = .synchronized
-
-                // print("[CLIENT] 📅 Starting AudioScheduler...")
-                await audioScheduler.startScheduling()
-                // print("[CLIENT] ✅ Player auto-started successfully")
-
-                eventsContinuation.yield(.streamStarted(defaultFormat))
-                try? await sendClientState()
-            } catch {
-                // print("[CLIENT] ❌ Failed to auto-start player: \(error)")
-                isAutoStarting = false // Reset flag on failure
-                return
-            }
-        } else if !isPlaying, isAutoStarting {
-            // Another chunk is already auto-starting, drop this chunk
-            return
-        }
-
-        do {
-            // Decode chunk within AudioPlayer actor
-            let pcmData = try await audioPlayer.decode(message.data)
-
-            // Schedule for playback instead of immediate enqueue
-            await audioScheduler.schedule(pcm: pcmData, serverTimestamp: message.timestamp)
-        } catch {
-            // print("[CLIENT] ❌ Failed to decode/schedule chunk: \(error)")
-        }
-    }
-
-    // Process start time for relative clock (nonisolated for use in getCurrentMicroseconds)
-    private nonisolated static let processStartTime = Date()
-
-    private nonisolated func getCurrentMicroseconds() -> Int64 {
-        // Use monotonic time relative to process start (like Go client)
-        // This matches the server's clock domain (time.Since(serverStart))
-        let elapsed = Date().timeIntervalSince(SendspinClient.processStartTime)
-        return Int64(elapsed * 1_000_000)
-    }
-
-    /// Set playback volume (0.0 to 1.0)
+    /// Estimate the current server time in microseconds.
+    ///
+    /// Uses the clock synchronization filter to convert the local monotonic clock
+    /// to the server's clock domain. Returns `nil` if clock sync has not completed
+    /// (no `server/time` responses received yet).
+    ///
+    /// Use this with ``PlaybackProgress/currentPositionMs(at:)`` to compute
+    /// the real-time interpolated playback position:
+    /// ```swift
+    /// if let serverTime = await client.currentServerTimeMicroseconds(),
+    ///    let progress = client.currentMetadata?.progress {
+    ///     let positionMs = progress.currentPositionMs(at: serverTime)
+    /// }
+    /// ```
     @MainActor
-    public func setVolume(_ volume: Float) async {
-        guard let audioPlayer = audioPlayer else { return }
+    public func currentServerTimeMicroseconds() async -> Int64? {
+        guard let clockSync else { return nil }
+        let localNow = MonotonicClock.absoluteMicroseconds()
+        let offset = await clockSync.currentOffset
+        guard offset != 0 else { return nil }
+        return localNow + offset
+    }
 
-        // Clamp volume to valid range
-        let clampedVolume = max(0.0, min(1.0, volume))
+    /// Set playback volume (0–100, perceived loudness per spec).
+    ///
+    /// The integer range 0–100 matches the Sendspin wire format. Internally,
+    /// the value is converted to a 0.0–1.0 float and passed through a 1.5-power
+    /// perceptual gain curve (see ``AudioPlayer/perceptualGain(_:)``) before
+    /// being applied to either the AudioQueue (software mode) or the hardware
+    /// device (hardware mode). This ensures volume 50 sounds roughly half as
+    /// loud as volume 100, regardless of volume mode.
+    ///
+    /// Updates the local audio gain immediately. The server is notified
+    /// best-effort — a failed `client/state` send does not prevent the
+    /// local volume change from taking effect.
+    ///
+    /// - Parameter volume: Volume level (0–100). Values outside this range
+    ///   are clamped.
+    /// - Throws: ``SendspinClientError/notConnected`` if the player role
+    ///   is not active (client not connected or player role not configured).
+    @MainActor
+    public func setVolume(_ volume: Int) async throws {
+        guard let audioPlayer else { throw SendspinClientError.notConnected }
 
-        // Update AudioPlayer and get actual value back
-        await audioPlayer.setVolume(clampedVolume)
-        currentVolume = await audioPlayer.volume
+        let clamped = max(0, min(100, volume))
+        currentVolume = clamped
+        await audioPlayer.setVolume(Float(clamped) / 100.0)
 
-        // Send state update to server (required by spec)
         try? await sendClientState()
     }
 
-    /// Set mute state
+    /// Set mute state.
+    ///
+    /// Updates the local mute state immediately. The server is notified
+    /// best-effort — a failed `client/state` send does not prevent the
+    /// local mute change from taking effect. This asymmetry (throw for
+    /// missing player, swallow server notification failure) is deliberate:
+    /// a missing player is a programmer error, while a transient send
+    /// failure is recoverable (the next state update will catch up).
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if the player role
+    ///   is not active.
     @MainActor
-    public func setMute(_ muted: Bool) async {
-        guard let audioPlayer = audioPlayer else { return }
+    public func setMute(_ muted: Bool) async throws {
+        guard let audioPlayer else { throw SendspinClientError.notConnected }
 
-        // Update AudioPlayer and get actual value back
+        currentMuted = muted
         await audioPlayer.setMute(muted)
-        currentMuted = await audioPlayer.muted
 
-        // Send state update to server (required by spec)
         try? await sendClientState()
     }
-}
 
-public enum ClientEvent: Sendable {
-    case serverConnected(ServerInfo)
-    case streamStarted(AudioFormatSpec)
-    case streamEnded
-    case groupUpdated(GroupInfo)
-    case metadataReceived(TrackMetadata)
-    case artworkReceived(channel: Int, data: Data)
-    case visualizerData(Data)
-    case error(String)
-}
+    /// Set static delay in milliseconds (0-5000).
+    ///
+    /// Per spec: compensates for delay beyond the audio port (external speakers,
+    /// amplifiers). Emits `.staticDelayChanged` so the host app can persist the
+    /// new value. The server is notified best-effort — a failed `client/state`
+    /// send does not prevent the local delay change from taking effect.
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    @MainActor
+    public func setStaticDelay(_ delayMs: Int) async throws {
+        guard transport != nil else { throw SendspinClientError.notConnected }
+        let clamped = max(0, min(5_000, delayMs))
+        guard clamped != staticDelayMs else { return }
+        staticDelayMs = clamped
+        eventsContinuation.yield(.staticDelayChanged(milliseconds: clamped))
+        try? await sendClientState()
+    }
 
-public struct ServerInfo: Sendable {
-    public let serverId: String
-    public let name: String
-    public let version: Int
-}
+    // MARK: - Operational state transitions
 
-public struct GroupInfo: Sendable {
-    public let groupId: String
-    public let groupName: String
-    public let playbackState: String?
-}
-
-public struct TrackMetadata: Sendable {
-    public let title: String?
-    public let artist: String?
-    public let album: String?
-    public let albumArtist: String?
-    public let track: Int?
-    public let duration: Int? // Duration in seconds
-    public let year: Int?
-    public let artworkUrl: String?
-}
-
-public enum SendspinClientError: Error {
-    case notConnected
-    case unsupportedCodec(String)
-    case audioSetupFailed
+    /// Atomically transition `clientOperationalState` to `newState` and notify the server.
+    ///
+    /// If the server notification fails, rolls back to the previous state and throws.
+    /// This prevents split-brain where the client's local state diverges from what
+    /// the server believes.
+    ///
+    /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
+    func transitionOperationalState(to newState: ClientOperationalState) async throws {
+        guard transport != nil else { throw SendspinClientError.notConnected }
+        let previous = clientOperationalState
+        clientOperationalState = newState
+        do {
+            try await sendClientState()
+        } catch let error as SendspinClientError {
+            clientOperationalState = previous
+            throw error
+        } catch {
+            clientOperationalState = previous
+            throw SendspinClientError.sendFailed(error.localizedDescription)
+        }
+    }
 }

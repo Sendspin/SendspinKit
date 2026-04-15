@@ -1,18 +1,17 @@
 @testable import SendspinKit
 import Testing
 
-@Suite("Clock Synchronization Tests")
 struct ClockSynchronizerTests {
-    @Test("Calculate offset from server time")
-    func offsetCalculation() async {
+    @Test
+    func calculateOffsetFromServerTime() async {
         let sync = ClockSynchronizer()
 
         // Simulate NTP exchange where server clock is 100 microseconds ahead
-        let clientTx: Int64 = 1000
+        let clientTx: Int64 = 1_000
         // Client sent at 1000, server clock reads 1150 (server ahead by 100, plus 50 network delay)
-        let serverRx: Int64 = 1150
-        let serverTx: Int64 = 1155 // +5 processing
-        let clientRx: Int64 = 1205 // Client receives at 1205 (50 network delay back)
+        let serverRx: Int64 = 1_150
+        let serverTx: Int64 = 1_155 // +5 processing
+        let clientRx: Int64 = 1_205 // Client receives at 1205 (50 network delay back)
 
         await sync.processServerTime(
             clientTransmitted: clientTx,
@@ -33,27 +32,27 @@ struct ClockSynchronizerTests {
         #expect(offset == 50)
     }
 
-    @Test("Use median of multiple samples")
-    func medianFiltering() async {
+    @Test
+    func useMedianOfMultipleSamples() async {
         let sync = ClockSynchronizer()
 
         // Add samples where server is consistently ahead by ~100, with one outlier
         // Each sample: server ahead by 100, symmetric 50us delays
         // offset = 50
         await sync.processServerTime(
-            clientTransmitted: 1000, serverReceived: 1150, serverTransmitted: 1155, clientReceived: 1205
+            clientTransmitted: 1_000, serverReceived: 1_150, serverTransmitted: 1_155, clientReceived: 1_205
         )
         // offset = 50
         await sync.processServerTime(
-            clientTransmitted: 2000, serverReceived: 2150, serverTransmitted: 2155, clientReceived: 2205
+            clientTransmitted: 2_000, serverReceived: 2_150, serverTransmitted: 2_155, clientReceived: 2_205
         )
         // offset = 250 (outlier - high jitter)
         await sync.processServerTime(
-            clientTransmitted: 3000, serverReceived: 3600, serverTransmitted: 3605, clientReceived: 3705
+            clientTransmitted: 3_000, serverReceived: 3_600, serverTransmitted: 3_605, clientReceived: 3_705
         )
         // offset = 50
         await sync.processServerTime(
-            clientTransmitted: 4000, serverReceived: 4150, serverTransmitted: 4155, clientReceived: 4205
+            clientTransmitted: 4_000, serverReceived: 4_150, serverTransmitted: 4_155, clientReceived: 4_205
         )
 
         let offset = await sync.currentOffset
@@ -63,20 +62,20 @@ struct ClockSynchronizerTests {
         #expect(offset >= 40 && offset <= 100)
     }
 
-    @Test("Convert server time to local time")
-    func serverToLocal() async {
+    @Test
+    func convertServerTimeToLocalTime() async {
         let sync = ClockSynchronizer()
 
         // Server ahead by 200, symmetric 100us delays
         await sync.processServerTime(
-            clientTransmitted: 1000,
-            serverReceived: 1300, // 1000 + 100 delay + 200 offset
-            serverTransmitted: 1305,
-            clientReceived: 1405 // 1305 + 100 delay
+            clientTransmitted: 1_000,
+            serverReceived: 1_300, // 1000 + 100 delay + 200 offset
+            serverTransmitted: 1_305,
+            clientReceived: 1_405 // 1305 + 100 delay
         )
         // offset = ((1300-1000) + (1305-1405)) / 2 = (300 + -100) / 2 = 100
 
-        let serverTime: Int64 = 5000
+        let serverTime: Int64 = 5_000
         let localTime = await sync.serverTimeToLocal(serverTime)
 
         // serverTimeToLocal now returns absolute Unix epoch time, not relative time
@@ -84,5 +83,57 @@ struct ClockSynchronizerTests {
         // We can't test exact value since it depends on when test runs,
         // but we can verify it's a reasonable absolute timestamp (> server time)
         #expect(localTime > serverTime)
+    }
+
+    @Test
+    func snapshotProducesIdenticalConversionsAsActorMethods() async throws {
+        let sync = ClockSynchronizer()
+
+        // Feed enough samples to get a stable filter with drift
+        await sync.processServerTime(
+            clientTransmitted: 1_000, serverReceived: 1_150,
+            serverTransmitted: 1_155, clientReceived: 1_205
+        )
+        await sync.processServerTime(
+            clientTransmitted: 2_000, serverReceived: 2_150,
+            serverTransmitted: 2_155, clientReceived: 2_205
+        )
+        await sync.processServerTime(
+            clientTransmitted: 3_000, serverReceived: 3_150,
+            serverTransmitted: 3_155, clientReceived: 3_205
+        )
+
+        let snap = await sync.snapshot()
+        let unwrapped = try #require(snap)
+
+        // Test serverTimeToLocal matches for several server times
+        for serverTime: Int64 in [0, 1_000, 5_000, 100_000, 1_000_000] {
+            let actorResult = await sync.serverTimeToLocal(serverTime)
+            let snapResult = unwrapped.serverTimeToLocal(serverTime)
+            #expect(
+                actorResult == snapResult,
+                "serverTimeToLocal mismatch for serverTime=\(serverTime): actor=\(actorResult) snapshot=\(snapResult)"
+            )
+        }
+
+        // Test localTimeToServer matches for several local times
+        // Use a recent absolute time as base
+        let baseLocal = await sync.serverTimeToLocal(3_000)
+        for delta: Int64 in [0, 1_000, 5_000, -1_000] {
+            let localTime = baseLocal + delta
+            let actorResult = await sync.localTimeToServer(localTime)
+            let snapResult = unwrapped.localTimeToServer(localTime)
+            #expect(
+                actorResult == snapResult,
+                "localTimeToServer mismatch for localTime delta=\(delta): actor=\(actorResult) snapshot=\(snapResult)"
+            )
+        }
+    }
+
+    @Test
+    func snapshotIsNilBeforeFirstSync() async {
+        let sync = ClockSynchronizer()
+        let snap = await sync.snapshot()
+        #expect(snap == nil)
     }
 }

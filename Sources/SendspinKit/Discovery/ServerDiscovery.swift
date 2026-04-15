@@ -3,15 +3,48 @@
 
 import Foundation
 import Network
+import os
 
-/// Discovers Sendspin servers on the local network via mDNS
+/// Discovers Sendspin servers on the local network via mDNS.
+///
+/// Once ``stopDiscovery()`` is called, the ``servers`` stream is finished and
+/// cannot be restarted. Create a new `ServerDiscovery` instance if you need
+/// to browse again.
 public actor ServerDiscovery {
     private var browser: NWBrowser?
+    /// Keyed by Bonjour service name — the canonical DNS-SD identity within a service type.
     private var discoveries: [String: DiscoveredServer] = [:]
-    private var updateContinuation: AsyncStream<[DiscoveredServer]>.Continuation?
+
+    /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
+    /// `AsyncStream.Continuation` is thread-safe; `finish()` is safe to call from any context.
+    private nonisolated(unsafe) var updateContinuation: AsyncStream<[DiscoveredServer]>.Continuation?
+
+    private var consecutiveFailures = 0
+    private static let maxConsecutiveFailures = 3
+
+    /// How long to wait for a service resolve before giving up.
+    private static let resolveTimeout: Duration = .seconds(10)
+
+    /// Outstanding connections used to resolve service endpoints to host:port.
+    /// Tracked so they can be cancelled in ``stopDiscovery()``.
+    /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
+    /// `NWConnection.cancel()` is thread-safe.
+    private nonisolated(unsafe) var pendingResolves: [NWConnection] = []
+
+    /// Timeout tasks for pending resolves, keyed by connection identity.
+    /// Cancelled when the resolve completes or in ``stopDiscovery()``.
+    /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
+    /// `Task.cancel()` is thread-safe.
+    private nonisolated(unsafe) var resolveTimeoutTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     /// Stream of discovered servers (updates whenever servers appear/disappear)
     public let servers: AsyncStream<[DiscoveredServer]>
+
+    /// Whether this discovery instance has been permanently stopped.
+    /// Once `true`, ``startDiscovery()`` will throw and a new instance must be created.
+    public var isTerminated: Bool {
+        updateContinuation == nil
+    }
 
     public init() {
         var continuation: AsyncStream<[DiscoveredServer]>.Continuation?
@@ -19,55 +52,89 @@ public actor ServerDiscovery {
         updateContinuation = continuation
     }
 
-    /// Start discovering servers
-    public func startDiscovery() {
-        // Don't restart if already running
+    /// Start discovering servers.
+    /// - Throws: ``TerminatedError`` if this instance has been permanently stopped.
+    public func startDiscovery() throws {
         guard browser == nil else { return }
+        guard updateContinuation != nil else { throw TerminatedError() }
 
-        // Create browser for _sendspin-server._tcp service
         let parameters = NWParameters()
         parameters.includePeerToPeer = true
 
         let browser = NWBrowser(
-            for: .bonjourWithTXTRecord(type: "_sendspin-server._tcp", domain: nil),
+            for: .bonjourWithTXTRecord(type: SendspinDefaults.serverServiceType, domain: nil),
             using: parameters
         )
         self.browser = browser
 
-        // Handle state changes
         browser.stateUpdateHandler = { [weak self] state in
             Task { await self?.handleStateChange(state) }
         }
 
-        // Handle browse results
         browser.browseResultsChangedHandler = { [weak self] results, changes in
             Task { await self?.handleBrowseResults(results, changes: changes) }
         }
 
-        // Start browsing
         browser.start(queue: .global(qos: .userInitiated))
     }
 
-    /// Stop discovering servers
+    /// Stop discovering servers.
+    /// Finishes the ``servers`` stream — any `for await` loop consuming it will exit.
+    /// This is terminal; create a new instance to browse again.
     public func stopDiscovery() {
         browser?.cancel()
         browser = nil
         discoveries.removeAll()
-        updateContinuation?.yield([])
+        for connection in pendingResolves {
+            connection.cancel()
+        }
+        pendingResolves.removeAll()
+        for task in resolveTimeoutTasks.values {
+            task.cancel()
+        }
+        resolveTimeoutTasks.removeAll()
+        terminateStream()
+    }
+
+    // MARK: - Private
+
+    /// Finish the servers stream and nil out the continuation, making this
+    /// discovery instance permanently unable to yield new results.
+    private func terminateStream() {
+        updateContinuation?.finish()
+        updateContinuation = nil
+    }
+
+    /// Return discoveries sorted by name for stable ordering.
+    /// `Dictionary.values` has no guaranteed order, so sorting prevents
+    /// unnecessary UI reloads from non-deterministic element shuffling.
+    private func sortedDiscoveries() -> [DiscoveredServer] {
+        discoveries.values.sorted { $0.name < $1.name }
     }
 
     private func handleStateChange(_ state: NWBrowser.State) {
         switch state {
-        case .setup:
-            break
         case .ready:
-            break
+            consecutiveFailures = 0
         case let .failed(error):
-            // print("Discovery failed: \(error)")
-            stopDiscovery()
-        case .cancelled:
-            break
-        case .waiting:
+            Log.discovery.error("Browser failed: \(error)")
+            browser?.cancel()
+            browser = nil
+
+            consecutiveFailures += 1
+            guard consecutiveFailures < Self.maxConsecutiveFailures else {
+                // swiftformat:disable:next redundantSelf
+                Log.discovery.error("\(self.consecutiveFailures) consecutive failures — giving up")
+                terminateStream()
+                return
+            }
+            do {
+                try startDiscovery()
+            } catch {
+                Log.discovery.error("Restart failed: \(error) — giving up")
+                terminateStream()
+            }
+        case .setup, .cancelled, .waiting:
             break
         @unknown default:
             break
@@ -84,7 +151,6 @@ public actor ServerDiscovery {
                 removeServer(for: result)
 
             case .changed(old: _, new: let result, flags: _):
-                // Re-resolve on changes
                 resolveAndAdd(result)
 
             case .identical:
@@ -101,28 +167,92 @@ public actor ServerDiscovery {
             return
         }
 
-        // Create connection to resolve endpoint
+        // Create a temporary connection to resolve the service endpoint to host:port
         let descriptor = NWEndpoint.service(name: name, type: type, domain: domain, interface: interface)
         let connection = NWConnection(to: descriptor, using: .tcp)
+        let connectionID = ObjectIdentifier(connection)
+        pendingResolves.append(connection)
 
         connection.stateUpdateHandler = { [weak self] state in
-            if case .ready = state {
+            switch state {
+            case .ready:
                 Task {
                     await self?.extractServerInfo(from: connection, result: result, name: name)
+                    connection.cancel()
                 }
+            case .failed:
+                connection.cancel()
+            case .cancelled:
+                // Terminal state for all paths (.ready → cancel, .failed → cancel,
+                // timeout cancel, or external cancel from stopDiscovery).
+                // Single cleanup point.
+                Task { await self?.resolveCompleted(connection, id: connectionID) }
+            case .setup, .preparing, .waiting:
+                break
+            @unknown default:
+                break
             }
-            connection.cancel()
         }
 
         connection.start(queue: .global(qos: .userInitiated))
+
+        // Cancel the resolve if it hasn't completed within the timeout.
+        // Prevents connections stuck in .waiting from accumulating indefinitely.
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: Self.resolveTimeout)
+            guard !Task.isCancelled else { return }
+            guard await self?.isPendingResolve(connection) == true else { return }
+            Log.discovery.warning("Resolve timed out for \(name)")
+            connection.cancel()
+        }
+        resolveTimeoutTasks[connectionID] = timeoutTask
+    }
+
+    /// Check if a connection is still in the pending resolves list.
+    private func isPendingResolve(_ connection: NWConnection) -> Bool {
+        pendingResolves.contains { $0 === connection }
+    }
+
+    /// Clean up tracking for a completed/cancelled resolve connection.
+    private func resolveCompleted(_ connection: NWConnection, id: ObjectIdentifier) {
+        pendingResolves.removeAll { $0 === connection }
+        resolveTimeoutTasks[id]?.cancel()
+        resolveTimeoutTasks.removeValue(forKey: id)
+    }
+
+    /// Format an IPv6 address for use in a URL, wrapped in brackets per RFC 2732.
+    ///
+    /// Uses `inet_ntop` for stable formatting instead of `debugDescription`.
+    /// Note: `inet_ntop` strips zone IDs (e.g. `%en0`). Link-local addresses
+    /// will be formatted without zone scope, which may cause routing issues on
+    /// multi-interface hosts. The `interface` from the NWBrowser result provides
+    /// the correct scope when establishing the actual NWConnection.
+    private static func formatIPv6(_ address: IPv6Address) -> String? {
+        let raw = address.rawValue
+
+        // Check for link-local (fe80::/10) directly from raw bytes,
+        // avoiding platform-specific in6_addr layout.
+        if raw.count >= 2, raw[raw.startIndex] == 0xFE, (raw[raw.startIndex + 1] & 0xC0) == 0x80 {
+            Log.discovery.notice("Link-local IPv6 address detected; zone ID unavailable in URL")
+        }
+
+        var addr = in6_addr()
+        _ = withUnsafeMutableBytes(of: &addr) { dest in
+            raw.copyBytes(to: dest)
+        }
+
+        var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+        guard let formatted = inet_ntop(AF_INET6, &addr, &buf, socklen_t(buf.count)) else {
+            return nil
+        }
+        return "[\(String(cString: formatted))]"
     }
 
     private func extractServerInfo(from connection: NWConnection, result: NWBrowser.Result, name: String) {
         guard case .service = result.endpoint else { return }
 
-        // Extract hostname and port from connection
         var hostname = "localhost"
-        var port = 8927 // Default Sendspin port
+        var port = SendspinDefaults.serverPort
 
         if case let .hostPort(host, portValue) = connection.currentPath?.remoteEndpoint {
             switch host {
@@ -131,30 +261,34 @@ public actor ServerDiscovery {
             case let .ipv4(address):
                 hostname = address.debugDescription
             case let .ipv6(address):
-                hostname = address.debugDescription
+                guard let formatted = Self.formatIPv6(address) else {
+                    Log.discovery.error("Could not format IPv6 address for \(name)")
+                    return
+                }
+                hostname = formatted
             @unknown default:
                 break
             }
-            port = Int(portValue.rawValue)
+            port = portValue.rawValue
         }
 
-        // Extract TXT record metadata if available
+        // Extract TXT record metadata
         var metadata: [String: String] = [:]
-        var path = "/sendspin" // Default Sendspin endpoint path
+        var path = SendspinDefaults.webSocketPath
 
         if case let .bonjour(txtRecord) = result.metadata {
-            // TXT record dictionary is [String: String] in newer APIs
             metadata = txtRecord.dictionary
-            // Check for custom path in TXT record
             if let customPath = metadata["path"] {
                 path = customPath
             }
         }
 
-        // Create discovered server with proper WebSocket path
-        let url = URL(string: "ws://\(hostname):\(port)\(path)")!
+        guard let url = URL(string: "ws://\(hostname):\(port)\(path)") else {
+            Log.discovery.error("Could not form URL for \(hostname):\(port)\(path)")
+            return
+        }
+
         let server = DiscoveredServer(
-            id: "\(hostname):\(port)",
             name: name,
             url: url,
             hostname: hostname,
@@ -162,25 +296,30 @@ public actor ServerDiscovery {
             metadata: metadata
         )
 
-        // Add to discoveries
-        discoveries[server.id] = server
-        updateContinuation?.yield(Array(discoveries.values))
+        // Key by service name — the canonical DNS-SD identity within a service type.
+        // If a service re-registers on a new port, this naturally updates the entry.
+        discoveries[name] = server
+        updateContinuation?.yield(sortedDiscoveries())
     }
 
     private func removeServer(for result: NWBrowser.Result) {
         guard case let .service(name, _, _, _) = result.endpoint else { return }
 
-        // Remove all servers matching this service name
-        let removed = discoveries.filter { $0.value.name == name }
-        for (id, _) in removed {
-            discoveries.removeValue(forKey: id)
+        if discoveries.removeValue(forKey: name) != nil {
+            updateContinuation?.yield(sortedDiscoveries())
         }
-
-        updateContinuation?.yield(Array(discoveries.values))
     }
 
+    /// Callers should call stopDiscovery() before releasing. The cancel/finish
+    /// calls below are thread-safe no-ops if stopDiscovery() was already called.
     deinit {
         browser?.cancel()
+        for connection in pendingResolves {
+            connection.cancel()
+        }
+        for task in resolveTimeoutTasks.values {
+            task.cancel()
+        }
         updateContinuation?.finish()
     }
 }

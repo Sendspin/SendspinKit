@@ -17,30 +17,10 @@ let package = Package(
             ]
         ),
         .executableTarget(
-            name: "AudioTest",
+            name: "CLIController",
             dependencies: [
                 .product(name: "SendspinKit", package: "SendspinKit")
             ]
-        ),
-        .executableTarget(
-            name: "SimpleTest",
-            dependencies: [
-                .product(name: "SendspinKit", package: "SendspinKit")
-            ]
-        ),
-        .executableTarget(
-            name: "OpusTest",
-            dependencies: [
-                .product(name: "SendspinKit", package: "SendspinKit")
-            ],
-            path: "Sources/OpusTest"
-        ),
-        .executableTarget(
-            name: "FLACTest",
-            dependencies: [
-                .product(name: "SendspinKit", package: "SendspinKit")
-            ],
-            path: "Sources/FLACTest"
         )
     ]
 )

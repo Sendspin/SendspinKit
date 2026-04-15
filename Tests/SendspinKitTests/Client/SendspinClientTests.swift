@@ -2,19 +2,18 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-@Suite("SendspinClient Tests")
 @MainActor
 struct SendspinClientTests {
-    @Test("Initialize client with player role")
-    func initialization() {
-        let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+    @Test
+    func initializeClientWithPlayerRole() throws {
+        let config = try PlayerConfiguration(
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -25,63 +24,66 @@ struct SendspinClientTests {
         #expect(client.connectionState == .disconnected)
     }
 
-    @Test("Connect creates transport and starts connecting")
-    func connect() async throws {
-        let config = PlayerConfiguration(
-            bufferCapacity: 1024,
-            supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
-            ]
-        )
-
-        let client = SendspinClient(
+    @Test
+    func enterExternalSource_throwsNotConnectedWhenDisconnected() async throws {
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
-            playerConfig: config
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 1_024,
+                supportedFormats: [
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+                ]
+            )
         )
 
-        #expect(client.connectionState == .disconnected)
-
-        // Note: This will fail to connect since URL is invalid, but verifies setup
-        // Real integration tests need mock server
+        await #expect(throws: SendspinClientError.notConnected) {
+            try await client.enterExternalSource()
+        }
     }
 
-    @Test("SendspinClient has AudioScheduler after connect")
-    func clientHasScheduler() async throws {
-        let config = PlayerConfiguration(
-            bufferCapacity: 1024,
-            supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
-            ]
-        )
-
-        let client = SendspinClient(
+    @Test
+    func exitExternalSource_throwsNotConnectedWhenDisconnected() async throws {
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
-            playerConfig: config
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 1_024,
+                supportedFormats: [
+                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+                ]
+            )
         )
 
-        // Before connect, scheduler should not be accessible
-        #expect(client.connectionState == .disconnected)
-
-        // After implementation, connect will create scheduler
-        // This test verifies the scheduler exists by checking that
-        // the client properly initializes with player role
-        #expect(client.connectionState == .disconnected)
+        await #expect(throws: SendspinClientError.notConnected) {
+            try await client.exitExternalSource()
+        }
     }
 
-    @Test("AudioScheduler is cleared on disconnect")
-    func schedulerCleanupOnDisconnect() async throws {
-        let config = PlayerConfiguration(
-            bufferCapacity: 1024,
+    @Test
+    func alreadyConnectedErrorHasCorrectDescription() {
+        let error = SendspinClientError.alreadyConnected
+        #expect(error.errorDescription == "Already connected or connecting to a Sendspin server")
+    }
+
+    @Test
+    func sendFailedErrorIncludesReason() {
+        let error = SendspinClientError.sendFailed("connection reset")
+        #expect(error.errorDescription == "Failed to send message: connection reset")
+    }
+
+    @Test
+    func audioSchedulerIsClearedOnDisconnect() async throws {
+        let config = try PlayerConfiguration(
+            bufferCapacity: 1_024,
             supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
+                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],

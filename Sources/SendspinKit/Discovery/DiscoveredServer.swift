@@ -3,12 +3,19 @@
 
 import Foundation
 
-/// A Sendspin server discovered via mDNS
-public struct DiscoveredServer: Sendable, Identifiable {
-    /// Unique identifier for this server instance
-    public let id: String
+/// A Sendspin server discovered via mDNS.
+///
+/// ``Identifiable/id`` is the Bonjour service name (``name``), which is the
+/// canonical DNS-SD identity within a service type. ``Equatable`` and ``Hashable``
+/// use all fields so that change detection (e.g. SwiftUI list diffing) picks up
+/// updates like a service re-registering on a different port.
+public struct DiscoveredServer: Sendable, Identifiable, Equatable, Hashable {
+    /// Unique identifier — the Bonjour service name (same as ``name``).
+    public var id: String {
+        name
+    }
 
-    /// Human-readable server name
+    /// Human-readable server name (also the Bonjour service name)
     public let name: String
 
     /// WebSocket URL to connect to this server
@@ -18,20 +25,18 @@ public struct DiscoveredServer: Sendable, Identifiable {
     public let hostname: String
 
     /// Server port
-    public let port: Int
+    public let port: UInt16
 
     /// Additional metadata from TXT records
     public let metadata: [String: String]
 
     public init(
-        id: String,
         name: String,
         url: URL,
         hostname: String,
-        port: Int,
+        port: UInt16,
         metadata: [String: String] = [:]
     ) {
-        self.id = id
         self.name = name
         self.url = url
         self.hostname = hostname

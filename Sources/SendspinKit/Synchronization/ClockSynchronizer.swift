@@ -1,262 +1,141 @@
-// ABOUTME: Clock synchronization with drift compensation using Kalman filter approach
-// ABOUTME: Tracks both offset AND drift rate to handle clock frequency differences
+// ABOUTME: Clock synchronization wrapping the 2D Kalman time filter
+// ABOUTME: Handles NTP four-timestamp protocol and absolute time conversion
 
 import Foundation
 
-/// Quality of clock synchronization
-public enum SyncQuality: Sendable {
-    case good
-    case degraded
-    case lost
-}
+/// Synchronizes local clock with server clock using a 2D Kalman filter.
+///
+/// Wraps `SendspinTimeFilter` with:
+/// - NTP four-timestamp processing (client_tx, server_rx, server_tx, client_rx)
+/// - RTT gating (rejects samples with negative or excessive round-trip times)
+/// - Absolute time conversion (process-relative → Unix epoch for Date construction)
+actor ClockSynchronizer: ClockSyncProtocol {
+    // MARK: - Constants
 
-/// Clock synchronization statistics
-public struct ClockStats: Sendable {
-    public let offset: Int64
-    public let rtt: Int64
-    public let quality: SyncQuality
-}
+    /// Maximum acceptable round-trip time (100ms). Samples with RTT above this
+    /// are rejected as too noisy to improve the filter estimate.
+    private static let maxAcceptableRttMicroseconds: Int64 = 100_000
 
-/// Synchronizes local clock with server clock using drift compensation
-public actor ClockSynchronizer: ClockSyncProtocol {
-    // Clock synchronization state
-    private var offset: Int64 = 0 // Current offset in microseconds (server - client)
-    private var drift: Double = 0.0 // Clock drift rate (dimensionless: μs/μs)
-    private var rawOffset: Int64 = 0 // Latest raw offset measurement
-    private var rtt: Int64 = 0 // Latest round-trip time
-    private var quality: SyncQuality = .lost
-    private var lastSyncTime: Date?
-    private var lastSyncMicros: Int64 = 0 // Client time (μs) when offset/drift were last updated
-    private var sampleCount: Int = 0
-    private let smoothingRate: Double = 0.1 // 10% weight to new samples (Kalman gain)
+    /// Minimum RTT used for measurement error calculation. Prevents zero-variance
+    /// on localhost where RTT can be near-zero. From the Rust reference port.
+    private static let rttFloorMicroseconds: Int64 = 1
 
-    // Server loop origin tracking (when server's loop.time() == 0 in client's time domain)
-    // This anchors the process-relative time domain to absolute time
-    private let clientProcessStartAbsolute: Int64 // Absolute Unix epoch μs when client process started
-    private var serverLoopOriginAbsolute: Int64 = 0 // Absolute Unix epoch μs when server loop started
+    // MARK: - State
 
-    public init() {
-        // Record absolute time when synchronizer is created (proxy for process start)
-        clientProcessStartAbsolute = Int64(Date().timeIntervalSince1970 * 1_000_000)
+    private var filter = SendspinTimeFilter()
+
+    /// Most recent accepted round-trip time in microseconds.
+    /// Only updated when a sample passes the RTT gate.
+    private(set) var latestAcceptedRtt: Int64 = 0
+
+    /// Most recent raw round-trip time in microseconds, including rejected samples.
+    /// Useful for diagnosing connectivity spikes in telemetry — shows RTT for
+    /// *every* server/time response, not just those accepted by the filter.
+    private(set) var latestRawRtt: Int64 = 0
+
+    /// Absolute anchor: converts process-relative client timestamps to Unix epoch.
+    /// Uses `MonotonicClock.epochAnchorMicroseconds` which captures both clocks
+    /// as close together as possible at process start — immune to NTP slew.
+    private let clientProcessStartAbsolute: Int64
+
+    init() {
+        clientProcessStartAbsolute = MonotonicClock.epochAnchorMicroseconds
     }
 
-    /// Current clock offset in microseconds
-    public var currentOffset: Int64 {
-        return offset
+    // MARK: - Public interface
+
+    /// Current clock offset in microseconds (server - client).
+    /// Used for both time conversion and telemetry reporting.
+    var currentOffset: Int64 {
+        Int64(filter.offset.rounded())
     }
 
-    /// Current sync quality
-    public var currentQuality: SyncQuality {
-        return quality
+    /// Whether at least one sync sample has been accepted
+    var hasSynced: Bool {
+        filter.isInitialized
     }
 
-    /// Get sync statistics
-    public func getStats() -> ClockStats {
-        return ClockStats(offset: offset, rtt: rtt, quality: quality)
-    }
-
-    /// Get individual stats for Sendable contexts
-    public var statsOffset: Int64 { offset }
-    public var statsRtt: Int64 { rtt }
-    public var statsQuality: SyncQuality { quality }
-
-    /// Process server time message to update offset and drift
-    public func processServerTime(
-        clientTransmitted: Int64, // t1
-        serverReceived: Int64, // t2
-        serverTransmitted: Int64, // t3
-        clientReceived: Int64 // t4
+    /// Process a server/time response to update the clock model.
+    ///
+    /// The four timestamps follow the NTP model:
+    /// - t1: client_transmitted (client clock, μs)
+    /// - t2: server_received (server clock, μs)
+    /// - t3: server_transmitted (server clock, μs)
+    /// - t4: client_received (client clock, μs)
+    func processServerTime(
+        clientTransmitted: Int64,
+        serverReceived: Int64,
+        serverTransmitted: Int64,
+        clientReceived: Int64
     ) {
-        // Calculate RTT and measured offset
-        let (calculatedRtt, measuredOffset) = calculateOffset(
-            clientTx: clientTransmitted,
-            serverRx: serverReceived,
-            serverTx: serverTransmitted,
-            clientRx: clientReceived
+        // NTP offset and RTT calculation
+        let rtt = (clientReceived - clientTransmitted) - (serverTransmitted - serverReceived)
+        let measuredOffset = ((serverReceived - clientTransmitted) + (serverTransmitted - clientReceived)) / 2
+
+        // Always record raw RTT for spike diagnostics
+        latestRawRtt = rtt
+
+        // Gate: reject samples with negative or excessive RTT
+        guard rtt >= 0, rtt <= Self.maxAcceptableRttMicroseconds else { return }
+
+        latestAcceptedRtt = rtt
+
+        // Feed into the Kalman filter
+        let maxError = Double(max(rtt, Self.rttFloorMicroseconds)) / 2.0
+        filter.update(
+            timeAdded: clientReceived,
+            measurement: Double(measuredOffset),
+            maxError: maxError
         )
-
-        rtt = calculatedRtt
-        rawOffset = measuredOffset
-        lastSyncTime = Date()
-
-        // Debug logging for first few syncs
-        if sampleCount < 3 {
-            // Raw timestamps: t1=\(clientTransmitted), t2=\(serverReceived),
-            // t3=\(serverTransmitted), t4=\(clientReceived)
-            // Calculated: rtt=\(calculatedRtt)μs, measured_offset=\(measuredOffset)μs
-        }
-
-        // Discard samples with negative RTT (timestamp issues)
-        if calculatedRtt < 0 {
-            // print("[SYNC] Discarding sync sample: negative RTT \(calculatedRtt)μs (timestamp issue)")
-            return
-        }
-
-        // Discard samples with high RTT (network congestion)
-        if calculatedRtt > 100_000 { // 100ms
-            // print("[SYNC] Discarding sync sample: high RTT \(calculatedRtt)μs")
-            return
-        }
-
-        // First sync: initialize offset, no drift yet
-        if sampleCount == 0 {
-            offset = measuredOffset
-            lastSyncMicros = clientReceived
-
-            // Calculate server loop origin: when server loop.time() was 0
-            // Since offset = server - client, when server = 0: client = -offset
-            // Server loop origin in absolute time = client_process_start + (-offset)
-            serverLoopOriginAbsolute = clientProcessStartAbsolute - offset
-
-            sampleCount += 1
-            quality = .good
-            // Initial sync: offset=\(offset)μs, rtt=\(calculatedRtt)μs
-            // Server loop origin: \(serverLoopOriginAbsolute)μs absolute
-            // client process start: \(clientProcessStartAbsolute)μs
-            return
-        }
-
-        // Second sync: calculate initial drift
-        if sampleCount == 1 {
-            let deltaTime = Double(clientReceived - lastSyncMicros)
-            if deltaTime > 0 {
-                // Drift = change in offset over time
-                drift = Double(measuredOffset - offset) / deltaTime
-                // Drift initialized: drift=\(String(format: "%.9f", drift)) μs/μs
-                // over Δt=\(Int(deltaTime))μs
-            }
-            offset = measuredOffset
-            lastSyncMicros = clientReceived
-
-            // Update server loop origin with new offset
-            serverLoopOriginAbsolute = clientProcessStartAbsolute - offset
-
-            sampleCount += 1
-            quality = .good
-            // Second sync: offset=\(offset)μs, drift=\(String(format: "%.9f", drift)),
-            // rtt=\(calculatedRtt)μs
-            return
-        }
-
-        // Subsequent syncs: predict offset using drift, then update both
-        let deltaTime = Double(clientReceived - lastSyncMicros)
-        if deltaTime <= 0 {
-            // Discarding sync sample: non-monotonic time
-            return
-        }
-
-        // Predict what offset should be based on drift
-        let predictedOffset = offset + Int64(drift * deltaTime)
-
-        // Residual = how much our prediction was off
-        let residual = measuredOffset - predictedOffset
-
-        // Reject outliers (residual > 50ms suggests network issue or clock jump)
-        if abs(residual) > 50000 {
-            // Discarding sync sample: large residual \(residual)μs (possible clock jump)
-            return
-        }
-
-        // Update offset from PREDICTED offset plus gain * residual
-        // This is the Kalman filter update formula (simplified with fixed gain)
-        offset = predictedOffset + Int64(smoothingRate * Double(residual))
-
-        // Update drift: drift correction is residual / deltaTime
-        // This estimates how much the drift rate needs to change
-        let driftCorrection = Double(residual) / deltaTime
-        drift += smoothingRate * driftCorrection
-
-        lastSyncMicros = clientReceived
-        sampleCount += 1
-
-        // Update server loop origin with refined offset (accounting for drift)
-        serverLoopOriginAbsolute = clientProcessStartAbsolute - offset
-
-        // Update quality based on RTT
-        if calculatedRtt < 50000 { // <50ms
-            quality = .good
-        } else {
-            quality = .degraded
-        }
-
-        if sampleCount < 10 {
-            // Sync #\(sampleCount): offset=\(offset)μs, drift=\(String(format: "%.9f", drift)),
-            // residual=\(residual)μs, rtt=\(calculatedRtt)μs
-        }
     }
 
-    /// Calculate RTT and clock offset from timestamps
-    private func calculateOffset(
-        clientTx: Int64,
-        serverRx: Int64,
-        serverTx: Int64,
-        clientRx: Int64
-    ) -> (rtt: Int64, offset: Int64) {
-        // Round-trip time
-        // RTT = (receive_time - send_time) - (server_transmit - server_receive)
-        let rtt = (clientRx - clientTx) - (serverTx - serverRx)
-
-        // Estimated offset (positive = server ahead of client)
-        // offset = ((server_receive - client_transmit) + (server_transmit - client_receive)) / 2
-        let offset = ((serverRx - clientTx) + (serverTx - clientRx)) / 2
-
-        return (rtt, offset)
-    }
-
-    /// Convert server timestamp to local time
-    /// Server timestamps are in server's loop.time() domain (microseconds since server started)
-    /// Returns absolute Unix epoch time in microseconds (suitable for Date conversion)
-    public func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
-        // If we haven't synced yet, estimate using current process time
-        // Assume server and client started at roughly the same time
-        if sampleCount == 0 {
+    /// Convert a server timestamp to local absolute time (Unix epoch μs).
+    ///
+    /// Server timestamps are in the server's monotonic domain (μs since server clock epoch).
+    /// Returns absolute Unix epoch microseconds suitable for `Date(timeIntervalSince1970:)`.
+    ///
+    /// - Important: Before the first successful sync (`hasSynced == false`), this returns
+    ///   a best-effort value assuming zero offset. Callers **must** gate on `hasSynced`
+    ///   before using the result for playback scheduling. `SendspinClient` enforces this
+    ///   by dropping audio chunks until `hasSynced` is true.
+    func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
+        guard filter.isInitialized else {
+            // No sync data yet — assume zero offset. This produces a value in the
+            // correct absolute-time domain but with an unknown error equal to the
+            // true server-client offset. Only useful as a placeholder until the
+            // first sync completes.
             return clientProcessStartAbsolute + serverTime
         }
 
-        // Simple conversion using server loop origin
-        // Server loop origin is the absolute time when server's loop.time() was 0
-        // Due to how we calculate it (clientProcessStartAbsolute - offset), and offset
-        // is continuously updated with drift compensation, the origin already accounts
-        // for drift implicitly.
-        //
-        // Therefore: absolute_time = server_loop_origin + server_time
-        return serverLoopOriginAbsolute + serverTime
+        // The filter's computeClientTime converts server→client in the process-relative domain.
+        // Add the absolute anchor to get Unix epoch time.
+        let clientRelative = filter.computeClientTime(serverTime)
+        return clientProcessStartAbsolute + clientRelative
     }
 
-    /// Convert local timestamp to server time
-    /// Takes absolute Unix epoch time in microseconds (from Date)
-    /// Returns server loop.time() in microseconds (time since server started)
-    public func localTimeToServer(_ localTime: Int64) -> Int64 {
-        // If we haven't synced yet, estimate by subtracting process start
-        if sampleCount == 0 {
+    /// Convert a local absolute time (Unix epoch μs) to a server timestamp.
+    ///
+    /// - Important: Before the first successful sync, assumes zero offset.
+    ///   See ``serverTimeToLocal(_:)`` for details.
+    func localTimeToServer(_ localTime: Int64) -> Int64 {
+        guard filter.isInitialized else {
             return localTime - clientProcessStartAbsolute
         }
 
-        // Inverse of serverTimeToLocal:
-        // serverTimeToLocal: absolute_time = serverLoopOriginAbsolute + server_time
-        // Therefore: server_time = absolute_time - serverLoopOriginAbsolute
-        return localTime - serverLoopOriginAbsolute
+        let clientRelative = localTime - clientProcessStartAbsolute
+        return filter.computeServerTime(clientRelative)
     }
 
-    /// Check and update quality based on time since last sync
-    public func checkQuality() -> SyncQuality {
-        if let lastSync = lastSyncTime, Date().timeIntervalSince(lastSync) > 5.0 {
-            quality = .lost
-        }
-        return quality
-    }
-
-    /// Reset clock synchronization (e.g., after reconnection)
-    public func reset() {
-        offset = 0
-        drift = 0.0
-        rawOffset = 0
-        rtt = 0
-        quality = .lost
-        lastSyncTime = nil
-        lastSyncMicros = 0
-        serverLoopOriginAbsolute = 0
-        sampleCount = 0
-        // print("[SYNC] Clock synchronization reset")
+    /// Create an immutable snapshot of the current filter state for audio-thread use.
+    /// Returns `nil` before the first successful sync.
+    func snapshot() -> TimeFilterSnapshot? {
+        guard filter.isInitialized else { return nil }
+        return TimeFilterSnapshot(
+            offset: filter.offset,
+            drift: filter.drift,
+            lastUpdate: filter.lastUpdate,
+            useDrift: filter.useDrift,
+            clientProcessStartAbsolute: clientProcessStartAbsolute
+        )
     }
 }
