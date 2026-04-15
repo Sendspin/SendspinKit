@@ -9,7 +9,7 @@ import Foundation
 /// initializers that validate parameters throw ``ConfigurationError`` instead
 /// of trapping. Consumers can catch specific cases for targeted error handling
 /// or treat the entire enum as a generic validation failure.
-public enum ConfigurationError: Error, Sendable, Hashable {
+public enum ConfigurationError: SendspinError, Hashable {
     // MARK: - AudioFormatSpec
 
     /// Channel count must be between 1 and ``AudioFormatSpec/maxChannels``.

@@ -3,6 +3,12 @@
 
 import Foundation
 
+/// Marker protocol for all errors thrown by SendspinKit.
+///
+/// Consumers can catch any library error with `catch let error as SendspinError`
+/// or match specific types for targeted handling.
+public protocol SendspinError: Error, Sendable {}
+
 /// Error thrown when attempting to start a discovery or advertiser instance that
 /// has been permanently stopped. Create a new instance instead.
 public struct TerminatedError: Error, Sendable, LocalizedError, CustomStringConvertible {
@@ -14,6 +20,8 @@ public struct TerminatedError: Error, Sendable, LocalizedError, CustomStringConv
         errorDescription!
     }
 }
+
+extension TerminatedError: SendspinError {}
 
 /// Protocol-level constants from the Sendspin specification.
 public enum SendspinDefaults {

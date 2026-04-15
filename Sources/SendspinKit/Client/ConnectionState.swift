@@ -8,7 +8,7 @@ import Foundation
 /// These are distinct from ``SendspinClientError``, which covers API-level errors
 /// like calling methods while disconnected. ``StreamingError`` represents conditions
 /// where the connection is alive but playback cannot proceed.
-public enum StreamingError: Error, Sendable, Hashable, LocalizedError, CustomDebugStringConvertible {
+public enum StreamingError: SendspinError, Hashable, LocalizedError, CustomDebugStringConvertible {
     /// Server sent a codec this client doesn't support
     case unsupportedCodec(String)
     /// Server sent audio format parameters that don't pass validation

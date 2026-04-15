@@ -196,7 +196,7 @@ public struct ControllerState: Sendable, Hashable {
 ///
 /// Runtime errors during streaming surface as
 /// ``ConnectionState/error(_:)`` with a typed ``StreamingError`` payload.
-public enum SendspinClientError: Error, Sendable, Equatable, LocalizedError {
+public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     /// A method that requires an active connection was called while disconnected.
     case notConnected
     /// ``SendspinClient/connect(to:)`` or ``SendspinClient/acceptConnection(_:)``
