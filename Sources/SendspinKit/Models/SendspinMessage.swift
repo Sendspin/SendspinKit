@@ -251,11 +251,42 @@ struct PlayerStateObject: Codable, Equatable {
         case supportedCommands = "supported_commands"
     }
 
-    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [PlayerCommand]? = nil) {
+    /// Validates volume and static delay ranges.
+    private static func validate(volume: Int?, staticDelayMs: Int) throws(ConfigurationError) {
         if let vol = volume {
-            precondition(vol >= 0 && vol <= 100, "Volume must be between 0 and 100")
+            guard vol >= 0, vol <= 100 else { throw .volumeOutOfRange(vol) }
         }
-        precondition(staticDelayMs >= 0 && staticDelayMs <= 5_000, "static_delay_ms must be 0-5000")
+        guard staticDelayMs >= 0, staticDelayMs <= 5_000 else {
+            throw .staticDelayOutOfRange(staticDelayMs)
+        }
+    }
+
+    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [PlayerCommand]? = nil) throws(ConfigurationError) {
+        try Self.validate(volume: volume, staticDelayMs: staticDelayMs)
+        self.volume = volume
+        self.muted = muted
+        self.staticDelayMs = staticDelayMs
+        self.supportedCommands = supportedCommands
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let volume = try container.decodeIfPresent(Int.self, forKey: .volume)
+        let muted = try container.decodeIfPresent(Bool.self, forKey: .muted)
+        let staticDelayMs = try container.decode(Int.self, forKey: .staticDelayMs)
+        let supportedCommands = try container.decodeIfPresent([PlayerCommand].self, forKey: .supportedCommands)
+
+        do {
+            try Self.validate(volume: volume, staticDelayMs: staticDelayMs)
+        } catch {
+            throw DecodingError.dataCorrupted(
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: error.errorDescription ?? "\(error)"
+                )
+            )
+        }
+
         self.volume = volume
         self.muted = muted
         self.staticDelayMs = staticDelayMs
@@ -696,8 +727,14 @@ struct ArtworkFormatRequest: Codable, Equatable {
         case mediaHeight = "media_height"
     }
 
-    init(channel: Int, source: ArtworkSource? = nil, format: ImageFormat? = nil, mediaWidth: Int? = nil, mediaHeight: Int? = nil) {
-        precondition(channel >= 0 && channel <= 3, "channel must be 0-3")
+    init(
+        channel: Int,
+        source: ArtworkSource? = nil,
+        format: ImageFormat? = nil,
+        mediaWidth: Int? = nil,
+        mediaHeight: Int? = nil
+    ) throws(ConfigurationError) {
+        guard channel >= 0, channel <= 3 else { throw .artworkChannelOutOfRange(channel) }
         self.channel = channel
         self.source = source
         self.format = format

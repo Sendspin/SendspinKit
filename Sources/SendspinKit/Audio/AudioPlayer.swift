@@ -92,7 +92,7 @@ private struct LockedState: @unchecked Sendable {
     /// Advance the playback cursor by one frame using integer arithmetic
     /// to avoid floating-point drift.
     mutating func advanceCursor() {
-        precondition(sampleRate > 0, "advanceCursor called before sampleRate was set")
+        guard sampleRate > 0 else { return }
         let usPerFrame = 1_000_000 / Int64(sampleRate)
         let usRemainder = 1_000_000 % Int64(sampleRate)
 
@@ -242,7 +242,7 @@ actor AudioPlayer {
         // Build the effective format for the process callback — uses the actual
         // output bit depth (e.g. 32 for 24-bit sources) so consumers interpret
         // samples correctly.
-        let effectiveFormat = AudioFormatSpec(
+        let effectiveFormat = try AudioFormatSpec(
             codec: .pcm,
             channels: format.channels,
             sampleRate: format.sampleRate,
@@ -250,7 +250,7 @@ actor AudioPlayer {
         )
 
         let computedFrameSize = format.channels * bytesPerSample
-        precondition(
+        assert(
             computedFrameSize <= maxFrameBytes,
             "Frame size \(computedFrameSize) exceeds lastFrameStorage capacity \(maxFrameBytes)"
         )

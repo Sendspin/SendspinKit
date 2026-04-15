@@ -1,24 +1,6 @@
 // ABOUTME: Specifies an audio format with codec, sample rate, channels, and bit depth
 // ABOUTME: Used to negotiate audio format between client and server in client/hello
 
-/// Validation error for audio format parameters.
-private enum FormatError: Error, CustomStringConvertible {
-    case invalidChannels(Int)
-    case invalidSampleRate(Int)
-    case invalidBitDepth(Int)
-
-    var description: String {
-        switch self {
-        case let .invalidChannels(v):
-            "channels must be between 1 and \(AudioFormatSpec.maxChannels), got \(v)"
-        case let .invalidSampleRate(v):
-            "sample_rate must be between 1 and \(AudioFormatSpec.maxSampleRate) Hz, got \(v)"
-        case let .invalidBitDepth(v):
-            "bit_depth must be one of \(AudioFormatSpec.supportedBitDepths.sorted()), got \(v)"
-        }
-    }
-}
-
 /// Specification for an audio format per Sendspin spec.
 ///
 /// Used in the `player@v1_support.supported_formats` array of `client/hello`
@@ -50,18 +32,14 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
     /// Validates audio format parameters.
     private static func validate(
         channels: Int, sampleRate: Int, bitDepth: Int
-    ) throws(FormatError) {
-        guard channels > 0, channels <= maxChannels else { throw .invalidChannels(channels) }
+    ) throws(ConfigurationError) {
+        guard channels > 0, channels <= maxChannels else { throw .invalidChannelCount(channels) }
         guard sampleRate > 0, sampleRate <= maxSampleRate else { throw .invalidSampleRate(sampleRate) }
-        guard supportedBitDepths.contains(bitDepth) else { throw .invalidBitDepth(bitDepth) }
+        guard supportedBitDepths.contains(bitDepth) else { throw .unsupportedBitDepth(bitDepth) }
     }
 
-    public init(codec: AudioCodec, channels: Int, sampleRate: Int, bitDepth: Int) {
-        do {
-            try Self.validate(channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
-        } catch {
-            preconditionFailure("\(error)")
-        }
+    public init(codec: AudioCodec, channels: Int, sampleRate: Int, bitDepth: Int) throws(ConfigurationError) {
+        try Self.validate(channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
         self.codec = codec
         self.channels = channels
         self.sampleRate = sampleRate
@@ -79,7 +57,10 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
             try Self.validate(channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
         } catch {
             throw DecodingError.dataCorrupted(
-                DecodingError.Context(codingPath: container.codingPath, debugDescription: "\(error)")
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: error.errorDescription ?? "\(error)"
+                )
             )
         }
 

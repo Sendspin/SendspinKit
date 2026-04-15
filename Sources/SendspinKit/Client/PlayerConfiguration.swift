@@ -69,13 +69,12 @@ public struct PlayerConfiguration: Sendable {
         volumeMode: VolumeMode = .software,
         processCallback: AudioProcessCallback? = nil,
         emitRawAudioEvents: Bool = false
-    ) {
-        precondition(bufferCapacity > 0, "Buffer capacity must be positive")
-        precondition(!supportedFormats.isEmpty, "Must support at least one audio format")
-        precondition(
-            initialStaticDelayMs >= 0 && initialStaticDelayMs <= 5_000,
-            "initialStaticDelayMs must be 0-5000"
-        )
+    ) throws(ConfigurationError) {
+        guard bufferCapacity > 0 else { throw .nonPositiveBufferCapacity }
+        guard !supportedFormats.isEmpty else { throw .emptySupportedFormats }
+        guard initialStaticDelayMs >= 0, initialStaticDelayMs <= 5_000 else {
+            throw .staticDelayOutOfRange(initialStaticDelayMs)
+        }
 
         self.bufferCapacity = bufferCapacity
         self.supportedFormats = supportedFormats

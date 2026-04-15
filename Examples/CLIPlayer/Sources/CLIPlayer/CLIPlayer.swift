@@ -30,7 +30,8 @@ final class CLIPlayer {
     ///
     /// Priority-ordered: the server picks the FIRST compatible format.
     /// FLAC 24-bit first for maximum fidelity. Standard sample rates before hi-res.
-    private static let supportedFormats = [
+    // swiftlint:disable:next force_try
+    private static let supportedFormats = try! [
         // FLAC 24-bit — preferred (lossless, no quality loss on any source)
         AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
         AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
@@ -50,15 +51,16 @@ final class CLIPlayer {
         AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
     ]
 
-    private static func playerConfig(volumeMode: VolumeMode) -> PlayerConfiguration {
-        PlayerConfiguration(
+    private static func playerConfig(volumeMode: VolumeMode) throws -> PlayerConfiguration {
+        try PlayerConfiguration(
             bufferCapacity: 2_097_152, // 2MB buffer
             supportedFormats: supportedFormats,
             volumeMode: volumeMode
         )
     }
 
-    private static let artworkConfig = ArtworkConfiguration(channels: [
+    // swiftlint:disable:next force_try
+    private static let artworkConfig = try! ArtworkConfiguration(channels: [
         ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
     ])
 
@@ -76,8 +78,8 @@ final class CLIPlayer {
         }
 
         // Create client
-        let config = Self.playerConfig(volumeMode: volumeMode)
-        let client = SendspinClient(
+        let config = try Self.playerConfig(volumeMode: volumeMode)
+        let client = try SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
@@ -359,8 +361,8 @@ final class CLIPlayer {
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Advertising on port \(port)...")
 
-        let config = Self.playerConfig(volumeMode: volumeMode)
-        let client = SendspinClient(
+        let config = try Self.playerConfig(volumeMode: volumeMode)
+        let client = try SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],

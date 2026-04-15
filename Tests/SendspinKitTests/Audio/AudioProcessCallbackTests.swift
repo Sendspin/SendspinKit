@@ -3,8 +3,9 @@ import Foundation
 import Testing
 
 struct AudioProcessCallbackTests {
-    /// Standard test format used across all tests in this suite
-    private static let stereo16 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+    // Standard test format used across all tests in this suite
+    // swiftlint:disable:next force_try
+    private static let stereo16 = try! AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
 
     // MARK: - Callback invocation
 
@@ -70,7 +71,7 @@ struct AudioProcessCallbackTests {
     func `Callback receives 32-bit effective format for 24-bit source`() async throws {
         let invoked = CallbackRecorder()
 
-        let format24 = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
+        let format24 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
 
         let player = AudioPlayer(
             processCallback: { samples, format in
@@ -196,8 +197,8 @@ struct AudioProcessCallbackTests {
     // MARK: - PlayerConfiguration integration
 
     @Test
-    func `PlayerConfiguration defaults to nil processCallback`() {
-        let config = PlayerConfiguration(
+    func `PlayerConfiguration defaults to nil processCallback`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [Self.stereo16]
         )
@@ -205,9 +206,9 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `PlayerConfiguration stores processCallback`() {
+    func `PlayerConfiguration stores processCallback`() throws {
         let recorder = CallbackRecorder()
-        let config = PlayerConfiguration(
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [Self.stereo16],
             processCallback: { _, format in recorder.record(byteCount: 0, format: format) }

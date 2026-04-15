@@ -10,7 +10,7 @@ struct ArtworkModelTests {
 
     @Test
     func `ArtworkChannel round-trips through JSON`() throws {
-        let channel = ArtworkChannel(
+        let channel = try ArtworkChannel(
             source: .album,
             format: .jpeg,
             mediaWidth: 800,
@@ -53,7 +53,7 @@ struct ArtworkModelTests {
         let decoder = JSONDecoder()
 
         for format in formats {
-            let channel = ArtworkChannel(
+            let channel = try ArtworkChannel(
                 source: .album,
                 format: format,
                 mediaWidth: 300,
@@ -71,7 +71,7 @@ struct ArtworkModelTests {
         let decoder = JSONDecoder()
 
         for source in [ArtworkSource.album, .artist] {
-            let channel = ArtworkChannel(
+            let channel = try ArtworkChannel(
                 source: source,
                 format: .jpeg,
                 mediaWidth: 300,
@@ -184,16 +184,41 @@ struct ArtworkModelTests {
         #expect(channel.mediaHeight == 0)
     }
 
-    // Note: precondition failures in the programmatic init (e.g., passing mediaWidth: -1
-    // to ArtworkChannel(source:format:mediaWidth:mediaHeight:)) cannot be tested in
-    // Swift Testing — precondition aborts the process. The Decodable path above exercises
-    // the same validateDimensions() logic with throwing.
+    // MARK: - ArtworkChannel init validation (ConfigurationError)
+
+    @Test
+    func `ArtworkChannel init rejects negative width for active channel`() {
+        #expect(throws: ConfigurationError.self) {
+            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: -1, mediaHeight: 300)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel init rejects zero width for active channel`() {
+        #expect(throws: ConfigurationError.self) {
+            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 0, mediaHeight: 300)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel init rejects zero height for active channel`() {
+        #expect(throws: ConfigurationError.self) {
+            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 0)
+        }
+    }
+
+    @Test
+    func `ArtworkChannel init rejects negative height for active channel`() {
+        #expect(throws: ConfigurationError.self) {
+            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: -1)
+        }
+    }
 
     // MARK: - ArtworkSupport in client/hello
 
     @Test
     func `ArtworkSupport encodes channels array for client/hello`() throws {
-        let support = ArtworkSupport(channels: [
+        let support = try ArtworkSupport(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
         ])
@@ -233,7 +258,7 @@ struct ArtworkModelTests {
 
     @Test
     func `client/hello with artwork@v1_support encodes correctly`() throws {
-        let payload = ClientHelloPayload(
+        let payload = try ClientHelloPayload(
             clientId: "test-client",
             name: "Test Display",
             deviceInfo: nil,
@@ -341,7 +366,7 @@ struct ArtworkModelTests {
 
     @Test
     func `stream/request-format with artwork encodes correctly`() throws {
-        let request = ArtworkFormatRequest(
+        let request = try ArtworkFormatRequest(
             channel: 0,
             source: .album,
             format: .jpeg,
@@ -369,7 +394,7 @@ struct ArtworkModelTests {
     @Test
     func `stream/request-format with partial artwork update`() throws {
         // Per spec: only include fields that are changing
-        let request = ArtworkFormatRequest(
+        let request = try ArtworkFormatRequest(
             channel: 1,
             format: .png
         )
@@ -418,14 +443,14 @@ struct ArtworkModelTests {
     // MARK: - ArtworkConfiguration
 
     @Test
-    func `ArtworkConfiguration validates channel count`() {
+    func `ArtworkConfiguration validates channel count`() throws {
         // Valid: 1-4 channels
-        let config = ArtworkConfiguration(channels: [
+        let config = try ArtworkConfiguration(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
         ])
         #expect(config.channels.count == 1)
 
-        let config4 = ArtworkConfiguration(channels: [
+        let config4 = try ArtworkConfiguration(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
             .disabled,
@@ -435,14 +460,14 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkConfiguration equality and hashing`() {
-        let channels = [
+    func `ArtworkConfiguration equality and hashing`() throws {
+        let channels = try [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             .disabled
         ]
-        let a = ArtworkConfiguration(channels: channels)
-        let b = ArtworkConfiguration(channels: channels)
-        let c = ArtworkConfiguration(channels: [
+        let a = try ArtworkConfiguration(channels: channels)
+        let b = try ArtworkConfiguration(channels: channels)
+        let c = try ArtworkConfiguration(channels: [
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200)
         ])
 

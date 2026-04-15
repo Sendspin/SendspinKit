@@ -13,9 +13,9 @@ public struct ArtworkConfiguration: Sendable, Hashable {
     /// Supported artwork channels (1-4). Array index is the channel number.
     public let channels: [ArtworkChannel]
 
-    public init(channels: [ArtworkChannel]) {
-        precondition(!channels.isEmpty, "Must have at least one artwork channel")
-        precondition(channels.count <= 4, "Maximum 4 artwork channels")
+    public init(channels: [ArtworkChannel]) throws(ConfigurationError) {
+        guard !channels.isEmpty else { throw .emptyArtworkChannels }
+        guard channels.count <= 4 else { throw .tooManyArtworkChannels(channels.count) }
         self.channels = channels
     }
 }

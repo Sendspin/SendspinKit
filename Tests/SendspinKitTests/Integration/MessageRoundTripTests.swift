@@ -9,7 +9,7 @@ struct MessageRoundTripTests {
     @Test
     func `ClientHello round trip maintains all data`() throws {
         // Create complete ClientHello with all fields populated
-        let originalPayload = ClientHelloPayload(
+        let originalPayload = try ClientHelloPayload(
             clientId: "test-client-123",
             name: "Test Speaker",
             deviceInfo: DeviceInfo(

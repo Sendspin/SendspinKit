@@ -70,8 +70,8 @@ struct VolumeControlTests {
     // MARK: - PlayerConfiguration VolumeMode
 
     @Test
-    func `PlayerConfiguration defaults to software volume mode`() {
-        let config = PlayerConfiguration(
+    func `PlayerConfiguration defaults to software volume mode`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)]
         )
@@ -82,8 +82,8 @@ struct VolumeControlTests {
     }
 
     @Test
-    func `PlayerConfiguration accepts explicit volume mode`() {
-        let config = PlayerConfiguration(
+    func `PlayerConfiguration accepts explicit volume mode`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)],
             volumeMode: .none
@@ -103,7 +103,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setVolume(0.75)
@@ -120,7 +120,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setMute(true)
@@ -137,7 +137,7 @@ struct VolumeControlTests {
             volumeControl: recorder
         )
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         await player.setMute(true)

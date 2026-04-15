@@ -205,12 +205,20 @@ extension SendspinClient {
             return
         }
 
-        let format = AudioFormatSpec(
-            codec: codec,
-            channels: playerInfo.channels,
-            sampleRate: playerInfo.sampleRate,
-            bitDepth: playerInfo.bitDepth
-        )
+        let format: AudioFormatSpec
+        do {
+            format = try AudioFormatSpec(
+                codec: codec,
+                channels: playerInfo.channels,
+                sampleRate: playerInfo.sampleRate,
+                bitDepth: playerInfo.bitDepth
+            )
+        } catch {
+            connectionState = .error(.invalidFormat(error.errorDescription ?? "\(error)"))
+            clientOperationalState = .error
+            try? await sendClientState()
+            return
+        }
 
         var codecHeader: Data?
         if let headerBase64 = playerInfo.codecHeader {

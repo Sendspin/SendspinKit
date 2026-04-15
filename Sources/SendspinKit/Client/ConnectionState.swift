@@ -11,6 +11,8 @@ import Foundation
 public enum StreamingError: Error, Sendable, Hashable, LocalizedError, CustomDebugStringConvertible {
     /// Server sent a codec this client doesn't support
     case unsupportedCodec(String)
+    /// Server sent audio format parameters that don't pass validation
+    case invalidFormat(String)
     /// AudioQueue failed to start (e.g. no audio device available)
     case audioStartFailed(String)
 
@@ -18,6 +20,8 @@ public enum StreamingError: Error, Sendable, Hashable, LocalizedError, CustomDeb
         switch self {
         case let .unsupportedCodec(codec):
             "Unsupported codec: \(codec)"
+        case let .invalidFormat(reason):
+            "Invalid audio format: \(reason)"
         case let .audioStartFailed(reason):
             "Failed to start audio: \(reason)"
         }
@@ -27,6 +31,8 @@ public enum StreamingError: Error, Sendable, Hashable, LocalizedError, CustomDeb
         switch self {
         case let .unsupportedCodec(codec):
             "StreamingError.unsupportedCodec(\(codec))"
+        case let .invalidFormat(reason):
+            "StreamingError.invalidFormat(\(reason))"
         case let .audioStartFailed(reason):
             "StreamingError.audioStartFailed(\(reason))"
         }

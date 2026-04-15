@@ -64,10 +64,10 @@ private func groupUpdateJSON(
 
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
-private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV1]) -> SendspinClient {
+private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV1]) throws -> SendspinClient {
     var playerConfig: PlayerConfiguration?
     if roles.contains(.playerV1) {
-        playerConfig = PlayerConfiguration(
+        playerConfig = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
@@ -75,7 +75,7 @@ private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV
         )
     }
 
-    return SendspinClient(
+    return try SendspinClient(
         clientId: "test-client",
         name: "Test Client",
         roles: roles,
@@ -185,7 +185,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `enter external source rolls back on send failure`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         await mock.setShouldFailOnSend(true)
@@ -203,7 +203,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `stream clear injects stream cleared event`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         // Start collecting events — AsyncStream buffers, so no sleep needed
@@ -226,7 +226,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `group update with playing emits last played server changed`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         let eventTask = Task {
@@ -252,7 +252,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `set repeat mode one sends correct command`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         let countBefore = await mock.sentTextMessages.count
@@ -268,7 +268,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `set shuffle true sends shuffle command`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         let countBefore = await mock.sentTextMessages.count
@@ -286,7 +286,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `play throws send failed when transport fails`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         await mock.setShouldFailOnSend(true)
@@ -306,7 +306,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `server hello populates active roles`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         let mock = MockTransport()
 
         // Start collecting events before accepting the connection
@@ -345,7 +345,7 @@ struct ClientIntegrationTests {
         // in the message loop. If the binary task processes audio chunks before the
         // text task processes stream/start, shouldEmitRawAudio must already be true
         // (set at connection setup, not deferred to handleStreamStart).
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -433,7 +433,7 @@ struct ClientIntegrationTests {
 
     @Test
     func `connect throws already connected when connected`() async throws {
-        let client = makeTestClient()
+        let client = try makeTestClient()
         _ = try await connectClient(client)
 
         await #expect(throws: SendspinClientError.alreadyConnected) {

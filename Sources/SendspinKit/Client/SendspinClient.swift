@@ -87,7 +87,14 @@ public final class SendspinClient {
         roles: Set<VersionedRole>,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil
-    ) {
+    ) throws(ConfigurationError) {
+        if roles.contains(.playerV1), playerConfig == nil {
+            throw .playerRoleRequiresConfiguration
+        }
+        if roles.contains(.artworkV1), artworkConfig == nil {
+            throw .artworkRoleRequiresConfiguration
+        }
+
         self.clientId = clientId
         self.name = name
         self.roles = roles
@@ -101,13 +108,6 @@ public final class SendspinClient {
         volumeControl = resolved.control
 
         (events, eventsContinuation) = AsyncStream.makeStream()
-
-        if roles.contains(.playerV1) {
-            precondition(playerConfig != nil, "Player role requires playerConfig")
-        }
-        if roles.contains(.artworkV1) {
-            precondition(artworkConfig != nil, "Artwork role requires artworkConfig")
-        }
     }
 
     deinit {
@@ -382,7 +382,8 @@ public final class SendspinClient {
 
         var playerStateObject: PlayerStateObject?
         if roles.contains(.playerV1) {
-            playerStateObject = PlayerStateObject(
+            // Values are already validated (clamped on set), so this should never throw.
+            playerStateObject = try PlayerStateObject(
                 volume: currentVolume,
                 muted: currentMuted,
                 staticDelayMs: staticDelayMs,

@@ -10,7 +10,7 @@ struct AudioFormatSpecTests {
 
     @Test
     func `AudioFormatSpec encodes with snake_case keys`() throws {
-        let spec = AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let spec = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
 
         let data = try JSONEncoder().encode(spec)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -26,7 +26,7 @@ struct AudioFormatSpecTests {
 
     @Test
     func `AudioFormatSpec round-trips through JSON`() throws {
-        let original = AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24)
+        let original = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24)
 
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(AudioFormatSpec.self, from: data)
@@ -50,7 +50,7 @@ struct AudioFormatSpecTests {
     @Test
     func `AudioFormatSpec supports all codecs`() throws {
         for codec in [AudioCodec.opus, .flac, .pcm] {
-            let spec = AudioFormatSpec(codec: codec, channels: 2, sampleRate: 48_000, bitDepth: 16)
+            let spec = try AudioFormatSpec(codec: codec, channels: 2, sampleRate: 48_000, bitDepth: 16)
             let data = try JSONEncoder().encode(spec)
             let decoded = try JSONDecoder().decode(AudioFormatSpec.self, from: data)
             #expect(decoded.codec == codec)
@@ -142,7 +142,7 @@ struct AudioFormatSpecTests {
     @Test
     func `AudioFormatSpec accepts boundary values`() throws {
         // Upper bounds
-        let specMax = AudioFormatSpec(
+        let specMax = try AudioFormatSpec(
             codec: .pcm,
             channels: AudioFormatSpec.maxChannels,
             sampleRate: AudioFormatSpec.maxSampleRate,
@@ -155,7 +155,7 @@ struct AudioFormatSpecTests {
         #expect(decodedMax.bitDepth == 32)
 
         // Lower bounds
-        let specMin = AudioFormatSpec(codec: .pcm, channels: 1, sampleRate: 1, bitDepth: 16)
+        let specMin = try AudioFormatSpec(codec: .pcm, channels: 1, sampleRate: 1, bitDepth: 16)
         let dataMin = try JSONEncoder().encode(specMin)
         let decodedMin = try JSONDecoder().decode(AudioFormatSpec.self, from: dataMin)
         #expect(decodedMin.channels == 1)
@@ -165,50 +165,77 @@ struct AudioFormatSpecTests {
     @Test
     func `AudioFormatSpec accepts all supported bit depths`() throws {
         for bitDepth in AudioFormatSpec.supportedBitDepths.sorted() {
-            let spec = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: bitDepth)
+            let spec = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: bitDepth)
             let data = try JSONEncoder().encode(spec)
             let decoded = try JSONDecoder().decode(AudioFormatSpec.self, from: data)
             #expect(decoded.bitDepth == bitDepth)
         }
     }
 
-    // Note: precondition failures in the programmatic init cannot be tested in
-    // Swift Testing. The Decodable path above exercises the same validate() logic.
+    // MARK: - Init validation (ConfigurationError)
+
+    @Test
+    func `AudioFormatSpec init rejects zero channels`() {
+        #expect(throws: ConfigurationError.self) {
+            try AudioFormatSpec(codec: .pcm, channels: 0, sampleRate: 48_000, bitDepth: 16)
+        }
+    }
+
+    @Test
+    func `AudioFormatSpec init rejects negative channels`() {
+        #expect(throws: ConfigurationError.self) {
+            try AudioFormatSpec(codec: .pcm, channels: -1, sampleRate: 48_000, bitDepth: 16)
+        }
+    }
+
+    @Test
+    func `AudioFormatSpec init rejects zero sample rate`() {
+        #expect(throws: ConfigurationError.self) {
+            try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 0, bitDepth: 16)
+        }
+    }
+
+    @Test
+    func `AudioFormatSpec init rejects unsupported bit depth`() {
+        #expect(throws: ConfigurationError.self) {
+            try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 8)
+        }
+    }
 
     // MARK: - effectiveOutputBitDepth
 
     @Test
-    func `effectiveOutputBitDepth returns 32 for FLAC regardless of bit depth`() {
+    func `effectiveOutputBitDepth returns 32 for FLAC regardless of bit depth`() throws {
         // FLAC always decodes to Int32 via libFLAC
-        let spec16 = AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16)
-        let spec24 = AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24)
-        let spec32 = AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 32)
+        let spec16 = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        let spec24 = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24)
+        let spec32 = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 32)
         #expect(spec16.effectiveOutputBitDepth == 32)
         #expect(spec24.effectiveOutputBitDepth == 32)
         #expect(spec32.effectiveOutputBitDepth == 32)
     }
 
     @Test
-    func `effectiveOutputBitDepth returns 32 for Opus regardless of bit depth`() {
-        let spec = AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+    func `effectiveOutputBitDepth returns 32 for Opus regardless of bit depth`() throws {
+        let spec = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
         #expect(spec.effectiveOutputBitDepth == 32)
     }
 
     @Test
-    func `effectiveOutputBitDepth returns 32 for 24-bit PCM`() {
-        let spec = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
+    func `effectiveOutputBitDepth returns 32 for 24-bit PCM`() throws {
+        let spec = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
         #expect(spec.effectiveOutputBitDepth == 32)
     }
 
     @Test
-    func `effectiveOutputBitDepth passes through 16-bit PCM`() {
-        let spec = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+    func `effectiveOutputBitDepth passes through 16-bit PCM`() throws {
+        let spec = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         #expect(spec.effectiveOutputBitDepth == 16)
     }
 
     @Test
-    func `effectiveOutputBitDepth passes through 32-bit PCM`() {
-        let spec = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 32)
+    func `effectiveOutputBitDepth passes through 32-bit PCM`() throws {
+        let spec = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 32)
         #expect(spec.effectiveOutputBitDepth == 32)
     }
 }

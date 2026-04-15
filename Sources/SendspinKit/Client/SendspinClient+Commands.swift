@@ -114,7 +114,7 @@ public extension SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async throws {
-        let request = ArtworkFormatRequest(
+        let request = try ArtworkFormatRequest(
             channel: channel,
             source: source,
             format: format,

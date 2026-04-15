@@ -18,23 +18,6 @@ public enum ImageFormat: String, Codable, Sendable, Hashable {
     case bmp
 }
 
-/// Dimension validation error for artwork channels.
-private enum DimensionError: Error, CustomStringConvertible {
-    case widthMustBePositive(Int)
-    case heightMustBePositive(Int)
-    case widthMustBeNonNegative(Int)
-    case heightMustBeNonNegative(Int)
-
-    var description: String {
-        switch self {
-        case let .widthMustBePositive(v): "media_width must be positive for active channels, got \(v)"
-        case let .heightMustBePositive(v): "media_height must be positive for active channels, got \(v)"
-        case let .widthMustBeNonNegative(v): "media_width must be non-negative, got \(v)"
-        case let .heightMustBeNonNegative(v): "media_height must be non-negative, got \(v)"
-        }
-    }
-}
-
 /// Configuration for a single artwork channel in client/hello.
 /// Array index determines the channel number (0-3) and corresponding binary message type (8-11).
 public struct ArtworkChannel: Codable, Sendable, Hashable {
@@ -48,10 +31,11 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
     /// Max height in pixels
     public let mediaHeight: Int
 
-    /// A disabled channel placeholder. Format is `.jpeg` by arbitrary convention;
-    /// any format is valid since the server ignores it for `source: .none` channels.
-    /// Safe: `.none` source allows zero dimensions in `validateDimensions()`.
-    public static let disabled = ArtworkChannel(source: .none, format: .jpeg, mediaWidth: 0, mediaHeight: 0)
+    // A disabled channel placeholder. Format is `.jpeg` by arbitrary convention;
+    // any format is valid since the server ignores it for `source: .none` channels.
+    // Uses `try!` because `.none` source with zero dimensions always passes validation.
+    // swiftlint:disable:next force_try
+    public static let disabled = try! ArtworkChannel(source: .none, format: .jpeg, mediaWidth: 0, mediaHeight: 0)
 
     enum CodingKeys: String, CodingKey {
         case source
@@ -65,26 +49,23 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
     /// Active channels require positive dimensions; disabled channels (`.none`) allow zero.
     private static func validateDimensions(
         source: ArtworkSource, width: Int, height: Int
-    ) throws(DimensionError) {
+    ) throws(ConfigurationError) {
         if source != .none {
-            guard width > 0 else { throw DimensionError.widthMustBePositive(width) }
-            guard height > 0 else { throw DimensionError.heightMustBePositive(height) }
+            guard width > 0 else { throw .artworkDimensionNotPositive(field: "media_width", value: width) }
+            guard height > 0 else { throw .artworkDimensionNotPositive(field: "media_height", value: height) }
         } else {
-            guard width >= 0 else { throw DimensionError.widthMustBeNonNegative(width) }
-            guard height >= 0 else { throw DimensionError.heightMustBeNonNegative(height) }
+            guard width >= 0 else { throw .artworkDimensionNegative(field: "media_width", value: width) }
+            guard height >= 0 else { throw .artworkDimensionNegative(field: "media_height", value: height) }
         }
     }
 
     /// Creates an artwork channel configuration.
     ///
-    /// - Precondition: Active channels (`source` != `.none`) require positive dimensions.
+    /// - Throws: ``ConfigurationError`` if dimensions are invalid for the source type.
+    ///   Active channels (`source` != `.none`) require positive dimensions.
     ///   Disabled channels (`.none`) allow zero dimensions.
-    public init(source: ArtworkSource, format: ImageFormat, mediaWidth: Int, mediaHeight: Int) {
-        do {
-            try Self.validateDimensions(source: source, width: mediaWidth, height: mediaHeight)
-        } catch {
-            preconditionFailure("\(error)")
-        }
+    public init(source: ArtworkSource, format: ImageFormat, mediaWidth: Int, mediaHeight: Int) throws(ConfigurationError) {
+        try Self.validateDimensions(source: source, width: mediaWidth, height: mediaHeight)
         self.source = source
         self.format = format
         self.mediaWidth = mediaWidth
@@ -102,7 +83,10 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
             try Self.validateDimensions(source: source, width: width, height: height)
         } catch {
             throw DecodingError.dataCorrupted(
-                DecodingError.Context(codingPath: container.codingPath, debugDescription: "\(error)")
+                DecodingError.Context(
+                    codingPath: container.codingPath,
+                    debugDescription: error.errorDescription ?? "\(error)"
+                )
             )
         }
 

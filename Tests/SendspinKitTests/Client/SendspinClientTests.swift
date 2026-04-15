@@ -5,15 +5,15 @@ import Testing
 @MainActor
 struct SendspinClientTests {
     @Test
-    func `Initialize client with player role`() {
-        let config = PlayerConfiguration(
+    func `Initialize client with player role`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -25,15 +25,15 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `Connect creates transport and starts connecting`() {
-        let config = PlayerConfiguration(
+    func `Connect creates transport and starts connecting`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -47,15 +47,15 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `SendspinClient has AudioScheduler after connect`() {
-        let config = PlayerConfiguration(
+    func `SendspinClient has AudioScheduler after connect`() throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -72,8 +72,8 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `enterExternalSource throws notConnected when disconnected`() async {
-        let client = SendspinClient(
+    func `enterExternalSource throws notConnected when disconnected`() async throws {
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -91,8 +91,8 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `exitExternalSource throws notConnected when disconnected`() async {
-        let client = SendspinClient(
+    func `exitExternalSource throws notConnected when disconnected`() async throws {
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],
@@ -122,15 +122,15 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `AudioScheduler is cleared on disconnect`() async {
-        let config = PlayerConfiguration(
+    func `AudioScheduler is cleared on disconnect`() async throws {
+        let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
             roles: [.playerV1],

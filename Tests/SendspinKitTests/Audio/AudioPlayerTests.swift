@@ -15,7 +15,7 @@ struct AudioPlayerTests {
     func `Configure audio format`() async throws {
         let player = AudioPlayer()
 
-        let format = AudioFormatSpec(
+        let format = try AudioFormatSpec(
             codec: .pcm,
             channels: 2,
             sampleRate: 48_000,
@@ -32,7 +32,7 @@ struct AudioPlayerTests {
     func `Play PCM data with timestamp`() async throws {
         let player = AudioPlayer()
 
-        let format = AudioFormatSpec(
+        let format = try AudioFormatSpec(
             codec: .pcm,
             channels: 2,
             sampleRate: 48_000,
@@ -60,7 +60,7 @@ struct AudioPlayerTests {
 
         let player = AudioPlayer()
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         let pcmData = Data(repeating: 0, count: 1_024)
@@ -101,7 +101,7 @@ struct AudioPlayerTests {
     func `Decode method still available`() async throws {
         let player = AudioPlayer()
 
-        let format = AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.start(format: format, codecHeader: nil)
 
         // Decode should work for PCM passthrough

@@ -5,7 +5,7 @@ import Testing
 struct MessageEncodingTests {
     @Test
     func `ClientHello encodes with versioned roles`() throws {
-        let payload = ClientHelloPayload(
+        let payload = try ClientHelloPayload(
             clientId: "test-client",
             name: "Test Client",
             deviceInfo: nil,
@@ -66,7 +66,7 @@ struct MessageEncodingTests {
 
     @Test
     func `ClientState encodes with client state and player state object`() throws {
-        let playerState = PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
+        let playerState = try PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
         let payload = ClientStatePayload(state: .synchronized, player: playerState)
         let message = ClientStateMessage(payload: payload)
 
