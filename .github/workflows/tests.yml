@@ -43,7 +43,8 @@ jobs:
       - name: Run all tests with coverage
         run: swift test --enable-code-coverage
 
-      - name: Generate LCOV report
+      - name: Locate test binary and profdata
+        id: artifacts
         run: |
           BIN=$(find .build -path "*/SendspinKitPackageTests.xctest/Contents/MacOS/SendspinKitPackageTests" -type f | head -1)
           if [ -z "$BIN" ]; then
@@ -52,29 +53,47 @@ jobs:
             exit 1
           fi
           PROFDATA=$(find .build -name "default.profdata" -type f | head -1)
+          if [ -z "$PROFDATA" ]; then
+            echo "::error::Could not find default.profdata"
+            exit 1
+          fi
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
+          echo "profdata=$PROFDATA" >> "$GITHUB_OUTPUT"
+
+      - name: Generate LCOV report
+        run: |
           xcrun llvm-cov export \
             -format="lcov" \
-            "$BIN" \
-            -instr-profile "$PROFDATA" \
+            "${{ steps.artifacts.outputs.bin }}" \
+            -instr-profile "${{ steps.artifacts.outputs.profdata }}" \
             > coverage.lcov
 
       - name: Generate coverage summary
         id: coverage
         run: |
-          BIN=$(find .build -path "*/SendspinKitPackageTests.xctest/Contents/MacOS/SendspinKitPackageTests" -type f | head -1)
-          PROFDATA=$(find .build -name "default.profdata" -type f | head -1)
+          # JSON summary is mechanically parseable — no awk on llvm-cov's
+          # text table format, which varies across toolchain versions.
+          xcrun llvm-cov export \
+            -format="text" \
+            -summary-only \
+            "${{ steps.artifacts.outputs.bin }}" \
+            -instr-profile "${{ steps.artifacts.outputs.profdata }}" \
+            > coverage-summary.json
 
+          LINE_PCT=$(python3 -c "import json; print(round(json.load(open('coverage-summary.json'))['data'][0]['totals']['lines']['percent'], 2))")
+          FUNC_PCT=$(python3 -c "import json; print(round(json.load(open('coverage-summary.json'))['data'][0]['totals']['functions']['percent'], 2))")
+          echo "line_coverage=$LINE_PCT" >> "$GITHUB_OUTPUT"
+          echo "func_coverage=$FUNC_PCT" >> "$GITHUB_OUTPUT"
+
+          # Also generate the human-readable table for the step summary
           xcrun llvm-cov report \
-            "$BIN" \
-            -instr-profile "$PROFDATA" \
+            "${{ steps.artifacts.outputs.bin }}" \
+            -instr-profile "${{ steps.artifacts.outputs.profdata }}" \
             > coverage-report.txt
-
-          COVERAGE=$(grep TOTAL coverage-report.txt | awk '{print $NF}')
-          echo "coverage=$COVERAGE" >> "$GITHUB_OUTPUT"
 
           echo "### Test Coverage Report" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
-          echo "**Overall Coverage: $COVERAGE**" >> "$GITHUB_STEP_SUMMARY"
+          echo "**Line Coverage: ${LINE_PCT}% · Function Coverage: ${FUNC_PCT}%**" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo '```' >> "$GITHUB_STEP_SUMMARY"
           cat coverage-report.txt >> "$GITHUB_STEP_SUMMARY"
@@ -82,14 +101,14 @@ jobs:
 
       - name: Check coverage threshold
         run: |
-          COVERAGE=$(echo "${{ steps.coverage.outputs.coverage }}" | sed 's/%//')
+          LINE_PCT="${{ steps.coverage.outputs.line_coverage }}"
           THRESHOLD=40
 
-          if (( $(echo "$COVERAGE < $THRESHOLD" | bc -l) )); then
-            echo "::error::Coverage ${COVERAGE}% is below threshold ${THRESHOLD}%"
-            exit 1
+          if python3 -c "exit(0 if float('$LINE_PCT') >= $THRESHOLD else 1)"; then
+            echo "Line coverage ${LINE_PCT}% meets threshold ${THRESHOLD}%"
           else
-            echo "Coverage ${COVERAGE}% meets threshold ${THRESHOLD}%"
+            echo "::error::Line coverage ${LINE_PCT}% is below threshold ${THRESHOLD}%"
+            exit 1
           fi
 
       - name: Upload coverage to Codecov
@@ -105,13 +124,14 @@ jobs:
         with:
           script: |
             const fs = require('fs');
-            const coverage = '${{ steps.coverage.outputs.coverage }}';
+            const linePct = '${{ steps.coverage.outputs.line_coverage }}';
+            const funcPct = '${{ steps.coverage.outputs.func_coverage }}';
             const report = fs.readFileSync('coverage-report.txt', 'utf8');
 
             const body = [
               `## Test Coverage Report`,
               ``,
-              `**Overall Coverage: ${coverage}**`,
+              `**Line Coverage: ${linePct}% · Function Coverage: ${funcPct}%**`,
               ``,
               `<details>`,
               `<summary>Detailed Coverage Report</summary>`,
@@ -137,4 +157,5 @@ jobs:
           path: |
             coverage.lcov
             coverage-report.txt
+            coverage-summary.json
           retention-days: 30
