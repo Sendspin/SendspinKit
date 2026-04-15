@@ -181,6 +181,7 @@ public actor ServerDiscovery {
                     connection.cancel()
                 }
             case .failed:
+                Log.discovery.error("Resolve connection failed for \(name)")
                 connection.cancel()
             case .cancelled:
                 // Terminal state for all paths (.ready → cancel, .failed → cancel,
@@ -248,6 +249,16 @@ public actor ServerDiscovery {
         return "[\(String(cString: formatted))]"
     }
 
+    /// Strip the interface scope ID suffix (e.g. "%en0") from an IP address string.
+    /// NWEndpoint's `debugDescription` includes the scope, which makes URLs invalid
+    /// because `%` is a reserved character in RFC 3986.
+    static func stripInterfaceScope(_ address: String) -> String {
+        if let percentIndex = address.firstIndex(of: "%") {
+            return String(address[..<percentIndex])
+        }
+        return address
+    }
+
     private func extractServerInfo(from connection: NWConnection, result: NWBrowser.Result, name: String) {
         guard case .service = result.endpoint else { return }
 
@@ -259,7 +270,9 @@ public actor ServerDiscovery {
             case let .name(hostName, _):
                 hostname = hostName
             case let .ipv4(address):
-                hostname = address.debugDescription
+                // debugDescription may include a scope ID suffix (e.g. "192.168.1.5%en0")
+                // which makes the URL invalid. Strip everything after '%'.
+                hostname = Self.stripInterfaceScope(address.debugDescription)
             case let .ipv6(address):
                 guard let formatted = Self.formatIPv6(address) else {
                     Log.discovery.error("Could not format IPv6 address for \(name)")
@@ -284,7 +297,7 @@ public actor ServerDiscovery {
         }
 
         guard let url = URL(string: "ws://\(hostname):\(port)\(path)") else {
-            Log.discovery.error("Could not form URL for \(hostname):\(port)\(path)")
+            Log.discovery.error("Could not form URL for \(hostname, privacy: .public):\(port)\(path, privacy: .public)")
             return
         }
 

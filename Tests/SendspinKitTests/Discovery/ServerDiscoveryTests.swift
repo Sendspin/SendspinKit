@@ -76,6 +76,32 @@ struct ServerDiscoveryTests {
         #expect(count == 0)
     }
 
+    // MARK: - Interface scope stripping
+
+    @Test
+    func stripInterfaceScope_removesPercentSuffix() {
+        // IPv4 with interface scope (common on macOS)
+        #expect(ServerDiscovery.stripInterfaceScope("192.168.1.181%en0") == "192.168.1.181")
+    }
+
+    @Test
+    func stripInterfaceScope_preservesBareAddress() {
+        // No scope — should pass through unchanged
+        #expect(ServerDiscovery.stripInterfaceScope("192.168.1.181") == "192.168.1.181")
+    }
+
+    @Test
+    func stripInterfaceScope_handlesIPv6WithScope() {
+        #expect(ServerDiscovery.stripInterfaceScope("fe80::1%en0") == "fe80::1")
+    }
+
+    @Test
+    func stripInterfaceScope_handlesEmptyString() {
+        #expect(ServerDiscovery.stripInterfaceScope("") == "")
+    }
+
+    // MARK: - TerminatedError
+
     @Test
     func terminatedError_hasMeaningfulDescription() {
         let error = TerminatedError()
