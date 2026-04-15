@@ -2,6 +2,7 @@
 // ABOUTME: Format: [type: uint8][timestamp: int64 big-endian][data: bytes...]
 
 import Foundation
+import os
 
 /// Binary message type ID allocation per Sendspin spec:
 /// - 0-3: Reserved
@@ -55,6 +56,7 @@ struct BinaryMessage {
 
         let typeValue = data[0]
         guard let type = BinaryMessageType(rawValue: typeValue) else {
+            Log.client.warning("Unrecognized binary message type ID: \(typeValue)")
             return nil
         }
 

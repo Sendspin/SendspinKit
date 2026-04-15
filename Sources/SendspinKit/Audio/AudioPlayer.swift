@@ -343,6 +343,7 @@ actor AudioPlayer {
             bitDepth: format.bitDepth,
             header: codecHeader
         )
+        currentFormat = format
     }
 
     /// Decode compressed audio data to PCM
