@@ -184,7 +184,7 @@ struct ClientIntegrationTests {
     // MARK: 1. Rollback on external source failure
 
     @Test
-    func `enter external source rolls back on send failure`() async throws {
+    func enterExternalSource_rollsBackOnSendFailure() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -202,7 +202,7 @@ struct ClientIntegrationTests {
     // MARK: 2. streamCleared event
 
     @Test
-    func `stream clear injects stream cleared event`() async throws {
+    func streamClear_injectsStreamClearedEvent() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -225,7 +225,7 @@ struct ClientIntegrationTests {
     // MARK: 3. lastPlayedServerChanged event
 
     @Test
-    func `group update with playing emits last played server changed`() async throws {
+    func groupUpdate_withPlayingEmitsLastPlayedServerChanged() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -251,7 +251,7 @@ struct ClientIntegrationTests {
     // MARK: 4. setRepeatMode and setShuffle wire format
 
     @Test
-    func `set repeat mode one sends correct command`() async throws {
+    func setRepeatMode_oneSendsCorrectCommand() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -267,7 +267,7 @@ struct ClientIntegrationTests {
     }
 
     @Test
-    func `set shuffle true sends shuffle command`() async throws {
+    func setShuffle_trueSendsShuffleCommand() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -285,7 +285,7 @@ struct ClientIntegrationTests {
     // MARK: 5. sendFailed wrapping
 
     @Test
-    func `play throws send failed when transport fails`() async throws {
+    func play_throwsSendFailedWhenTransportFails() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -305,7 +305,7 @@ struct ClientIntegrationTests {
     // MARK: 6. activeRoles populated from server/hello
 
     @Test
-    func `server hello populates active roles`() async throws {
+    func serverHello_populatesActiveRoles() async throws {
         let client = try makeTestClient()
         let mock = MockTransport()
 
@@ -340,7 +340,7 @@ struct ClientIntegrationTests {
     // MARK: 7. rawAudioChunk emitted for chunks arriving before stream/start
 
     @Test
-    func `raw audio chunks emitted even when arriving before stream start`() async throws {
+    func rawAudioChunks_emittedEvenWhenArrivingBeforeStreamStart() async throws {
         // Regression test: binary and text messages are consumed by parallel tasks
         // in the message loop. If the binary task processes audio chunks before the
         // text task processes stream/start, shouldEmitRawAudio must already be true
@@ -432,7 +432,7 @@ struct ClientIntegrationTests {
     // MARK: 8. connect throws alreadyConnected
 
     @Test
-    func `connect throws already connected when connected`() async throws {
+    func connect_throwsAlreadyConnectedWhenConnected() async throws {
         let client = try makeTestClient()
         _ = try await connectClient(client)
 

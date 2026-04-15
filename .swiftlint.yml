@@ -69,11 +69,7 @@ identifier_name:
     - a   # test fixtures (equality/hashing tests)
     - b
     - c
-  # Swift Testing uses backtick-quoted descriptive function names (`Descriptive name`).
-  # SwiftLint can't distinguish these from regular functions, so we disable the
-  # "starts with lowercase" check globally. Regular function naming is enforced
-  # by code review.
-  validates_start_with_lowercase: off
+  validates_start_with_lowercase: warning
 
 # Trailing commas - never allow them (matches SwiftFormat config)
 trailing_comma:
@@ -87,3 +83,14 @@ large_tuple:
 # Force casts are acceptable in test assertions (JSON parsing, etc.)
 force_cast:
   severity: warning
+
+# Custom rules
+custom_rules:
+  # Backtick-quoted function names with spaces require Swift 6.2+.
+  # CI runs Swift 6.1, so these will fail to parse there.
+  # Remove this rule when the CI toolchain is bumped to 6.2+.
+  no_backtick_space_func_names:
+    name: "No backtick function names with spaces"
+    regex: 'func\s+`[^`]*\s[^`]*`\s*\('
+    message: "Backtick function names with spaces require Swift 6.2+. Use camelCase identifiers instead."
+    severity: error

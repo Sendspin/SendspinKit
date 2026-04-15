@@ -4,7 +4,7 @@ import Testing
 
 struct AudioPlayerTests {
     @Test
-    func `Initialize AudioPlayer with dependencies`() async {
+    func initializeAudioPlayerWithDependencies() async {
         let player = AudioPlayer()
 
         let isPlaying = await player.isPlaying
@@ -12,7 +12,7 @@ struct AudioPlayerTests {
     }
 
     @Test
-    func `Configure audio format`() async throws {
+    func configureAudioFormat() async throws {
         let player = AudioPlayer()
 
         let format = try AudioFormatSpec(
@@ -29,7 +29,7 @@ struct AudioPlayerTests {
     }
 
     @Test
-    func `Play PCM data with timestamp`() async throws {
+    func playPCMDataWithTimestamp() async throws {
         let player = AudioPlayer()
 
         let format = try AudioFormatSpec(
@@ -53,7 +53,7 @@ struct AudioPlayerTests {
     }
 
     @Test
-    func `Verify old enqueue method removed`() async throws {
+    func verifyOldEnqueueMethodRemoved() async throws {
         // This test documents that the old enqueue(chunk:) method has been removed
         // in favor of the AudioScheduler-based architecture.
         // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM(_:serverTimestamp:)
@@ -72,13 +72,13 @@ struct AudioPlayerTests {
     // MARK: - Perceptual volume
 
     @Test
-    func `Perceptual gain at boundaries`() {
+    func perceptualGainAtBoundaries() {
         #expect(AudioPlayer.perceptualGain(0.0) == 0.0)
         #expect(AudioPlayer.perceptualGain(1.0) == 1.0)
     }
 
     @Test
-    func `Perceptual gain is non-linear`() {
+    func perceptualGainIsNonLinear() {
         let halfLinear = AudioPlayer.perceptualGain(0.5)
         // (0.5)^1.5 ≈ 0.354 — quieter than linear 0.5
         #expect(halfLinear < 0.5)
@@ -88,7 +88,7 @@ struct AudioPlayerTests {
     }
 
     @Test
-    func `Perceptual gain is monotonically increasing`() {
+    func perceptualGainIsMonotonicallyIncreasing() {
         var previous: Float = -1.0
         for i in 0 ... 100 {
             let gain = AudioPlayer.perceptualGain(Float(i) / 100.0)
@@ -98,7 +98,7 @@ struct AudioPlayerTests {
     }
 
     @Test
-    func `Decode method still available`() async throws {
+    func decodeMethodStillAvailable() async throws {
         let player = AudioPlayer()
 
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)

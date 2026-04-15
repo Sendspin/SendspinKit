@@ -26,7 +26,7 @@ struct AudioProcessCallbackTests {
     // MARK: - Callback invocation
 
     @Test
-    func `Callback is invoked during playback`() async throws {
+    func callbackIsInvokedDuringPlayback() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -52,7 +52,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `Callback receives correct format for 16-bit stereo`() async throws {
+    func callbackReceivesCorrectFormatFor16BitStereo() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -82,7 +82,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `Callback receives 32-bit effective format for 24-bit source`() async throws {
+    func callbackReceives32BitEffectiveFormatFor24BitSource() async throws {
         let invoked = CallbackRecorder()
 
         let format24 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 24)
@@ -111,7 +111,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `Callback receives mutable buffer`() async throws {
+    func callbackReceivesMutableBuffer() async throws {
         let modified = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -137,7 +137,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `Callback fires even with empty ring buffer (silence)`() async throws {
+    func callbackFiresEvenWithEmptyRingBufferSilence() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -157,7 +157,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `Buffer byte count matches AudioQueue buffer size`() async throws {
+    func bufferByteCountMatchesAudioQueueBufferSize() async throws {
         let invoked = CallbackRecorder()
 
         let player = AudioPlayer(
@@ -190,7 +190,7 @@ struct AudioProcessCallbackTests {
     // MARK: - No callback configured
 
     @Test
-    func `Player works fine without a process callback`() async throws {
+    func playerWorksFineWithoutAProcessCallback() async throws {
         let player = AudioPlayer(
             // no processCallback
         )
@@ -212,7 +212,7 @@ struct AudioProcessCallbackTests {
     // MARK: - PlayerConfiguration integration
 
     @Test
-    func `PlayerConfiguration defaults to nil processCallback`() throws {
+    func playerConfiguration_defaultsToNilProcessCallback() throws {
         let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [Self.stereo16]
@@ -221,7 +221,7 @@ struct AudioProcessCallbackTests {
     }
 
     @Test
-    func `PlayerConfiguration stores processCallback`() throws {
+    func playerConfiguration_storesProcessCallback() throws {
         let recorder = CallbackRecorder()
         let config = try PlayerConfiguration(
             bufferCapacity: 1_024,

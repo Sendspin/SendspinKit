@@ -75,7 +75,7 @@ struct AudioPipelineIntegrationTests {
     // MARK: - Full pipeline: binary frame → BinaryMessage → PCMDecoder → Data
 
     @Test
-    func `16-bit PCM: binary frame → parsed message → decoded samples match source signal`() throws {
+    func pcm16Bit_binaryFrameParsedMessageDecodedSamplesMatchSourceSignal() throws {
         // 1. Generate known audio signal
         let pcmBytes = TestSignal.sineWave16BitStereo(
             sampleRate: 48_000,
@@ -119,7 +119,7 @@ struct AudioPipelineIntegrationTests {
     }
 
     @Test
-    func `24-bit PCM: binary frame → parsed message → decoded samples match source signal`() throws {
+    func pcm24Bit_binaryFrameParsedMessageDecodedSamplesMatchSourceSignal() throws {
         let pcmBytes = TestSignal.sineWave24BitStereo(
             sampleRate: 48_000,
             durationMs: 25
@@ -145,7 +145,7 @@ struct AudioPipelineIntegrationTests {
     // MARK: - Sequential chunks (simulating a stream)
 
     @Test
-    func `sequential 25ms chunks maintain timestamp continuity`() throws {
+    func sequential25msChunksMaintainTimestampContinuity() throws {
         let chunkDurationUs: Int64 = 25_000
         let chunkCount = 10
         let decoder = PCMDecoder(bitDepth: 16, channels: 2)
@@ -182,7 +182,7 @@ struct AudioPipelineIntegrationTests {
     // MARK: - Edge cases
 
     @Test
-    func `binary frame with zero timestamp`() throws {
+    func binaryFrameWithZeroTimestamp() throws {
         let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48_000, durationMs: 1)
         let frameData = TestSignal.packBinaryFrame(
             audioData: pcmBytes,
@@ -194,7 +194,7 @@ struct AudioPipelineIntegrationTests {
     }
 
     @Test
-    func `binary frame with large timestamp (hours of playback)`() throws {
+    func binaryFrameWithLargeTimestampHoursOfPlayback() throws {
         let threeHoursUs: Int64 = 3 * 3_600 * 1_000_000
         let pcmBytes = TestSignal.sineWave16BitStereo(sampleRate: 48_000, durationMs: 1)
         let frameData = TestSignal.packBinaryFrame(

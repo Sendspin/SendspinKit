@@ -3,7 +3,7 @@ import Testing
 
 struct ClockSynchronizerTests {
     @Test
-    func `Calculate offset from server time`() async {
+    func calculateOffsetFromServerTime() async {
         let sync = ClockSynchronizer()
 
         // Simulate NTP exchange where server clock is 100 microseconds ahead
@@ -33,7 +33,7 @@ struct ClockSynchronizerTests {
     }
 
     @Test
-    func `Use median of multiple samples`() async {
+    func useMedianOfMultipleSamples() async {
         let sync = ClockSynchronizer()
 
         // Add samples where server is consistently ahead by ~100, with one outlier
@@ -63,7 +63,7 @@ struct ClockSynchronizerTests {
     }
 
     @Test
-    func `Convert server time to local time`() async {
+    func convertServerTimeToLocalTime() async {
         let sync = ClockSynchronizer()
 
         // Server ahead by 200, symmetric 100us delays
@@ -86,7 +86,7 @@ struct ClockSynchronizerTests {
     }
 
     @Test
-    func `Snapshot produces identical conversions as actor methods`() async throws {
+    func snapshotProducesIdenticalConversionsAsActorMethods() async throws {
         let sync = ClockSynchronizer()
 
         // Feed enough samples to get a stable filter with drift
@@ -131,7 +131,7 @@ struct ClockSynchronizerTests {
     }
 
     @Test
-    func `Snapshot is nil before first sync`() async {
+    func snapshotIsNilBeforeFirstSync() async {
         let sync = ClockSynchronizer()
         let snap = await sync.snapshot()
         #expect(snap == nil)

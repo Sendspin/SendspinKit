@@ -18,7 +18,7 @@ struct BinaryMessageTests {
     // MARK: - Valid messages
 
     @Test
-    func `Decode audio chunk binary message`() throws {
+    func decodeAudioChunkBinaryMessage() throws {
         let audioData = Data([0x01, 0x02, 0x03, 0x04])
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
@@ -34,7 +34,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Decode artwork binary message`() throws {
+    func decodeArtworkBinaryMessage() throws {
         let imageData = Data([0xFF, 0xD8, 0xFF, 0xE0]) // JPEG header
         let frame = Self.makeFrame(
             type: BinaryMessageType.artworkChannel0.rawValue,
@@ -55,7 +55,7 @@ struct BinaryMessageTests {
         (BinaryMessageType.artworkChannel2, 2),
         (BinaryMessageType.artworkChannel3, 3)
     ])
-    func `Decode artwork channel`(type: BinaryMessageType, expectedChannel: Int) throws {
+    func decodeArtworkChannel(type: BinaryMessageType, expectedChannel: Int) throws {
         let frame = Self.makeFrame(
             type: type.rawValue,
             timestamp: 1_000_000,
@@ -68,7 +68,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Decode visualizer data message`() throws {
+    func decodeVisualizerDataMessage() throws {
         let fftData = Data([0x10, 0x20, 0x30, 0x40])
         let frame = Self.makeFrame(
             type: BinaryMessageType.visualizerData.rawValue,
@@ -84,7 +84,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Decode message with empty payload`() throws {
+    func decodeMessageWithEmptyPayload() throws {
         // Per spec: empty artwork message clears the display
         let frame = Self.makeFrame(
             type: BinaryMessageType.artworkChannel0.rawValue,
@@ -98,7 +98,7 @@ struct BinaryMessageTests {
     // MARK: - artworkChannel computed property
 
     @Test
-    func `artworkChannel returns correct index for artwork types`() {
+    func artworkChannel_returnsCorrectIndexForArtworkTypes() {
         #expect(BinaryMessageType.artworkChannel0.artworkChannel == 0)
         #expect(BinaryMessageType.artworkChannel1.artworkChannel == 1)
         #expect(BinaryMessageType.artworkChannel2.artworkChannel == 2)
@@ -106,7 +106,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `artworkChannel returns nil for non-artwork types`() {
+    func artworkChannel_returnsNilForNonArtworkTypes() {
         #expect(BinaryMessageType.audioChunk.artworkChannel == nil)
         #expect(BinaryMessageType.visualizerData.artworkChannel == nil)
     }
@@ -114,7 +114,7 @@ struct BinaryMessageTests {
     // MARK: - Timestamp edge cases
 
     @Test
-    func `Accept zero timestamp`() throws {
+    func acceptZeroTimestamp() throws {
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: 0
@@ -124,7 +124,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Accept maximum timestamp`() throws {
+    func acceptMaximumTimestamp() throws {
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: Int64.max
@@ -134,7 +134,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Reject negative timestamp`() {
+    func rejectNegativeTimestamp() {
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: -1
@@ -143,7 +143,7 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Reject minimum negative timestamp`() {
+    func rejectMinimumNegativeTimestamp() {
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: Int64.min
@@ -154,13 +154,13 @@ struct BinaryMessageTests {
     // MARK: - Rejection
 
     @Test
-    func `Reject message with unknown type`() {
+    func rejectMessageWithUnknownType() {
         let frame = Self.makeFrame(type: 255, timestamp: 1_000)
         #expect(BinaryMessage(data: frame) == nil)
     }
 
     @Test(arguments: UInt8(0) ... UInt8(3))
-    func `Reject reserved type ID`(reservedType: UInt8) {
+    func rejectReservedTypeID(reservedType: UInt8) {
         // Types 0-3 are reserved per spec — 0 is intentionally reserved,
         // not a default/unset sentinel.
         let frame = Self.makeFrame(type: reservedType, timestamp: 1_000)
@@ -168,24 +168,24 @@ struct BinaryMessageTests {
     }
 
     @Test
-    func `Reject empty data`() {
+    func rejectEmptyData() {
         #expect(BinaryMessage(data: Data()) == nil)
     }
 
     @Test
-    func `Reject message shorter than header`() {
+    func rejectMessageShorterThanHeader() {
         let data = Data([0, 1, 2, 3])
         #expect(BinaryMessage(data: data) == nil)
     }
 
     @Test
-    func `Reject message with exactly header size minus one`() {
+    func rejectMessageWithExactlyHeaderSizeMinusOne() {
         let data = Data(repeating: 0, count: BinaryMessage.headerSize - 1)
         #expect(BinaryMessage(data: data) == nil)
     }
 
     @Test
-    func `Accept message with exactly header size (no payload)`() throws {
+    func acceptMessageWithExactlyHeaderSizeNoPayload() throws {
         let frame = Self.makeFrame(
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: 1_000_000
@@ -198,7 +198,7 @@ struct BinaryMessageTests {
     // MARK: - Header size
 
     @Test
-    func `Header size matches spec (1 byte type + 8 bytes timestamp)`() {
+    func headerSizeMatchesSpec1ByteTypePlus8BytesTimestamp() {
         // Spec anchor: documents that headerSize is intentionally 9.
         #expect(BinaryMessage.headerSize == 9)
     }

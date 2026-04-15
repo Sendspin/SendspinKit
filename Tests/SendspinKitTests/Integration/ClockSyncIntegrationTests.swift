@@ -7,7 +7,7 @@ import Testing
 
 struct ClockSyncIntegrationTests {
     @Test
-    func `Sync converges over multiple rounds with network jitter`() async throws {
+    func syncConvergesOverMultipleRoundsWithNetworkJitter() async throws {
         let sync = ClockSynchronizer()
 
         // Simulate 10 rounds of clock sync with varying network conditions
@@ -55,7 +55,7 @@ struct ClockSyncIntegrationTests {
     }
 
     @Test
-    func `Time conversion maintains bidirectional accuracy`() async {
+    func timeConversionMaintainsBidirectionalAccuracy() async {
         let sync = ClockSynchronizer()
 
         // Initialize with known offset
@@ -79,7 +79,7 @@ struct ClockSyncIntegrationTests {
     }
 
     @Test
-    func `Handles extreme network jitter gracefully`() async {
+    func handlesExtremeNetworkJitterGracefully() async {
         let sync = ClockSynchronizer()
 
         // Add samples with extreme outliers
@@ -108,7 +108,7 @@ struct ClockSyncIntegrationTests {
     }
 
     @Test
-    func `Clock drift detection over time`() async {
+    func clockDriftDetectionOverTime() async {
         let sync = ClockSynchronizer()
 
         // Simulate clock drift: offset changes gradually over time

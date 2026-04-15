@@ -8,7 +8,7 @@ import Testing
 
 struct ClientAdvertiserTests {
     @Test
-    func `ClientAdvertiser starts and stops without error`() async throws {
+    func clientAdvertiser_startsAndStopsWithoutError() async throws {
         let advertiser = ClientAdvertiser(name: "Test Speaker", port: 18_929, path: "/sendspin")
 
         try await advertiser.start()
@@ -21,7 +21,7 @@ struct ClientAdvertiserTests {
     }
 
     @Test
-    func `ClientAdvertiser defaults match spec recommendations`() async throws {
+    func clientAdvertiser_defaultsMatchSpecRecommendations() async throws {
         // Spec recommends port 8928 and path /sendspin
         let advertiser = ClientAdvertiser()
         // Just verify it can be created with no arguments
@@ -30,7 +30,7 @@ struct ClientAdvertiserTests {
     }
 
     @Test
-    func `ClientAdvertiser ignores double start`() async throws {
+    func clientAdvertiser_ignoresDoubleStart() async throws {
         let advertiser = ClientAdvertiser(name: "Test", port: 18_930)
         try await advertiser.start()
         // Second start should be a no-op, not an error
@@ -41,7 +41,7 @@ struct ClientAdvertiserTests {
     }
 
     @Test
-    func `isTerminated is true after stop`() async throws {
+    func isTerminatedIsTrueAfterStop() async throws {
         let advertiser = ClientAdvertiser(name: "Test", port: 18_931)
         try await advertiser.start()
 
@@ -55,7 +55,7 @@ struct ClientAdvertiserTests {
     }
 
     @Test
-    func `start after stop throws TerminatedError`() async throws {
+    func startAfterStopThrowsTerminatedError() async throws {
         let advertiser = ClientAdvertiser(name: "Test", port: 18_932)
         try await advertiser.start()
         await advertiser.stop()
@@ -66,7 +66,7 @@ struct ClientAdvertiserTests {
     }
 
     @Test
-    func `fresh advertiser is not terminated`() async {
+    func freshAdvertiserIsNotTerminated() async {
         let advertiser = ClientAdvertiser(name: "Test", port: 18_933)
         let isTerminated = await advertiser.isTerminated
         #expect(!isTerminated, "A new advertiser should not be terminated")
@@ -78,7 +78,7 @@ struct MultiServerDecisionTests {
     // Observable behavior is tested through ServerInfo.connectionReason tracking.
 
     @Test
-    func `ServerInfo includes connectionReason and activeRoles`() {
+    func serverInfo_includesConnectionReasonAndActiveRoles() {
         let info = ServerInfo(
             serverId: "server-1",
             name: "Test Server",
@@ -103,7 +103,7 @@ struct MultiServerDecisionTests {
     }
 
     @Test
-    func `ConnectionReason encodes correctly on the wire`() throws {
+    func connectionReason_encodesCorrectlyOnTheWire() throws {
         let payload = ServerHelloPayload(
             serverId: "srv-1",
             name: "Test",
@@ -119,7 +119,7 @@ struct MultiServerDecisionTests {
     }
 
     @Test
-    func `ConnectionReason decodes discovery`() throws {
+    func connectionReason_decodesDiscovery() throws {
         let json = Data("""
         {
             "server_id": "srv-1",
@@ -136,7 +136,7 @@ struct MultiServerDecisionTests {
     }
 
     @Test
-    func `GoodbyeReason another_server encodes correctly`() throws {
+    func goodbyeReason_anotherServerEncodesCorrectly() throws {
         let payload = GoodbyePayload(reason: .anotherServer)
         let encoder = JSONEncoder()
         let data = try encoder.encode(payload)
@@ -147,7 +147,7 @@ struct MultiServerDecisionTests {
 
 struct NWWebSocketTransportTests {
     @Test
-    func `NWWebSocketTransport initializes with connection`() {
+    func nwWebSocketTransport_initializesWithConnection() {
         // We can't easily create a real NWConnection in tests,
         // but we can verify the transport's streams are created
         // and it reports not connected without a real connection.
@@ -158,7 +158,7 @@ struct NWWebSocketTransportTests {
     }
 
     @Test
-    func `WebSocketTransport conforms to SendspinTransport`() {
+    func webSocketTransport_conformsToSendspinTransport() {
         // Verify the existing transport conforms to the protocol
         let _: any SendspinTransport.Type = WebSocketTransport.self
     }

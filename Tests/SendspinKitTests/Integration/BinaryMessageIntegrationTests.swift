@@ -7,7 +7,7 @@ import Testing
 
 struct BinaryMessageIntegrationTests {
     @Test
-    func `Audio chunk with real PCM data`() throws {
+    func audioChunkWithRealPCMData() throws {
         // Simulate 1ms of 48kHz stereo 16-bit PCM audio
         let sampleRate = 48_000
         let channels = 2
@@ -49,7 +49,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `Multiple audio chunks in sequence`() throws {
+    func multipleAudioChunksInSequence() throws {
         let chunkDuration: Int64 = 25_000 // 25ms in microseconds
         var chunks: [BinaryMessage] = []
 
@@ -84,7 +84,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `Artwork JPEG with realistic image data`() throws {
+    func artworkJPEGWithRealisticImageData() throws {
         // Create realistic JPEG header + minimal data
         var jpegData = Data()
 
@@ -136,7 +136,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `All artwork channels simultaneously`() throws {
+    func allArtworkChannelsSimultaneously() throws {
         let artworkTypes: [BinaryMessageType] = [
             .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3
         ]
@@ -171,7 +171,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `Empty artwork message (clear artwork command)`() throws {
+    func emptyArtworkMessageClearArtworkCommand() throws {
         // Per spec, empty artwork message clears the display
         var data = Data()
         data.append(BinaryMessageType.artworkChannel0.rawValue)
@@ -189,7 +189,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `Visualizer data with FFT spectrum`() throws {
+    func visualizerDataWithFFTSpectrum() throws {
         // Simulate FFT spectrum data (32 frequency bins)
         let binCount = 32
         var fftData = Data()
@@ -218,7 +218,7 @@ struct BinaryMessageIntegrationTests {
     }
 
     @Test
-    func `Large audio chunk near buffer limit`() throws {
+    func largeAudioChunkNearBufferLimit() throws {
         // Simulate large compressed audio chunk (100 KB Opus frame)
         let chunkSize = 100_000
         let audioData = Data(repeating: 0xAB, count: chunkSize)

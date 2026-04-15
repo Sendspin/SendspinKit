@@ -4,7 +4,7 @@ import Testing
 
 struct MessageEncodingTests {
     @Test
-    func `ClientHello encodes with versioned roles`() throws {
+    func clientHello_encodesWithVersionedRoles() throws {
         let payload = try ClientHelloPayload(
             clientId: "test-client",
             name: "Test Client",
@@ -36,7 +36,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ServerHello decodes with active_roles and connection_reason`() throws {
+    func serverHello_decodesWithActiveRolesAndConnectionReason() throws {
         let json = """
         {
             "type": "server/hello",
@@ -65,7 +65,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ClientState encodes with client state and player state object`() throws {
+    func clientState_encodesWithClientStateAndPlayerStateObject() throws {
         let playerState = try PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
         let payload = ClientStatePayload(state: .synchronized, player: playerState)
         let message = ClientStateMessage(payload: payload)
@@ -84,7 +84,7 @@ struct MessageEncodingTests {
     // MARK: - client/goodbye
 
     @Test
-    func `ClientGoodbye encodes with shutdown reason`() throws {
+    func clientGoodbye_encodesWithShutdownReason() throws {
         let message = ClientGoodbyeMessage(payload: GoodbyePayload(reason: .shutdown))
 
         let encoder = JSONEncoder()
@@ -95,7 +95,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ClientGoodbye encodes snake_case reasons correctly`() throws {
+    func clientGoodbye_encodesSnakeCaseReasonsCorrectly() throws {
         let encoder = JSONEncoder()
 
         for (reason, expected) in [
@@ -112,7 +112,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ClientGoodbye decodes from JSON`() throws {
+    func clientGoodbye_decodesFromJSON() throws {
         let json = """
         {"type": "client/goodbye", "payload": {"reason": "another_server"}}
         """
@@ -125,7 +125,7 @@ struct MessageEncodingTests {
     // MARK: - stream/clear
 
     @Test
-    func `StreamClear decodes with roles`() throws {
+    func streamClear_decodesWithRoles() throws {
         let json = """
         {"type": "stream/clear", "payload": {"roles": ["player", "visualizer"]}}
         """
@@ -140,7 +140,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `StreamClear decodes without roles (clears all)`() throws {
+    func streamClear_decodesWithoutRolesClearsAll() throws {
         let json = """
         {"type": "stream/clear", "payload": {}}
         """
@@ -153,7 +153,7 @@ struct MessageEncodingTests {
     // MARK: - server/command
 
     @Test
-    func `ServerCommand decodes volume command`() throws {
+    func serverCommand_decodesVolumeCommand() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "volume", "volume": 75}}}
         """
@@ -167,7 +167,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ServerCommand decodes mute command`() throws {
+    func serverCommand_decodesMuteCommand() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "mute", "mute": true}}}
         """
@@ -180,7 +180,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ServerCommand decodes set_static_delay command`() throws {
+    func serverCommand_decodesSetStaticDelayCommand() throws {
         let json = """
         {"type": "server/command", "payload": {"player": {"command": "set_static_delay", "static_delay_ms": 250}}}
         """
@@ -195,7 +195,7 @@ struct MessageEncodingTests {
     // MARK: - server/state
 
     @Test
-    func `ServerState decodes metadata with null fields as .null`() throws {
+    func serverState_decodesMetadataWithNullFieldsAsNull() throws {
         // When the server sends explicit null, it means "clear this field"
         let json = """
         {
@@ -223,7 +223,7 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func `ServerState decodes metadata with absent fields as .absent`() throws {
+    func serverState_decodesMetadataWithAbsentFieldsAsAbsent() throws {
         // When a field is absent from JSON, it means "no change" — keep previous value
         let json = """
         {"type": "server/state", "payload": {"metadata": {"timestamp": 12345678, "title": "New Song"}}}

@@ -7,14 +7,14 @@ import Testing
 
 struct ServerDiscoveryTests {
     @Test
-    func `newly created instance is not terminated`() async {
+    func newlyCreatedInstanceIsNotTerminated() async {
         let discovery = ServerDiscovery()
         let terminated = await discovery.isTerminated
         #expect(!terminated)
     }
 
     @Test
-    func `isTerminated becomes true after stopDiscovery`() async {
+    func isTerminatedBecomesTrueAfterStopDiscovery() async {
         let discovery = ServerDiscovery()
         await discovery.stopDiscovery()
         let terminated = await discovery.isTerminated
@@ -22,7 +22,7 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `startDiscovery throws TerminatedError after stopDiscovery`() async {
+    func startDiscovery_throwsTerminatedErrorAfterStopDiscovery() async {
         let discovery = ServerDiscovery()
         await discovery.stopDiscovery()
 
@@ -32,7 +32,7 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `stopDiscovery is idempotent`() async {
+    func stopDiscoveryIsIdempotent() async {
         let discovery = ServerDiscovery()
         await discovery.stopDiscovery()
         // Second stop should not crash or change state
@@ -43,7 +43,7 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `multiple stopDiscovery calls remain safe`() async {
+    func multipleStopDiscoveryCallsRemainSafe() async {
         let discovery = ServerDiscovery()
         for _ in 0 ..< 5 {
             await discovery.stopDiscovery()
@@ -53,7 +53,7 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `servers stream exists on new instance`() async {
+    func serversStreamExistsOnNewInstance() async {
         let discovery = ServerDiscovery()
         // The servers property should be accessible immediately after init
         _ = await discovery.servers
@@ -61,7 +61,7 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `servers stream finishes after stopDiscovery`() async {
+    func serversStreamFinishesAfterStopDiscovery() async {
         let discovery = ServerDiscovery()
         let servers = await discovery.servers
 
@@ -77,14 +77,14 @@ struct ServerDiscoveryTests {
     }
 
     @Test
-    func `TerminatedError has meaningful description`() {
+    func terminatedError_hasMeaningfulDescription() {
         let error = TerminatedError()
         #expect(error.description.contains("permanently stopped"))
         #expect(error.errorDescription?.contains("permanently stopped") == true)
     }
 
     @Test
-    func `TerminatedError conforms to SendspinError`() {
+    func terminatedError_conformsToSendspinError() {
         let error: any Error = TerminatedError()
         #expect(error is any SendspinError)
     }

@@ -9,7 +9,7 @@ struct VersionedRoleTests {
     // MARK: - String literal initialization
 
     @Test
-    func `String literal with version parses correctly`() {
+    func stringLiteralWithVersionParsesCorrectly() {
         let role: VersionedRole = "player@v1"
         #expect(role.role == "player")
         #expect(role.version == "v1")
@@ -17,7 +17,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `String literal without version defaults to v1`() {
+    func stringLiteralWithoutVersionDefaultsToV1() {
         let role: VersionedRole = "player"
         #expect(role.role == "player")
         #expect(role.version == "v1")
@@ -25,21 +25,21 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `String literal with v2 version`() {
+    func stringLiteralWithV2Version() {
         let role: VersionedRole = "player@v2"
         #expect(role.role == "player")
         #expect(role.version == "v2")
     }
 
     @Test
-    func `String literal with custom role`() {
+    func stringLiteralWithCustomRole() {
         let role: VersionedRole = "_myapp_display@v1"
         #expect(role.role == "_myapp_display")
         #expect(role.version == "v1")
     }
 
     @Test
-    func `String literal with @ in version is accepted`() {
+    func stringLiteralWithAtInVersionIsAccepted() {
         // parse() uses firstIndex(of: "@"), so only the first @ splits.
         // "player@v1@extra" → role: "player", version: "v1@extra"
         let role: VersionedRole = "player@v1@extra"
@@ -55,7 +55,7 @@ struct VersionedRoleTests {
     // MARK: - Memberwise init
 
     @Test
-    func `Memberwise init sets role and version`() {
+    func memberwiseInitSetsRoleAndVersion() {
         let role = VersionedRole(role: "artwork", version: "v1")
         #expect(role.role == "artwork")
         #expect(role.version == "v1")
@@ -68,7 +68,7 @@ struct VersionedRoleTests {
     // MARK: - JSON encoding
 
     @Test
-    func `Encodes as single string`() throws {
+    func encodesAsSingleString() throws {
         let role: VersionedRole = "player@v1"
         let data = try JSONEncoder().encode(role)
         let json = try #require(String(data: data, encoding: .utf8))
@@ -76,7 +76,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Round-trips through JSON`() throws {
+    func roundTripsThroughJSON() throws {
         let original: VersionedRole = "controller@v1"
         let data = try JSONEncoder().encode(original)
         let decoded = try JSONDecoder().decode(VersionedRole.self, from: data)
@@ -84,7 +84,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Encodes in array matching spec format`() throws {
+    func encodesInArrayMatchingSpecFormat() throws {
         let roles: [VersionedRole] = [.playerV1, .controllerV1, .metadataV1]
         let data = try JSONEncoder().encode(roles)
         let json = try #require(String(data: data, encoding: .utf8))
@@ -96,7 +96,7 @@ struct VersionedRoleTests {
     // MARK: - JSON decoding (strict)
 
     @Test
-    func `Decodes valid role@version from JSON`() throws {
+    func decodesValidRoleAtVersionFromJSON() throws {
         let json = Data("\"artwork@v1\"".utf8)
         let role = try JSONDecoder().decode(VersionedRole.self, from: json)
         #expect(role.role == "artwork")
@@ -104,7 +104,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Decodes role with @ in version from JSON`() throws {
+    func decodesRoleWithAtInVersionFromJSON() throws {
         // "player@v1@extra" → role: "player", version: "v1@extra"
         // firstIndex(of: "@") splits on the first @ only.
         let json = Data("\"player@v1@extra\"".utf8)
@@ -114,7 +114,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Rejects versionless role in JSON`() {
+    func rejectsVersionlessRoleInJSON() {
         let json = Data("\"player\"".utf8)
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(VersionedRole.self, from: json)
@@ -122,7 +122,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Rejects empty role before @ in JSON`() {
+    func rejectsEmptyRoleBeforeAtInJSON() {
         let json = Data("\"@v1\"".utf8)
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(VersionedRole.self, from: json)
@@ -130,7 +130,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Rejects empty version after @ in JSON`() {
+    func rejectsEmptyVersionAfterAtInJSON() {
         let json = Data("\"player@\"".utf8)
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(VersionedRole.self, from: json)
@@ -138,7 +138,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Rejects bare @ in JSON`() {
+    func rejectsBareAtInJSON() {
         let json = Data("\"@\"".utf8)
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(VersionedRole.self, from: json)
@@ -146,7 +146,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Rejects empty string in JSON`() {
+    func rejectsEmptyStringInJSON() {
         let json = Data("\"\"".utf8)
         #expect(throws: DecodingError.self) {
             try JSONDecoder().decode(VersionedRole.self, from: json)
@@ -154,7 +154,7 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Decodes array of roles from JSON`() throws {
+    func decodesArrayOfRolesFromJSON() throws {
         let json = Data("[\"player@v1\",\"controller@v1\"]".utf8)
         let roles = try JSONDecoder().decode([VersionedRole].self, from: json)
         #expect(roles == [.playerV1, .controllerV1])
@@ -169,7 +169,7 @@ struct VersionedRoleTests {
         (VersionedRole.artworkV1, "artwork", "v1"),
         (VersionedRole.visualizerV1, "visualizer", "v1")
     ])
-    func `Spec role constant`(role: VersionedRole, expectedName: String, expectedVersion: String) {
+    func specRoleConstant(role: VersionedRole, expectedName: String, expectedVersion: String) {
         #expect(role.role == expectedName)
         #expect(role.version == expectedVersion)
         #expect(role.identifier == "\(expectedName)@\(expectedVersion)")
@@ -178,7 +178,7 @@ struct VersionedRoleTests {
     // MARK: - Hashable / Equatable
 
     @Test
-    func `Equal roles from different init paths including decode`() throws {
+    func equalRolesFromDifferentInitPathsIncludingDecode() throws {
         let fromLiteral: VersionedRole = "player@v1"
         let fromMemberwise = VersionedRole(role: "player", version: "v1")
         let fromConstant = VersionedRole.playerV1
@@ -195,14 +195,14 @@ struct VersionedRoleTests {
     }
 
     @Test
-    func `Different versions are not equal`() {
+    func differentVersionsAreNotEqual() {
         let v1: VersionedRole = "player@v1"
         let v2: VersionedRole = "player@v2"
         #expect(v1 != v2)
     }
 
     @Test
-    func `Different roles are not equal`() {
+    func differentRolesAreNotEqual() {
         let player: VersionedRole = "player@v1"
         let controller: VersionedRole = "controller@v1"
         #expect(player != controller)

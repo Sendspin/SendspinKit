@@ -8,7 +8,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Initialization
 
     @Test
-    func `fresh filter has uninformative prior`() {
+    func freshFilterHasUninformativePrior() {
         let filter = SendspinTimeFilter()
         #expect(!filter.isInitialized)
         #expect(filter.count == 0)
@@ -19,7 +19,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `first measurement initializes offset`() {
+    func firstMeasurementInitializesOffset() {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
 
@@ -31,7 +31,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `second measurement initializes drift`() {
+    func secondMeasurementInitializesDrift() {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
         filter.update(timeAdded: 2_000, measurement: 510.0, maxError: 50.0)
@@ -45,7 +45,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Convergence
 
     @Test
-    func `converges on constant offset with zero drift`() {
+    func convergesOnConstantOffsetWithZeroDrift() {
         var filter = SendspinTimeFilter()
         let trueOffset = 1_000.0
 
@@ -66,7 +66,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `tracks linear drift`() {
+    func tracksLinearDrift() {
         var filter = SendspinTimeFilter()
         let trueOffset = 1_000.0
         let trueDrift = 0.001 // 1μs per ms = 1ppm
@@ -84,7 +84,7 @@ struct SendspinTimeFilterTests {
     // MARK: - RTT floor
 
     @Test
-    func `handles zero maxError (localhost)`() {
+    func handlesZeroMaxErrorLocalhost() {
         var filter = SendspinTimeFilter()
         // maxError of 0 should be floored to 1.0 internally
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 0.0)
@@ -96,7 +96,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `no NaN after many localhost updates`() {
+    func noNaNAfterManyLocalhostUpdates() {
         var filter = SendspinTimeFilter()
 
         for i in 0 ..< 200 {
@@ -114,7 +114,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Monotonicity guard
 
     @Test
-    func `rejects non-monotonic timestamps`() {
+    func rejectsNonMonotonicTimestamps() {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 2_000, measurement: 500.0, maxError: 50.0)
         filter.update(timeAdded: 1_000, measurement: 600.0, maxError: 50.0) // earlier!
@@ -124,7 +124,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `rejects duplicate timestamp`() {
+    func rejectsDuplicateTimestamp() {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
         filter.update(timeAdded: 1_000, measurement: 600.0, maxError: 50.0) // same time
@@ -136,7 +136,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Drift significance gate
 
     @Test
-    func `drift not used when statistically insignificant`() {
+    func driftNotUsedWhenStatisticallyInsignificant() {
         var filter = SendspinTimeFilter()
         // Two measurements close together → noisy drift estimate → should not use drift
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
@@ -150,7 +150,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Time conversion
 
     @Test
-    func `computeServerTime and computeClientTime are inverses`() {
+    func computeServerTimeAndComputeClientTimeAreInverses() {
         var filter = SendspinTimeFilter()
         let trueOffset = 5_000.0
 
@@ -168,7 +168,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `computeServerTime applies offset correctly`() {
+    func computeServerTime_appliesOffsetCorrectly() {
         var filter = SendspinTimeFilter()
 
         // Establish a known offset of 1000μs
@@ -187,7 +187,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Reset
 
     @Test
-    func `reset returns to uninformative prior`() {
+    func resetReturnsToUninformativePrior() {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
         filter.update(timeAdded: 2_000, measurement: 510.0, maxError: 50.0)
@@ -208,7 +208,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Adaptive forgetting
 
     @Test
-    func `covariance shrinks with consistent measurements`() {
+    func covarianceShrinksWithConsistentMeasurements() {
         var filter = SendspinTimeFilter()
 
         var lastCovariance: Double = .infinity
@@ -234,7 +234,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Estimated error
 
     @Test
-    func `offset covariance decreases with consistent measurements`() {
+    func offsetCovarianceDecreasesWithConsistentMeasurements() {
         // Use low process noise so covariance clearly shrinks
         var filter = SendspinTimeFilter(processStdDev: 0.001, driftProcessStdDev: 0.0001)
 
@@ -254,7 +254,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Adaptive forgetting (active path)
 
     @Test
-    func `adaptive forgetting inflates covariance on large residual`() {
+    func adaptiveForgettingInflatesCovarianceOnLargeResidual() {
         // Use minSamples=5 so we don't need 100 warmup measurements
         var filter = SendspinTimeFilter(minSamples: 5)
 
@@ -292,7 +292,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Count behavior
 
     @Test
-    func `count saturates at minSamplesForForgetting`() {
+    func countSaturatesAtMinSamplesForForgetting() {
         // The first two updates set count directly (1, then 2) via special-case
         // init paths. Subsequent updates increment count in the warm-up branch
         // until it reaches minSamplesForForgetting, after which adaptive
@@ -312,7 +312,7 @@ struct SendspinTimeFilterTests {
     // MARK: - Drift-aware time conversion
 
     @Test
-    func `time conversion accounts for drift when significant`() {
+    func timeConversionAccountsForDriftWhenSignificant() {
         // Use a low significance threshold so drift passes the SNR gate more easily
         var filter = SendspinTimeFilter(driftSignificanceThreshold: 0.5)
         let trueDrift = 0.1 // 100,000 ppm — very strong drift to dominate noise
@@ -343,13 +343,13 @@ struct SendspinTimeFilterTests {
     // MARK: - Estimated error
 
     @Test
-    func `estimatedError is nil before first measurement`() {
+    func estimatedErrorIsNilBeforeFirstMeasurement() {
         let filter = SendspinTimeFilter()
         #expect(filter.estimatedError == nil)
     }
 
     @Test
-    func `estimatedError matches known value after first measurement`() throws {
+    func estimatedErrorMatchesKnownValueAfterFirstMeasurement() throws {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
 
@@ -360,7 +360,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `estimatedError is positive and finite after Kalman updates`() throws {
+    func estimatedErrorIsPositiveAndFiniteAfterKalmanUpdates() throws {
         var filter = SendspinTimeFilter()
 
         for i in 0 ..< 20 {
@@ -376,7 +376,7 @@ struct SendspinTimeFilterTests {
     }
 
     @Test
-    func `estimatedError decreases with more measurements`() throws {
+    func estimatedErrorDecreasesWithMoreMeasurements() throws {
         var filter = SendspinTimeFilter(processStdDev: 0.001, driftProcessStdDev: 0.0001)
 
         filter.update(timeAdded: 100_000, measurement: 1_000.0, maxError: 500.0)

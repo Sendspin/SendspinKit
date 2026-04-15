@@ -13,14 +13,14 @@ struct SyncCorrectionTests {
     // MARK: - Integration tests (from tests/sync_correction.rs)
 
     @Test
-    func `deadband - small error produces no correction`() {
+    func deadband_smallErrorProducesNoCorrection() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 500, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule == CorrectionSchedule())
     }
 
     @Test
-    func `positive error produces drop schedule`() {
+    func positiveErrorProducesDropSchedule() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: 200_000, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.dropEveryNFrames > 0)
@@ -29,7 +29,7 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `negative error produces insert schedule`() {
+    func negativeErrorProducesInsertSchedule() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: -200_000, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.insertEveryNFrames > 0)
@@ -38,7 +38,7 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `large error triggers reanchor`() {
+    func largeErrorTriggersReanchor() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.reanchorUs + 100_000, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.reanchor)
@@ -47,7 +47,7 @@ struct SyncCorrectionTests {
     // MARK: - Unit tests (from src/audio/sync_correction.rs inline tests)
 
     @Test
-    func `no correction within engage threshold`() {
+    func noCorrectionWithinEngageThreshold() {
         let planner = CorrectionPlanner()
         // Below engage threshold — should not start correcting
         let schedule = planner.plan(errorMicroseconds: Self.engageUs - 500, sampleRate: 48_000, currentlyCorrecting: false)
@@ -55,7 +55,7 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `correction engages above threshold`() {
+    func correctionEngagesAboveThreshold() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.engageUs + 500, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.isCorrecting, "should engage above engage threshold")
@@ -63,7 +63,7 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `hysteresis keeps correcting above deadband`() {
+    func hysteresisKeepsCorrectingAboveDeadband() {
         let planner = CorrectionPlanner()
         // Between deadband and engage — should keep correcting if already active
         let midpoint = Self.deadbandUs + (Self.engageUs - Self.deadbandUs) / 2
@@ -72,14 +72,14 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `hysteresis stops below deadband`() {
+    func hysteresisStopsBelowDeadband() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 500, sampleRate: 48_000, currentlyCorrecting: true)
         #expect(!schedule.isCorrecting, "should stop below deadband")
     }
 
     @Test
-    func `negative error inserts frames`() {
+    func negativeErrorInsertsFrames() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: -(Self.engageUs + 2_000), sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.insertEveryNFrames > 0, "negative error = insert")
@@ -87,28 +87,28 @@ struct SyncCorrectionTests {
     }
 
     @Test
-    func `reanchor at exact threshold`() {
+    func reanchorAtExactThreshold() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.reanchorUs, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.reanchor)
     }
 
     @Test
-    func `exact engage threshold does not engage`() {
+    func exactEngageThresholdDoesNotEngage() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.engageUs, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(!schedule.isCorrecting, "exactly at engage threshold should not engage (<=)")
     }
 
     @Test
-    func `exact deadband threshold disengages`() {
+    func exactDeadbandThresholdDisengages() {
         let planner = CorrectionPlanner()
         let schedule = planner.plan(errorMicroseconds: Self.deadbandUs, sampleRate: 48_000, currentlyCorrecting: true)
         #expect(!schedule.isCorrecting, "exactly at deadband threshold should disengage (<=)")
     }
 
     @Test
-    func `negative hysteresis keeps inserting above deadband`() {
+    func negativeHysteresisKeepsInsertingAboveDeadband() {
         let planner = CorrectionPlanner()
         let midpoint = Self.deadbandUs + (Self.engageUs - Self.deadbandUs) / 2
         let schedule = planner.plan(errorMicroseconds: -midpoint, sampleRate: 48_000, currentlyCorrecting: true)

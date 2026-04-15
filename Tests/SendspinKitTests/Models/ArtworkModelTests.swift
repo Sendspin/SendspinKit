@@ -9,7 +9,7 @@ struct ArtworkModelTests {
     // MARK: - ArtworkChannel
 
     @Test
-    func `ArtworkChannel round-trips through JSON`() throws {
+    func artworkChannel_roundTripsThroughJSON() throws {
         let channel = try ArtworkChannel(
             source: .album,
             format: .jpeg,
@@ -35,7 +35,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel disabled placeholder encodes correctly`() throws {
+    func artworkChannel_disabledPlaceholderEncodesCorrectly() throws {
         let channel = ArtworkChannel.disabled
 
         let encoder = JSONEncoder()
@@ -47,7 +47,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel supports all image formats`() throws {
+    func artworkChannel_supportsAllImageFormats() throws {
         let formats: [ImageFormat] = [.jpeg, .png, .bmp]
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
@@ -66,7 +66,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel supports active and disabled source types`() throws {
+    func artworkChannel_supportsActiveAndDisabledSourceTypes() throws {
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
@@ -95,7 +95,7 @@ struct ArtworkModelTests {
     // MARK: - ArtworkChannel decode validation
 
     @Test
-    func `ArtworkChannel rejects negative width for active channel via decode`() {
+    func artworkChannel_rejectsNegativeWidthForActiveChannelViaDecode() {
         let json = Data("""
         {"source": "album", "format": "jpeg", "media_width": -1, "media_height": 300}
         """.utf8)
@@ -106,7 +106,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects zero width for active channel via decode`() {
+    func artworkChannel_rejectsZeroWidthForActiveChannelViaDecode() {
         let json = Data("""
         {"source": "album", "format": "jpeg", "media_width": 0, "media_height": 300}
         """.utf8)
@@ -117,7 +117,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects zero height for active channel via decode`() {
+    func artworkChannel_rejectsZeroHeightForActiveChannelViaDecode() {
         let json = Data("""
         {"source": "album", "format": "jpeg", "media_width": 300, "media_height": 0}
         """.utf8)
@@ -128,7 +128,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects negative height for active channel via decode`() {
+    func artworkChannel_rejectsNegativeHeightForActiveChannelViaDecode() {
         let json = Data("""
         {"source": "album", "format": "jpeg", "media_width": 300, "media_height": -1}
         """.utf8)
@@ -139,7 +139,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects negative width for none channel via decode`() {
+    func artworkChannel_rejectsNegativeWidthForNoneChannelViaDecode() {
         let json = Data("""
         {"source": "none", "format": "jpeg", "media_width": -1, "media_height": 0}
         """.utf8)
@@ -150,7 +150,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects negative height for none channel via decode`() {
+    func artworkChannel_rejectsNegativeHeightForNoneChannelViaDecode() {
         let json = Data("""
         {"source": "none", "format": "jpeg", "media_width": 0, "media_height": -1}
         """.utf8)
@@ -161,7 +161,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel rejects both dimensions bad for active channel via decode`() {
+    func artworkChannel_rejectsBothDimensionsBadForActiveChannelViaDecode() {
         // Documents first-failure-wins: width is checked before height
         let json = Data("""
         {"source": "album", "format": "jpeg", "media_width": -1, "media_height": -1}
@@ -173,7 +173,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkChannel accepts zero dimensions for none channel via decode`() throws {
+    func artworkChannel_acceptsZeroDimensionsForNoneChannelViaDecode() throws {
         let json = Data("""
         {"source": "none", "format": "jpeg", "media_width": 0, "media_height": 0}
         """.utf8)
@@ -187,28 +187,28 @@ struct ArtworkModelTests {
     // MARK: - ArtworkChannel init validation (ConfigurationError)
 
     @Test
-    func `ArtworkChannel init rejects negative width for active channel`() {
+    func artworkChannel_initRejectsNegativeWidthForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
             try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: -1, mediaHeight: 300)
         }
     }
 
     @Test
-    func `ArtworkChannel init rejects zero width for active channel`() {
+    func artworkChannel_initRejectsZeroWidthForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
             try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 0, mediaHeight: 300)
         }
     }
 
     @Test
-    func `ArtworkChannel init rejects zero height for active channel`() {
+    func artworkChannel_initRejectsZeroHeightForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
             try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 0)
         }
     }
 
     @Test
-    func `ArtworkChannel init rejects negative height for active channel`() {
+    func artworkChannel_initRejectsNegativeHeightForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
             try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: -1)
         }
@@ -217,7 +217,7 @@ struct ArtworkModelTests {
     // MARK: - ArtworkSupport in client/hello
 
     @Test
-    func `ArtworkSupport encodes channels array for client/hello`() throws {
+    func artworkSupport_encodesChannelsArrayForClientHello() throws {
         let support = try ArtworkSupport(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
             ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
@@ -238,7 +238,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkSupport decodes from server-like JSON`() throws {
+    func artworkSupport_decodesFromServerLikeJSON() throws {
         let json = Data("""
         {
             "channels": [
@@ -257,7 +257,7 @@ struct ArtworkModelTests {
     // MARK: - ArtworkSupport in full client/hello
 
     @Test
-    func `client/hello with artwork@v1_support encodes correctly`() throws {
+    func clientHello_withArtworkV1SupportEncodesCorrectly() throws {
         let payload = try ClientHelloPayload(
             clientId: "test-client",
             name: "Test Display",
@@ -287,7 +287,7 @@ struct ArtworkModelTests {
     // MARK: - StreamStartArtwork
 
     @Test
-    func `StreamStartArtwork decodes stream/start artwork payload`() throws {
+    func streamStartArtwork_decodesStreamStartArtworkPayload() throws {
         let json = Data("""
         {
             "type": "stream/start",
@@ -318,7 +318,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `StreamStartArtwork with none source channel`() throws {
+    func streamStartArtwork_withNoneSourceChannel() throws {
         let json = Data("""
         {
             "type": "stream/start",
@@ -339,7 +339,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `StreamArtworkChannelConfig accepts values that ArtworkChannel would reject`() throws {
+    func streamArtworkChannelConfig_acceptsValuesThatArtworkChannelWouldReject() throws {
         // StreamArtworkChannelConfig is server-provided — it intentionally has no validation.
         // This test documents the asymmetry: the server can send zero dimensions for an
         // active channel (e.g., during format negotiation), and we accept it without error.
@@ -365,7 +365,7 @@ struct ArtworkModelTests {
     // MARK: - StreamRequestFormat (artwork)
 
     @Test
-    func `stream/request-format with artwork encodes correctly`() throws {
+    func streamRequestFormat_withArtworkEncodesCorrectly() throws {
         let request = try ArtworkFormatRequest(
             channel: 0,
             source: .album,
@@ -392,7 +392,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `stream/request-format with partial artwork update`() throws {
+    func streamRequestFormat_withPartialArtworkUpdate() throws {
         // Per spec: only include fields that are changing
         let request = try ArtworkFormatRequest(
             channel: 1,
@@ -417,7 +417,7 @@ struct ArtworkModelTests {
     // MARK: - StreamEndMessage with roles
 
     @Test
-    func `stream/end with roles decodes correctly`() throws {
+    func streamEnd_withRolesDecodesCorrectly() throws {
         let json = Data("""
         {"type": "stream/end", "payload": {"roles": ["player", "artwork"]}}
         """.utf8)
@@ -430,7 +430,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `stream/end without roles decodes (ends all streams)`() throws {
+    func streamEnd_withoutRolesDecodesEndsAllStreams() throws {
         let json = Data("""
         {"type": "stream/end", "payload": {}}
         """.utf8)
@@ -443,7 +443,7 @@ struct ArtworkModelTests {
     // MARK: - ArtworkConfiguration
 
     @Test
-    func `ArtworkConfiguration validates channel count`() throws {
+    func artworkConfiguration_validatesChannelCount() throws {
         // Valid: 1-4 channels
         let config = try ArtworkConfiguration(channels: [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
@@ -460,7 +460,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `ArtworkConfiguration equality and hashing`() throws {
+    func artworkConfiguration_equalityAndHashing() throws {
         let channels = try [
             ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
             .disabled
@@ -483,7 +483,7 @@ struct ArtworkModelTests {
     // MARK: - Wire format interoperability
 
     @Test
-    func `Artwork channel JSON matches Rust/Python wire format`() throws {
+    func artworkChannel_jsonMatchesRustPythonWireFormat() throws {
         // This JSON was taken from the sendspin-rs test suite
         let rustJson = Data("""
         {
@@ -513,7 +513,7 @@ struct ArtworkModelTests {
     }
 
     @Test
-    func `stream/start with both player and artwork decodes`() throws {
+    func streamStart_withBothPlayerAndArtworkDecodes() throws {
         // Real-world scenario: server sends stream/start for both roles
         let json = Data("""
         {

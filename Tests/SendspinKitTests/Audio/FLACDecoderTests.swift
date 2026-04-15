@@ -7,7 +7,7 @@ import Testing
 
 struct FLACDecoderTests {
     @Test
-    func `Create FLAC decoder via factory`() throws {
+    func createFLACDecoderViaFactory() throws {
         // Standard FLAC format: 44.1kHz stereo 16-bit
         // Validates factory creates a FLACDecoder for .flac codec
         let decoder = try AudioDecoderFactory.create(
@@ -22,7 +22,7 @@ struct FLACDecoderTests {
     }
 
     @Test
-    func `Create hi-res FLAC decoder`() throws {
+    func createHiResFLACDecoder() throws {
         // Hi-res FLAC: 96kHz stereo 24-bit
         // Validates that libFLAC accepts hi-res parameters without error
         _ = try FLACDecoder(
@@ -33,7 +33,7 @@ struct FLACDecoderTests {
     }
 
     @Test
-    func `FLAC decoder creation with header`() throws {
+    func flacDecoderCreationWithHeader() throws {
         // Validates that a decoder can be created with a codec header prepended.
         // Note: FLAC requires a valid stream (fLaC magic + STREAMINFO) to decode
         // actual frames. Full integration tests with real FLAC data belong elsewhere.

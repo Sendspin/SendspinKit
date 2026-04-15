@@ -7,7 +7,7 @@ import Testing
 
 struct PCMRingBufferTests {
     @Test
-    func `Capacity rounds up to power of 2`() {
+    func capacityRoundsUpToPowerOf2() {
         var buf = PCMRingBuffer(capacity: 100)
         #expect(buf.capacity == 128)
         #expect(buf.availableToRead == 0)
@@ -20,7 +20,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Basic write and read`() {
+    func basicWriteAndRead() {
         var buf = PCMRingBuffer(capacity: 64)
         defer { buf.deallocate() }
 
@@ -42,7 +42,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Write wraps around the boundary`() {
+    func writeWrapsAroundTheBoundary() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -73,7 +73,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Write truncates when buffer is full`() {
+    func writeTruncatesWhenBufferIsFull() {
         var buf = PCMRingBuffer(capacity: 8) // rounds to 8
         defer { buf.deallocate() }
 
@@ -85,7 +85,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Skip discards bytes without copying`() {
+    func skipDiscardsBytes() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -106,7 +106,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Reset clears the buffer`() {
+    func resetClearsTheBuffer() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -119,7 +119,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Write from Data convenience method`() {
+    func writeFromDataConvenienceMethod() {
         var buf = PCMRingBuffer(capacity: 32)
         defer { buf.deallocate() }
 
@@ -135,7 +135,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Repeated wrap-around cycles maintain data integrity`() {
+    func repeatedWrapAroundCyclesMaintainDataIntegrity() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -157,7 +157,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Partial read returns only available bytes`() {
+    func partialReadReturnsOnlyAvailableBytes() {
         var buf = PCMRingBuffer(capacity: 16)
         defer { buf.deallocate() }
 
@@ -171,7 +171,7 @@ struct PCMRingBufferTests {
     }
 
     @Test
-    func `Capacity of 1 rounds to 1`() {
+    func capacityOf1RoundsTo1() {
         // Minimum valid capacity — verifies the power-of-2 loop handles
         // the smallest input without underflowing or producing 0.
         var buf = PCMRingBuffer(capacity: 1)

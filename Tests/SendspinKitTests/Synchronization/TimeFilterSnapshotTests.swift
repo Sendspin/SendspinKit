@@ -41,7 +41,7 @@ struct TimeFilterSnapshotTests {
     // MARK: - Known-value conversions (no drift)
 
     @Test
-    func `serverTimeToLocal applies offset and anchor`() {
+    func serverTimeToLocal_appliesOffsetAndAnchor() {
         // server_time = 510_000 in server domain
         // computeClientTime: (510_000 - 5_000 + 0) / 1.0 = 505_000 (process-relative)
         // + clientProcessStartAbsolute: 505_000 + 1_000_000 = 1_505_000
@@ -50,7 +50,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `localTimeToServer removes anchor and applies offset`() {
+    func localTimeToServer_removesAnchorAndAppliesOffset() {
         // localTime = 1_505_000 absolute
         // clientRelative = 1_505_000 - 1_000_000 = 505_000
         // computeServerTime: 505_000 + round(5_000 + 0) = 510_000
@@ -61,7 +61,7 @@ struct TimeFilterSnapshotTests {
     // MARK: - Negative offset
 
     @Test
-    func `serverTimeToLocal works with negative offset`() {
+    func serverTimeToLocal_worksWithNegativeOffset() {
         // offset = -3_000 means client is ahead of server
         // server_time = 510_000
         // computeClientTime: (510_000 - (-3_000)) / 1.0 = 513_000 (process-relative)
@@ -71,7 +71,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `localTimeToServer works with negative offset`() {
+    func localTimeToServer_worksWithNegativeOffset() {
         // localTime = 1_513_000
         // clientRelative = 1_513_000 - 1_000_000 = 513_000
         // computeServerTime: 513_000 + round(-3_000) = 510_000
@@ -82,7 +82,7 @@ struct TimeFilterSnapshotTests {
     // MARK: - Round-trip consistency
 
     @Test
-    func `round-trips without drift within rounding tolerance`() {
+    func roundTripsWithoutDriftWithinRoundingTolerance() {
         let serverTime: Int64 = 750_000
         let local = Self.knownSnapshot.serverTimeToLocal(serverTime)
         let roundTripped = Self.knownSnapshot.localTimeToServer(local)
@@ -91,7 +91,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `round-trips with drift within rounding tolerance`() {
+    func roundTripsWithDriftWithinRoundingTolerance() {
         let serverTime: Int64 = 750_000
         let local = Self.driftSnapshot.serverTimeToLocal(serverTime)
         let roundTripped = Self.driftSnapshot.localTimeToServer(local)
@@ -101,7 +101,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `round-trips with negative offset within rounding tolerance`() {
+    func roundTripsWithNegativeOffsetWithinRoundingTolerance() {
         let serverTime: Int64 = 750_000
         let local = Self.negativeOffsetSnapshot.serverTimeToLocal(serverTime)
         let roundTripped = Self.negativeOffsetSnapshot.localTimeToServer(local)
@@ -112,7 +112,7 @@ struct TimeFilterSnapshotTests {
     // MARK: - Drift behavior
 
     @Test
-    func `drift affects time conversion when useDrift is true`() {
+    func driftAffectsTimeConversionWhenUseDriftIsTrue() {
         let serverTime: Int64 = 600_000
 
         let withoutDrift = Self.knownSnapshot.serverTimeToLocal(serverTime)
@@ -123,7 +123,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `drift is ignored when useDrift is false`() {
+    func driftIsIgnoredWhenUseDriftIsFalse() {
         // Two snapshots with different drift values but both useDrift=false
         let snap1 = TimeFilterSnapshot(
             offset: 5_000.0, drift: 0.0, lastUpdate: 500_000,
@@ -156,7 +156,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `serverTimeToLocal matches filter computeClientTime plus anchor`() {
+    func serverTimeToLocal_matchesFilterComputeClientTimePlusAnchor() {
         var filter = SendspinTimeFilter()
         for i in 0 ..< 20 {
             let t = Int64((i + 1) * 100_000)
@@ -177,7 +177,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `localTimeToServer matches filter computeServerTime with anchor removed`() {
+    func localTimeToServer_matchesFilterComputeServerTimeWithAnchorRemoved() {
         var filter = SendspinTimeFilter()
         for i in 0 ..< 20 {
             let t = Int64((i + 1) * 100_000)
@@ -199,7 +199,7 @@ struct TimeFilterSnapshotTests {
     }
 
     @Test
-    func `parity with filter when drift is active`() {
+    func parityWithFilterWhenDriftIsActive() {
         // Override the default threshold (2.0) with 0.1 and use a large drift (0.1 μs/μs)
         // to ensure drift² >> threshold² × driftCovariance, forcing useDrift = true.
         var filter = SendspinTimeFilter(driftSignificanceThreshold: 0.1)

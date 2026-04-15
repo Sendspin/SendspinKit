@@ -4,7 +4,7 @@ import Testing
 
 struct StreamMessageTests {
     @Test
-    func `Decode stream/start message`() throws {
+    func decodeStreamStartMessage() throws {
         let json = """
         {
             "type": "stream/start",

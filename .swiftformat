@@ -1,6 +1,6 @@
 # SwiftFormat Configuration for SendspinKit
 
---swiftversion 6.3
+--swiftversion 6.1
 --exclude .build,Examples
 
 # Trailing commas: never (matches SwiftLint trailing_comma rule)

@@ -5,7 +5,7 @@ import Testing
 @MainActor
 struct SendspinClientTests {
     @Test
-    func `Initialize client with player role`() throws {
+    func initializeClientWithPlayerRole() throws {
         let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [
@@ -25,7 +25,7 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `enterExternalSource throws notConnected when disconnected`() async throws {
+    func enterExternalSource_throwsNotConnectedWhenDisconnected() async throws {
         let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
@@ -44,7 +44,7 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `exitExternalSource throws notConnected when disconnected`() async throws {
+    func exitExternalSource_throwsNotConnectedWhenDisconnected() async throws {
         let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",
@@ -63,19 +63,19 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `alreadyConnected error has correct description`() {
+    func alreadyConnectedErrorHasCorrectDescription() {
         let error = SendspinClientError.alreadyConnected
         #expect(error.errorDescription == "Already connected or connecting to a Sendspin server")
     }
 
     @Test
-    func `sendFailed error includes reason`() {
+    func sendFailedErrorIncludesReason() {
         let error = SendspinClientError.sendFailed("connection reset")
         #expect(error.errorDescription == "Failed to send message: connection reset")
     }
 
     @Test
-    func `AudioScheduler is cleared on disconnect`() async throws {
+    func audioSchedulerIsClearedOnDisconnect() async throws {
         let config = try PlayerConfiguration(
             bufferCapacity: 1_024,
             supportedFormats: [

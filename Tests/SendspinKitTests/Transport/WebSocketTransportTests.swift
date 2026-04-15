@@ -4,7 +4,7 @@ import Testing
 
 struct WebSocketTransportTests {
     @Test
-    func `Creates AsyncStreams for messages`() throws {
+    func createsAsyncStreamsForMessages() throws {
         let url = try #require(URL(string: "ws://localhost:8927/sendspin"))
         let transport = WebSocketTransport(url: url)
 

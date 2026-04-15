@@ -16,20 +16,20 @@ struct MonotonicClockTests {
     private static let sequentialCallToleranceMicroseconds: Int64 = 100
 
     @Test
-    func `nowMicroseconds returns positive values`() {
+    func nowMicrosecondsReturnsPositiveValues() {
         let now = MonotonicClock.nowMicroseconds()
         #expect(now > 0)
     }
 
     @Test
-    func `nowMicroseconds is monotonically increasing`() {
+    func nowMicrosecondsIsMonotonicallyIncreasing() {
         let first = MonotonicClock.nowMicroseconds()
         let second = MonotonicClock.nowMicroseconds()
         #expect(second >= first)
     }
 
     @Test
-    func `nowMicroseconds advances over a real delay`() async throws {
+    func nowMicrosecondsAdvancesOverARealDelay() async throws {
         let before = MonotonicClock.nowMicroseconds()
         try await Task.sleep(for: .milliseconds(10))
         let after = MonotonicClock.nowMicroseconds()
@@ -40,7 +40,7 @@ struct MonotonicClockTests {
     }
 
     @Test
-    func `absoluteMicroseconds is greater than nowMicroseconds`() {
+    func absoluteMicrosecondsIsGreaterThanNowMicroseconds() {
         // The epoch anchor (Unix epoch offset) is always a large positive number
         // on real hardware, so absolute time > process-relative time.
         let relative = MonotonicClock.nowMicroseconds()
@@ -49,7 +49,7 @@ struct MonotonicClockTests {
     }
 
     @Test
-    func `absoluteMicroseconds equals nowMicroseconds plus epoch anchor`() {
+    func absoluteMicrosecondsEqualsNowMicrosecondsPlusEpochAnchor() {
         // Capture as close together as possible
         let now = MonotonicClock.nowMicroseconds()
         let absolute = MonotonicClock.absoluteMicroseconds()
@@ -63,7 +63,7 @@ struct MonotonicClockTests {
     }
 
     @Test
-    func `absoluteMicroseconds is a plausible Unix timestamp`() {
+    func absoluteMicrosecondsIsAPlausibleUnixTimestamp() {
         let absolute = MonotonicClock.absoluteMicroseconds()
 
         let lowerBound = Self.epoch2020Seconds * 1_000_000

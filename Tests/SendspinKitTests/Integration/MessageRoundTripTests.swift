@@ -7,7 +7,7 @@ import Testing
 
 struct MessageRoundTripTests {
     @Test
-    func `ClientHello round trip maintains all data`() throws {
+    func clientHello_roundTripMaintainsAllData() throws {
         // Create complete ClientHello with all fields populated
         let originalPayload = try ClientHelloPayload(
             clientId: "test-client-123",
@@ -70,7 +70,7 @@ struct MessageRoundTripTests {
     }
 
     @Test
-    func `StreamStart round trip with codec header`() throws {
+    func streamStart_roundTripWithCodecHeader() throws {
         let codecHeaderData = Data([0x66, 0x4C, 0x61, 0x43]) // "fLaC" FLAC signature
         let codecHeaderB64 = codecHeaderData.base64EncodedString()
 
@@ -110,7 +110,7 @@ struct MessageRoundTripTests {
     }
 
     @Test
-    func `GroupUpdate with null fields`() throws {
+    func groupUpdate_withNullFields() throws {
         // Test partial updates with null fields (common in delta updates)
         let jsonWithNulls = Data("""
         {
