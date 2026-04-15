@@ -39,6 +39,38 @@ struct ClientAdvertiserTests {
         #expect(isRunning)
         await advertiser.stop()
     }
+
+    @Test
+    func `isTerminated is true after stop`() async throws {
+        let advertiser = ClientAdvertiser(name: "Test", port: 18_931)
+        try await advertiser.start()
+
+        let terminatedBefore = await advertiser.isTerminated
+        #expect(!terminatedBefore, "Advertiser should not be terminated before stop()")
+
+        await advertiser.stop()
+
+        let terminatedAfter = await advertiser.isTerminated
+        #expect(terminatedAfter, "Advertiser should be terminated after stop()")
+    }
+
+    @Test
+    func `start after stop throws TerminatedError`() async throws {
+        let advertiser = ClientAdvertiser(name: "Test", port: 18_932)
+        try await advertiser.start()
+        await advertiser.stop()
+
+        await #expect(throws: TerminatedError.self) {
+            try await advertiser.start()
+        }
+    }
+
+    @Test
+    func `fresh advertiser is not terminated`() async {
+        let advertiser = ClientAdvertiser(name: "Test", port: 18_933)
+        let isTerminated = await advertiser.isTerminated
+        #expect(!isTerminated, "A new advertiser should not be terminated")
+    }
 }
 
 struct MultiServerDecisionTests {

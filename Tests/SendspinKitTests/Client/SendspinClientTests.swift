@@ -25,53 +25,6 @@ struct SendspinClientTests {
     }
 
     @Test
-    func `Connect creates transport and starts connecting`() throws {
-        let config = try PlayerConfiguration(
-            bufferCapacity: 1_024,
-            supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-            ]
-        )
-
-        let client = try SendspinClient(
-            clientId: "test-client",
-            name: "Test Client",
-            roles: [.playerV1],
-            playerConfig: config
-        )
-
-        #expect(client.connectionState == .disconnected)
-
-        // Note: This will fail to connect since URL is invalid, but verifies setup
-        // Real integration tests need mock server
-    }
-
-    @Test
-    func `SendspinClient has AudioScheduler after connect`() throws {
-        let config = try PlayerConfiguration(
-            bufferCapacity: 1_024,
-            supportedFormats: [
-                AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-            ]
-        )
-
-        let client = try SendspinClient(
-            clientId: "test-client",
-            name: "Test Client",
-            roles: [.playerV1],
-            playerConfig: config
-        )
-
-        // Before connect, scheduler should not be accessible
-        #expect(client.connectionState == .disconnected)
-
-        // After implementation, connect will create scheduler
-        // This test verifies the scheduler exists by checking that
-        // the client properly initializes with player role
-        #expect(client.connectionState == .disconnected)
-    }
-
-    @Test
     func `enterExternalSource throws notConnected when disconnected`() async throws {
         let client = try SendspinClient(
             clientId: "test-client",

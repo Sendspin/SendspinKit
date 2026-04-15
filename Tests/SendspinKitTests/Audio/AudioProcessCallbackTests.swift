@@ -7,6 +7,22 @@ struct AudioProcessCallbackTests {
     // swiftlint:disable:next force_try
     private static let stereo16 = try! AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
 
+    /// Maximum time to wait for an async audio callback condition.
+    private static let pollTimeout: Duration = .milliseconds(2_000)
+    /// Interval between polls.
+    private static let pollInterval: Duration = .milliseconds(25)
+
+    /// Poll until `condition` returns `true`, checking every ``pollInterval``
+    /// up to ``pollTimeout``. Returns `true` if the condition was met.
+    private static func pollUntil(_ condition: () -> Bool) async throws -> Bool {
+        let deadline = ContinuousClock.now + pollTimeout
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try await Task.sleep(for: pollInterval)
+        }
+        return condition()
+    }
+
     // MARK: - Callback invocation
 
     @Test
@@ -29,10 +45,8 @@ struct AudioProcessCallbackTests {
         let pcmData = Data(repeating: 0, count: twoSeconds)
         try await player.playPCM(pcmData, serverTimestamp: 0)
 
-        // AudioQueue callbacks are asynchronous — give a brief window for them to fire
-        try await Task.sleep(for: .milliseconds(500))
-
-        #expect(invoked.count > 0, "Process callback should have been invoked at least once")
+        let fired = try await Self.pollUntil { invoked.count > 0 }
+        #expect(fired, "Process callback should have been invoked at least once")
 
         await player.stop()
     }
@@ -51,11 +65,11 @@ struct AudioProcessCallbackTests {
 
         let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
-        try await Task.sleep(for: .milliseconds(500))
+
+        let fired = try await Self.pollUntil { invoked.count > 0 }
+        #expect(fired, "Should have recorded at least one callback")
 
         let formats = invoked.formats
-        #expect(!formats.isEmpty, "Should have recorded at least one callback")
-
         if let format = formats.first {
             #expect(format.codec == .pcm)
             #expect(format.channels == 2)
@@ -85,12 +99,11 @@ struct AudioProcessCallbackTests {
         let bytesPerFrame = 2 * 4 // channels * 4 bytes (32-bit effective)
         let pcmData = Data(repeating: 0, count: 48_000 * bytesPerFrame)
         try await player.playPCM(pcmData, serverTimestamp: 0)
-        try await Task.sleep(for: .milliseconds(500))
 
-        let formats = invoked.formats
-        #expect(!formats.isEmpty)
+        let fired = try await Self.pollUntil { !invoked.formats.isEmpty }
+        #expect(fired)
 
-        if let format = formats.first {
+        if let format = invoked.formats.first {
             #expect(format.bitDepth == 32, "24-bit source should report 32-bit effective output")
         }
 
@@ -115,10 +128,10 @@ struct AudioProcessCallbackTests {
 
         let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
-        try await Task.sleep(for: .milliseconds(500))
 
+        let fired = try await Self.pollUntil { modified.count > 0 }
         // If we got here without crashing, the mutable access worked
-        #expect(modified.count > 0, "Callback with mutation should have fired")
+        #expect(fired, "Callback with mutation should have fired")
 
         await player.stop()
     }
@@ -136,9 +149,9 @@ struct AudioProcessCallbackTests {
         // Start playback but don't feed any PCM data — the AudioQueue
         // will callback with silence-filled buffers
         try await player.start(format: Self.stereo16, codecHeader: nil)
-        try await Task.sleep(for: .milliseconds(500))
 
-        #expect(invoked.count > 0, "Callback should fire during silence (underrun)")
+        let fired = try await Self.pollUntil { invoked.count > 0 }
+        #expect(fired, "Callback should fire during silence (underrun)")
 
         await player.stop()
     }
@@ -157,11 +170,11 @@ struct AudioProcessCallbackTests {
 
         let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
-        try await Task.sleep(for: .milliseconds(500))
+
+        let fired = try await Self.pollUntil { !invoked.byteCounts.isEmpty }
+        #expect(fired)
 
         let byteCounts = invoked.byteCounts
-        #expect(!byteCounts.isEmpty)
-
         // AudioPlayer uses 16384-byte buffers
         let expectedBufferSize = 16_384
         for byteCount in byteCounts {
@@ -186,7 +199,9 @@ struct AudioProcessCallbackTests {
 
         let pcmData = Data(repeating: 0, count: 48_000 * 4)
         try await player.playPCM(pcmData, serverTimestamp: 0)
-        try await Task.sleep(for: .milliseconds(200))
+
+        // Brief sleep to let the AudioQueue prime — no callback to poll here
+        try await Task.sleep(for: .milliseconds(50))
 
         let isPlaying = await player.isPlaying
         #expect(isPlaying == true)
