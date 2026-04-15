@@ -27,11 +27,15 @@ public actor ServerDiscovery {
 
     /// Outstanding connections used to resolve service endpoints to host:port.
     /// Tracked so they can be cancelled in ``stopDiscovery()``.
-    private var pendingResolves: [NWConnection] = []
+    /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
+    /// `NWConnection.cancel()` is thread-safe.
+    private nonisolated(unsafe) var pendingResolves: [NWConnection] = []
 
     /// Timeout tasks for pending resolves, keyed by connection identity.
     /// Cancelled when the resolve completes or in ``stopDiscovery()``.
-    private var resolveTimeoutTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
+    /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
+    /// `Task.cancel()` is thread-safe.
+    private nonisolated(unsafe) var resolveTimeoutTasks: [ObjectIdentifier: Task<Void, Never>] = [:]
 
     /// Stream of discovered servers (updates whenever servers appear/disappear)
     public let servers: AsyncStream<[DiscoveredServer]>
@@ -99,6 +103,13 @@ public actor ServerDiscovery {
     private func terminateStream() {
         updateContinuation?.finish()
         updateContinuation = nil
+    }
+
+    /// Return discoveries sorted by name for stable ordering.
+    /// `Dictionary.values` has no guaranteed order, so sorting prevents
+    /// unnecessary UI reloads from non-deterministic element shuffling.
+    private func sortedDiscoveries() -> [DiscoveredServer] {
+        discoveries.values.sorted { $0.name < $1.name }
     }
 
     private func handleStateChange(_ state: NWBrowser.State) {
@@ -288,14 +299,14 @@ public actor ServerDiscovery {
         // Key by service name — the canonical DNS-SD identity within a service type.
         // If a service re-registers on a new port, this naturally updates the entry.
         discoveries[name] = server
-        updateContinuation?.yield(Array(discoveries.values))
+        updateContinuation?.yield(sortedDiscoveries())
     }
 
     private func removeServer(for result: NWBrowser.Result) {
         guard case let .service(name, _, _, _) = result.endpoint else { return }
 
         if discoveries.removeValue(forKey: name) != nil {
-            updateContinuation?.yield(Array(discoveries.values))
+            updateContinuation?.yield(sortedDiscoveries())
         }
     }
 
