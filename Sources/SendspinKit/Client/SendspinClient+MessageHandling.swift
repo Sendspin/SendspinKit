@@ -8,38 +8,47 @@ import os
 
 extension SendspinClient {
     nonisolated func handleTextMessage(_ text: String) async {
+        guard let data = text.data(using: .utf8) else { return }
+
+        // Extract the type string first, then decode the correct type in one pass.
+        // This avoids the O(n) try-all-types chain where every message pays the cost
+        // of trying earlier types, and eliminates cross-type ambiguity from messages
+        // with all-optional payloads (like ServerStateMessage).
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let msgType = json["type"] as? String
+        else {
+            Log.client.error("Message missing 'type' field: \(text.prefix(200))")
+            return
+        }
+
+        Log.client.debug("RX \(msgType)")
+
         let decoder = JSONDecoder()
         // NOTE: Do NOT use .convertFromSnakeCase — our models define explicit CodingKeys.
 
-        guard let data = text.data(using: .utf8) else { return }
-
-        var msgType = "unknown"
-        if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let type = json["type"] as? String {
-            msgType = type
-            Log.client.debug("RX \(msgType)")
-        }
-
-        // Order matters: messages with required fields before all-optional ones.
-        if let message = try? decoder.decode(ServerHelloMessage.self, from: data), message.type == msgType {
-            await handleServerHello(message)
-        } else if let message = try? decoder.decode(ServerTimeMessage.self, from: data), message.type == msgType {
-            await handleServerTime(message)
-        } else if let message = try? decoder.decode(ServerStateMessage.self, from: data), message.type == msgType {
-            await handleServerState(message)
-        } else if let message = try? decoder.decode(StreamStartMessage.self, from: data), message.type == msgType {
-            await handleStreamStart(message)
-        } else if let message = try? decoder.decode(StreamClearMessage.self, from: data), message.type == msgType {
-            await handleStreamClear(message)
-        } else if let message = try? decoder.decode(StreamEndMessage.self, from: data), message.type == msgType {
-            await handleStreamEnd(message)
-        } else if let message = try? decoder.decode(ServerCommandMessage.self, from: data), message.type == msgType {
-            await handleServerCommand(message)
-        } else if let message = try? decoder.decode(GroupUpdateMessage.self, from: data), message.type == msgType {
-            await handleGroupUpdate(message)
-        } else {
-            let preview = text.prefix(500)
-            Log.client.error("Failed to decode message type '\(msgType)': \(preview)")
+        do {
+            switch msgType {
+            case "server/hello":
+                try await handleServerHello(decoder.decode(ServerHelloMessage.self, from: data))
+            case "server/time":
+                try await handleServerTime(decoder.decode(ServerTimeMessage.self, from: data))
+            case "server/state":
+                try await handleServerState(decoder.decode(ServerStateMessage.self, from: data))
+            case "stream/start":
+                try await handleStreamStart(decoder.decode(StreamStartMessage.self, from: data))
+            case "stream/clear":
+                try await handleStreamClear(decoder.decode(StreamClearMessage.self, from: data))
+            case "stream/end":
+                try await handleStreamEnd(decoder.decode(StreamEndMessage.self, from: data))
+            case "server/command":
+                try await handleServerCommand(decoder.decode(ServerCommandMessage.self, from: data))
+            case "group/update":
+                try await handleGroupUpdate(decoder.decode(GroupUpdateMessage.self, from: data))
+            default:
+                Log.client.warning("Unknown message type: \(msgType)")
+            }
+        } catch {
+            Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
         }
     }
 }
