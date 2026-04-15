@@ -292,7 +292,14 @@ public final class SendspinClient {
         }
     }
 
-    /// Disconnect from server
+    /// Disconnect from the server.
+    ///
+    /// Sends a `client/goodbye` message with the given reason before tearing down
+    /// the connection. The goodbye delivery is best-effort — if the transport fails
+    /// to send it (e.g., the connection is already dead), disconnection proceeds
+    /// normally without throwing.
+    ///
+    /// - Parameter reason: Why the client is disconnecting. Defaults to `.shutdown`.
     @MainActor
     public func disconnect(reason: GoodbyeReason = .shutdown) async {
         // Send client/goodbye before tearing down (best-effort)
@@ -656,6 +663,29 @@ public final class SendspinClient {
         MonotonicClock.nowMicroseconds()
     }
 
+    /// Estimate the current server time in microseconds.
+    ///
+    /// Uses the clock synchronization filter to convert the local monotonic clock
+    /// to the server's clock domain. Returns `nil` if clock sync has not completed
+    /// (no `server/time` responses received yet).
+    ///
+    /// Use this with ``PlaybackProgress/currentPositionMs(at:)`` to compute
+    /// the real-time interpolated playback position:
+    /// ```swift
+    /// if let serverTime = await client.currentServerTimeMicroseconds(),
+    ///    let progress = client.currentMetadata?.progress {
+    ///     let positionMs = progress.currentPositionMs(at: serverTime)
+    /// }
+    /// ```
+    @MainActor
+    public func currentServerTimeMicroseconds() async -> Int64? {
+        guard let clockSync else { return nil }
+        let localNow = MonotonicClock.absoluteMicroseconds()
+        let offset = await clockSync.currentOffset
+        guard offset != 0 else { return nil }
+        return localNow + offset
+    }
+
     /// Set playback volume (0–100, perceived loudness per spec).
     ///
     /// The integer range 0–100 matches the Sendspin wire format. Internally,
@@ -687,7 +717,11 @@ public final class SendspinClient {
     /// Set mute state.
     ///
     /// Updates the local mute state immediately. The server is notified
-    /// best-effort.
+    /// best-effort — a failed `client/state` send does not prevent the
+    /// local mute change from taking effect. This asymmetry (throw for
+    /// missing player, swallow server notification failure) is deliberate:
+    /// a missing player is a programmer error, while a transient send
+    /// failure is recoverable (the next state update will catch up).
     ///
     /// - Throws: ``SendspinClientError/notConnected`` if the player role
     ///   is not active.

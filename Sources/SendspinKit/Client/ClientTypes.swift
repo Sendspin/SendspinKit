@@ -58,7 +58,10 @@ public enum ClientEvent: Sendable, Equatable {
     /// the stream. Typically sent during a seek operation. Consumers should
     /// reset any time-based UI (progress bars, waveform displays, etc.)
     /// and wait for fresh metadata with the new position.
-    case streamCleared
+    ///
+    /// `roles` contains the roles that were cleared, or `nil` if all roles
+    /// were cleared (matching the wire format's semantics).
+    case streamCleared(roles: [String]?)
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)

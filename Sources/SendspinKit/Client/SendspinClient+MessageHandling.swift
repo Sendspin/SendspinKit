@@ -302,8 +302,9 @@ extension SendspinClient {
             if let audioPlayer {
                 await audioPlayer.clearBuffer()
             }
-            eventsContinuation.yield(.streamCleared)
         }
+
+        eventsContinuation.yield(.streamCleared(roles: roles))
     }
 
     func handleServerCommand(_ message: ServerCommandMessage) async {

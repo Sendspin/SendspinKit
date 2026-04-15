@@ -130,51 +130,74 @@ public extension SendspinClient {
 
 // MARK: - Controller commands
 
-public extension SendspinClient {
-    /// Send a controller command to the server.
+extension SendspinClient {
+    /// Send a raw controller command to the server.
     ///
-    /// Only valid if the client has the controller role and the command is in
-    /// the server's `supported_commands`.
-    ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// Internal because the typed convenience methods (`play()`, `pause()`, etc.) are the
+    /// correct public API — they prevent invalid parameter combinations like
+    /// `sendCommand(.play, volume: 50)` which compiles but is nonsensical.
     @MainActor
     func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async throws {
         let controller = ControllerCommand(command: command, volume: volume, mute: mute)
         let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
         try await sendWrapped(message)
     }
+}
 
-    /// Convenience: play
+public extension SendspinClient {
+    /// Start playback.
+    ///
+    /// Requires the controller role. Check ``currentControllerState`` to verify
+    /// the server supports this command before calling — if the server doesn't
+    /// support it, the command is silently ignored per spec.
+    ///
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
     @MainActor func play() async throws {
         try await sendCommand(.play)
     }
 
-    /// Convenience: pause
+    /// Pause playback.
+    ///
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func pause() async throws {
         try await sendCommand(.pause)
     }
 
-    /// Convenience: stop playback
+    /// Stop playback.
+    ///
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func stopPlayback() async throws {
         try await sendCommand(.stop)
     }
 
-    /// Convenience: next track
+    /// Skip to the next track.
+    ///
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func next() async throws {
         try await sendCommand(.next)
     }
 
-    /// Convenience: previous track
+    /// Skip to the previous track.
+    ///
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func previous() async throws {
         try await sendCommand(.previous)
     }
 
-    /// Convenience: set group volume (0-100)
+    /// Set the group volume (0–100, perceived loudness).
+    ///
+    /// This controls the volume for the entire group (all players), unlike
+    /// ``setVolume(_:)`` which controls this individual player's volume.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setGroupVolume(_ volume: Int) async throws {
         try await sendCommand(.volume, volume: max(0, min(100, volume)))
     }
 
-    /// Convenience: set group mute
+    /// Set the group mute state.
+    ///
+    /// This controls mute for the entire group (all players), unlike
+    /// ``setMute(_:)`` which controls this individual player's mute.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setGroupMute(_ muted: Bool) async throws {
         try await sendCommand(.mute, mute: muted)
     }
@@ -183,6 +206,7 @@ public extension SendspinClient {
     ///
     /// Maps directly to the individual repeat commands on the wire.
     /// Useful when binding a `Picker<RepeatMode>` in SwiftUI.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setRepeatMode(_ mode: RepeatMode) async throws {
         switch mode {
         case .off: try await sendCommand(.repeatOff)
@@ -194,36 +218,43 @@ public extension SendspinClient {
     /// Set shuffle state.
     ///
     /// Useful when binding a toggle in SwiftUI.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setShuffle(_ enabled: Bool) async throws {
         try await sendCommand(enabled ? .shuffle : .unshuffle)
     }
 
-    /// Convenience: repeat off
+    /// Repeat off.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func repeatOff() async throws {
         try await sendCommand(.repeatOff)
     }
 
-    /// Convenience: repeat one track
+    /// Repeat the current track.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func repeatOne() async throws {
         try await sendCommand(.repeatOne)
     }
 
-    /// Convenience: repeat all tracks
+    /// Repeat all tracks in the queue.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func repeatAll() async throws {
         try await sendCommand(.repeatAll)
     }
 
-    /// Convenience: shuffle playback
+    /// Enable shuffle mode.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func shuffle() async throws {
         try await sendCommand(.shuffle)
     }
 
-    /// Convenience: unshuffle playback
+    /// Disable shuffle mode.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func unshuffle() async throws {
         try await sendCommand(.unshuffle)
     }
 
-    /// Convenience: switch to next group
+    /// Switch to the next group.
+    /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func switchGroup() async throws {
         try await sendCommand(.switch)
     }

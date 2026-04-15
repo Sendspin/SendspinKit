@@ -217,7 +217,7 @@ struct ClientIntegrationTests {
         try await mock.injectText(streamClearJSON())
 
         let event = await eventTask.value
-        #expect(event == .streamCleared)
+        #expect(event == .streamCleared(roles: nil))
 
         await client.disconnect()
     }
