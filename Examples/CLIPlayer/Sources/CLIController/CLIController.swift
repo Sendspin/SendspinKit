@@ -19,7 +19,7 @@ final class CLIController {
             return
         }
 
-        let client = SendspinClient(
+        let client = try SendspinClient(
             clientId: UUID().uuidString,
             name: clientName,
             roles: [.controllerV1, .metadataV1]

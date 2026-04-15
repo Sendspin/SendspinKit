@@ -11,11 +11,14 @@ protocol AudioDecoder {
     func decode(_ data: Data) throws -> Data
 }
 
-/// PCM decoder supporting 16-bit and 24-bit formats
+/// PCM decoder supporting 16-bit and 24-bit formats.
 ///
-/// Immutable after init — safe to use from any context.
-struct PCMDecoder: AudioDecoder {
+/// Uses a class (not struct) to hold a reusable buffer for 24-bit unpacking,
+/// avoiding per-call heap allocation. Only accessed from the AudioPlayer actor.
+class PCMDecoder: AudioDecoder {
     private let bitDepth: Int
+    /// Reusable buffer for 24-bit → 32-bit unpacking. Not used for 16-bit/32-bit passthrough.
+    private var outputBuffer: [Int32] = []
 
     init(bitDepth: Int, channels _: Int) {
         self.bitDepth = bitDepth
@@ -42,7 +45,7 @@ struct PCMDecoder: AudioDecoder {
 
     /// Unpack 3-byte little-endian 24-bit samples into left-justified Int32
     /// for AudioQueue (which expects 32-bit containers for 24-bit audio).
-    /// Works directly on Data's underlying bytes — no intermediate [UInt8] copy.
+    /// Uses a persistent output buffer to avoid per-call heap allocation.
     private func decode24Bit(_ data: Data) throws -> Data {
         let bytesPerSample = 3
         guard data.count % bytesPerSample == 0 else {
@@ -54,11 +57,11 @@ struct PCMDecoder: AudioDecoder {
 
         let sampleCount = data.count / bytesPerSample
 
+        outputBuffer.removeAll(keepingCapacity: true)
+        outputBuffer.reserveCapacity(sampleCount)
+
         return data.withUnsafeBytes { src in
             let base = src.baseAddress!.assumingMemoryBound(to: UInt8.self)
-            // Allocate output: 4 bytes per sample (Int32)
-            let output = UnsafeMutableBufferPointer<Int32>.allocate(capacity: sampleCount)
-            defer { output.deallocate() }
 
             for i in 0 ..< sampleCount {
                 let off = i * bytesPerSample
@@ -72,10 +75,10 @@ struct PCMDecoder: AudioDecoder {
                 }
 
                 // Left-shift into 32-bit range for AudioQueue
-                output[i] = value << 8
+                outputBuffer.append(value << 8)
             }
 
-            return Data(buffer: output)
+            return outputBuffer.withUnsafeBytes { Data($0) }
         }
     }
 }
@@ -89,6 +92,9 @@ struct PCMDecoder: AudioDecoder {
 class OpusDecoder: AudioDecoder {
     private let decoder: Opus.Decoder
     private let channels: Int
+    /// Reusable buffer for float→int32 conversion. Cleared and refilled on each
+    /// decode() call, but keeps its heap allocation across calls to avoid churn.
+    private var int32Buffer: [Int32] = []
 
     init(sampleRate: Int, channels: Int, bitDepth _: Int) throws {
         self.channels = channels
@@ -132,7 +138,11 @@ class OpusDecoder: AudioDecoder {
 
         let frameLength = Int(pcmBuffer.frameLength)
         let totalSamples = frameLength * channels
-        var int32Samples = [Int32](repeating: 0, count: totalSamples)
+
+        // Reuse the persistent buffer to avoid per-call heap allocation.
+        // removeAll(keepingCapacity:) preserves the underlying storage.
+        int32Buffer.removeAll(keepingCapacity: true)
+        int32Buffer.reserveCapacity(totalSamples)
 
         // Convert interleaved float32 samples to int32
         // float range [-1.0, 1.0] -> int32 range [Int32.min, Int32.max]
@@ -141,11 +151,11 @@ class OpusDecoder: AudioDecoder {
         // so a sample of exactly 1.0 would overflow Int32 without clamping.
         let floatData = floatChannelData[0]
         for i in 0 ..< totalSamples {
-            int32Samples[i] = clampFloatToInt32(floatData[i])
+            int32Buffer.append(clampFloatToInt32(floatData[i]))
         }
 
         // Convert [Int32] to Data
-        return int32Samples.withUnsafeBytes { Data($0) }
+        return int32Buffer.withUnsafeBytes { Data($0) }
     }
 
     /// Convert a float sample in [-1.0, 1.0] to Int32 range with safe clamping.

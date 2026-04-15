@@ -33,6 +33,10 @@ actor AudioScheduler {
     /// Playback window in microseconds — chunks within ±this window of "now" are played
     private let playbackWindowUs: Int64
     private var queue: [ScheduledChunk] = []
+    /// Index of the next chunk to consume. Using an index avoids O(n) shifts
+    /// from `removeFirst()`. The prefix is compacted when it exceeds half the
+    /// array to prevent unbounded growth.
+    private var readIndex: Int = 0
     private var counters = SchedulerStats()
     private var timerTask: Task<Void, Never>?
 
@@ -75,10 +79,10 @@ actor AudioScheduler {
         counters.received += 1
     }
 
-    /// Insert chunk maintaining sorted order by playTime
+    /// Insert chunk maintaining sorted order by playTime.
+    /// Binary search runs over the unconsumed portion (`readIndex..<queue.count`).
     private func insertSorted(_ chunk: ScheduledChunk) {
-        // Find the insertion point using binary search
-        var low = 0
+        var low = readIndex
         var high = queue.count
 
         while low < high {
@@ -93,15 +97,20 @@ actor AudioScheduler {
         queue.insert(chunk, at: low)
     }
 
+    /// Number of unconsumed chunks in the queue.
+    private var activeCount: Int {
+        queue.count - readIndex
+    }
+
     /// Queued chunks (for testing)
     var queuedChunks: [ScheduledChunk] {
-        queue
+        Array(queue[readIndex...])
     }
 
     /// Statistics snapshot including queue size and buffer fill.
     var stats: SchedulerStats {
         var snapshot = counters
-        snapshot.queueSize = queue.count
+        snapshot.queueSize = activeCount
 
         let nowUs = MonotonicClock.absoluteMicroseconds()
         if let lastChunk = queue.last {
@@ -122,7 +131,8 @@ actor AudioScheduler {
                 // Smart sleep: wait until the next chunk is due instead of
                 // polling at a fixed interval.
                 let sleepDuration: Duration
-                if let next = queue.first {
+                if readIndex < queue.count {
+                    let next = queue[readIndex]
                     let nowUs = MonotonicClock.absoluteMicroseconds()
                     let delayUs = next.playTimeMicroseconds - nowUs - playbackWindowUs
                     if delayUs > 0 {
@@ -160,13 +170,24 @@ actor AudioScheduler {
     /// Clear all queued chunks
     func clear() {
         queue.removeAll()
+        readIndex = 0
+    }
+
+    /// Compact the consumed prefix when it exceeds half the array,
+    /// preventing unbounded growth of dead entries.
+    private func compactIfNeeded() {
+        if readIndex > queue.count / 2, readIndex > 0 {
+            queue.removeFirst(readIndex)
+            readIndex = 0
+        }
     }
 
     /// Check queue and output ready chunks
     private func checkQueue() {
         let nowUs = MonotonicClock.absoluteMicroseconds()
 
-        while let next = queue.first {
+        while readIndex < queue.count {
+            let next = queue[readIndex]
             let delayUs = next.playTimeMicroseconds - nowUs
 
             if delayUs > playbackWindowUs {
@@ -174,15 +195,17 @@ actor AudioScheduler {
                 break
             } else if delayUs < -playbackWindowUs {
                 // Too late, drop
-                queue.removeFirst()
+                readIndex += 1
                 counters.dropped += 1
                 counters.droppedLate += 1
             } else {
                 // Ready to play (within ±window)
-                let chunk = queue.removeFirst()
-                chunkContinuation.yield(chunk)
+                readIndex += 1
+                chunkContinuation.yield(next)
                 counters.played += 1
             }
         }
+
+        compactIfNeeded()
     }
 }
