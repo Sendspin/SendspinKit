@@ -1,6 +1,7 @@
 // ABOUTME: Main entry point for CLI player
 // ABOUTME: Handles command-line arguments and launches the player
 
+import Dispatch
 import Foundation
 import SendspinKit
 
@@ -40,7 +41,7 @@ while argIndex < args.count {
                 exit(1)
             }
         }
-    } else if arg.starts(with: "ws://") {
+    } else if arg.starts(with: "ws://") || arg.starts(with: "wss://") {
         serverURL = arg
     } else if !arg.starts(with: "--") {
         clientName = arg
@@ -50,21 +51,43 @@ while argIndex < args.count {
 
 let player = CLIPlayer()
 
-// Catch SIGINT (Ctrl-C) for graceful shutdown — sends client/goodbye
-// so the server knows we're shutting down and won't keep retrying.
-signal(SIGINT) { _ in
-    fputs("\n[SHUTDOWN] Caught SIGINT, shutting down...\n", stderr)
-    // Schedule async disconnect on the main actor, then exit
+// Shared SIGINT state: first SIGINT arms graceful shutdown, a second SIGINT
+// force-exits. MainActor isolation keeps this consistent with the other
+// examples (see RetryState / DashboardState) — Tasks enqueue FIFO on the
+// main actor, so the second SIGINT's handler observes the flag set by the
+// first without needing `nonisolated(unsafe)`.
+@MainActor
+final class ShutdownState {
+    var latched = false
+}
+let shutdown = ShutdownState()
+
+// SIGINT: graceful shutdown via DispatchSource (async-signal-safe, unlike
+// calling Swift async code from a C signal handler). The handler fires on
+// `.main` and hops onto MainActor to touch `ShutdownState` / run async work.
+signal(SIGINT, SIG_IGN)
+let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+sigintSource.setEventHandler {
     Task { @MainActor in
+        if shutdown.latched {
+            fputs("\n[SHUTDOWN] Second SIGINT — force exit.\n", stderr)
+            exit(130) // 128 + SIGINT
+        }
+        shutdown.latched = true
+        fputs("\n[SHUTDOWN] Caught SIGINT, shutting down... (Ctrl-C again to force exit)\n", stderr)
         await player.gracefulShutdown()
         exit(0)
     }
-    // Give the async work a moment, then force-exit as a fallback
+    // Fallback: force-exit if graceful shutdown hangs and the user hasn't
+    // pressed Ctrl-C a second time within the window. Scheduled from the
+    // dispatch handler itself (not the MainActor Task) so the fallback fires
+    // even if the main actor is wedged.
     DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
         fputs("[SHUTDOWN] Timed out waiting for graceful disconnect\n", stderr)
         exit(1)
     }
 }
+sigintSource.resume()
 
 do {
     if listenMode {
@@ -73,29 +96,33 @@ do {
     } else {
         // Client-initiated: discover or connect to provided server URL
         if serverURL == nil {
-            print("🔍 Discovering Sendspin servers...")
+            print("Discovering Sendspin servers...")
             let servers = try await SendspinClient.discoverServers(timeout: .seconds(3))
 
             if servers.isEmpty {
-                print("❌ No Sendspin servers found on network")
-                print("💡 Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
-                print("          CLIPlayer [--no-tui] --listen [port] [client-name]")
+                print("No Sendspin servers found on network")
+                print("Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
+                print("       CLIPlayer [--no-tui] --listen [port] [client-name]")
                 exit(1)
             }
 
-            print("📡 Found \(servers.count) server(s):")
+            print("Found \(servers.count) server(s):")
             for (index, server) in servers.enumerated() {
                 print("  [\(index + 1)] \(server.name) - \(server.url)")
             }
 
             let selected = servers[0]
-            print("✅ Connecting to: \(selected.name)")
+            print("Connecting to: \(selected.name)")
             serverURL = selected.url.absoluteString
         }
 
-        try await player.run(serverURL: serverURL!, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
+        guard let url = serverURL else {
+            print("No server URL available")
+            exit(1)
+        }
+        try await player.run(serverURL: url, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
     }
 } catch {
-    print("❌ Fatal error: \(error)")
+    print("Fatal error: \(error)")
     exit(1)
 }

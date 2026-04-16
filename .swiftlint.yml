@@ -2,7 +2,10 @@
 
 excluded:
   - .build
-  - Examples
+  # Each example SPM package has its own .build/ dir containing checked-out
+  # dependency sources (Starscream, swift-argument-parser). Lint our code,
+  # not theirs. SwiftLint's glob matching requires the explicit wildcard.
+  - Examples/*/.build
 
 # Disabled rules
 disabled_rules:

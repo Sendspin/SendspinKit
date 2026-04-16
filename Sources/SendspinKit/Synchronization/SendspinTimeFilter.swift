@@ -8,10 +8,17 @@ import Foundation
 /// This is a faithful port of the C++ reference implementation with:
 /// - Full 2x2 covariance matrix propagation
 /// - Per-sample measurement noise derived from RTT
-/// - Drift process noise (unlike the Python/Rust ports which set this to 0)
 /// - Adaptive forgetting factor for changing network conditions
 /// - Drift significance SNR gate (only applies drift when statistically meaningful)
 /// - RTT floor of 1μs to prevent zero-variance NaN on localhost (from Rust port)
+///
+/// Defaults match the reference project's README recommendations
+/// (`time-filter/README.md`, "Recommended Values") — notably
+/// `driftProcessStdDev = 0.0`. A nonzero drift process noise with typical
+/// sync intervals (hundreds of ms) inflates `driftCovariance` fast enough
+/// that the prediction step's `driftCov · dt²` term dominates `R`,
+/// pinning `offsetCovariance` at `measurementVariance` every step — i.e.
+/// the filter never learns from more than one sample.
 ///
 /// Units: all timestamps in microseconds (Int64), offset/drift in microseconds (Double).
 struct SendspinTimeFilter {
@@ -65,11 +72,18 @@ struct SendspinTimeFilter {
 
     /// Create a new time filter.
     ///
+    /// Defaults match the reference project's `README.md` "Recommended Values"
+    /// section. In particular, `driftProcessStdDev` defaults to `0.0` — a
+    /// nonzero value causes `driftCovariance` to grow by `dt · q_drift` each
+    /// step, and the `driftCov · dt²` term in the offset prediction then
+    /// pins `offsetCovariance` at `measurementVariance` every cycle (the
+    /// filter stops learning from multiple samples).
+    ///
     /// - Parameters:
-    ///   - processStdDev: Standard deviation of offset process noise (μs/√μs).
-    ///     Controls how quickly the filter adapts to offset changes. Default 0.01.
+    ///   - processStdDev: Standard deviation of offset process noise. Default 0.01.
     ///   - driftProcessStdDev: Standard deviation of drift process noise.
-    ///     Controls how quickly the filter adapts to drift rate changes. Default 0.001.
+    ///     Default 0.0 — treat drift as effectively constant between samples
+    ///     (valid over minutes for any real oscillator).
     ///   - forgetFactor: Adaptive forgetting inflation factor (>1). Applied when
     ///     residuals exceed the cutoff after min_samples. Default 1.001.
     ///   - adaptiveCutoff: Fraction of max_error that triggers forgetting. Default 0.75.
@@ -77,7 +91,7 @@ struct SendspinTimeFilter {
     ///   - driftSignificanceThreshold: SNR threshold for applying drift. Default 2.0.
     init(
         processStdDev: Double = 0.01,
-        driftProcessStdDev: Double = 0.001,
+        driftProcessStdDev: Double = 0.0,
         forgetFactor: Double = 1.001,
         adaptiveCutoff: Double = 0.75,
         minSamples: UInt8 = 100,

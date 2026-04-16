@@ -17,39 +17,45 @@ final class CLIPlayer {
         (disconnected, disconnectedContinuation) = AsyncStream.makeStream()
     }
 
-    /// Shared player configuration for both connect and listen modes.
-    ///
-    /// Format list is priority-ordered: the server picks the FIRST compatible format.
-    /// The server does NOT match source quality — it always uses our top preference.
-    ///
-    /// Strategy: FLAC 24-bit first for maximum fidelity. FLAC compression means
-    /// 24-bit FLAC of a 16-bit source is barely larger than 16-bit FLAC (the extra
-    /// zero bits compress away), so there's no real bandwidth penalty. Standard
-    /// sample rates before hi-res to avoid unnecessary upsampling.
-    /// Shared format list for both connect and listen modes.
-    ///
-    /// Priority-ordered: the server picks the FIRST compatible format.
-    /// FLAC 24-bit first for maximum fidelity. Standard sample rates before hi-res.
-    // swiftlint:disable:next force_try
-    private static let supportedFormats = try! [
-        // FLAC 24-bit — preferred (lossless, no quality loss on any source)
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 88_200, bitDepth: 24),
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 96_000, bitDepth: 24),
-        // FLAC 16-bit — fallback if server can't do 24-bit FLAC
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
-        AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
-        // PCM fallbacks if server can't do FLAC
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
-        AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
-        // Lossy compressed — lowest bandwidth option
-        AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
-    ]
+    // Shared format list for both connect and listen modes.
+    //
+    // Priority-ordered: the server picks the FIRST compatible format.
+    // The server does NOT match source quality — it always uses our top preference.
+    //
+    // Strategy: FLAC 24-bit first for maximum fidelity. FLAC compression means
+    // 24-bit FLAC of a 16-bit source is barely larger than 16-bit FLAC (the extra
+    // zero bits compress away), so there's no real bandwidth penalty. Standard
+    // sample rates before hi-res to avoid unnecessary upsampling.
+    //
+    // These specs are programmer-literal constants — a validation failure here is
+    // a programmer error (not a runtime input problem), so we convert throws into
+    // a `preconditionFailure` at first access. This teaches the right pattern for
+    // static config built from library types that validate in their initializer.
+    private static let supportedFormats: [AudioFormatSpec] = {
+        do {
+            return [
+                // FLAC 24-bit — preferred (lossless, no quality loss on any source)
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24),
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 88_200, bitDepth: 24),
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 96_000, bitDepth: 24),
+                // FLAC 16-bit — fallback if server can't do 24-bit FLAC
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16),
+                try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                // PCM fallbacks if server can't do FLAC
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 88_200, bitDepth: 24),
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 96_000, bitDepth: 24),
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 176_400, bitDepth: 24),
+                try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 192_000, bitDepth: 24),
+                // Lossy compressed — lowest bandwidth option
+                try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+            ]
+        } catch {
+            preconditionFailure("CLIPlayer supportedFormats contains an invalid spec: \(error)")
+        }
+    }()
 
     private static func playerConfig(volumeMode: VolumeMode) throws -> PlayerConfiguration {
         try PlayerConfiguration(
@@ -59,10 +65,15 @@ final class CLIPlayer {
         )
     }
 
-    // swiftlint:disable:next force_try
-    private static let artworkConfig = try! ArtworkConfiguration(channels: [
-        ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-    ])
+    private static let artworkConfig: ArtworkConfiguration = {
+        do {
+            return try ArtworkConfiguration(channels: [
+                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
+            ])
+        } catch {
+            preconditionFailure("CLIPlayer artworkConfig is invalid: \(error)")
+        }
+    }()
 
     @MainActor
     func run(serverURL: String, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software) async throws {
@@ -102,7 +113,7 @@ final class CLIPlayer {
         try? await Task.sleep(for: .milliseconds(500))
 
         if useTUI {
-            await display.start()
+            await display.start(client: client)
         } else {
             print("✅ Connected! Logging mode (type 'help' for commands, Ctrl-C to exit)")
             print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -126,118 +137,138 @@ final class CLIPlayer {
 
     @MainActor
     private func monitorEvents(client: SendspinClient, useTUI: Bool) async {
-        for await event in client.events {
-            switch event {
-            case let .serverConnected(info):
-                if useTUI {
-                    await display.updateServer(name: info.name)
-                } else {
-                    print("[EVENT] Server connected: \(info.name) (v\(info.version))")
-                }
-
-            case let .streamStarted(format):
-                let formatStr = "\(format.codec.rawValue) \(format.sampleRate)Hz " +
-                    "\(format.channels)ch \(format.bitDepth)bit"
-                if useTUI {
-                    await display.updateStream(format: formatStr)
-                } else {
-                    print("[EVENT] Stream started: \(formatStr)")
-                }
-
-            case let .streamFormatChanged(format):
-                let formatStr = "\(format.codec.rawValue) \(format.sampleRate)Hz " +
-                    "\(format.channels)ch \(format.bitDepth)bit"
-                if useTUI {
-                    await display.updateStream(format: formatStr)
-                } else {
-                    print("[EVENT] Format changed: \(formatStr)")
-                }
-
-            case .streamEnded:
-                if useTUI {
-                    await display.updateStream(format: "No stream")
-                } else {
-                    print("[EVENT] Stream ended")
-                }
-
-            case let .groupUpdated(info):
-                if !useTUI {
-                    print("[EVENT] Group updated: \(info.groupName) (\(info.playbackState?.rawValue ?? "unknown"))")
-                }
-
-            case let .metadataReceived(metadata):
-                if useTUI {
-                    await display.updateMetadata(
-                        title: metadata.title,
-                        artist: metadata.artist,
-                        album: metadata.album,
-                        artworkUrl: metadata.artworkURL
-                    )
-                } else {
-                    print("[METADATA] Track: \(metadata.title ?? "unknown")")
-                    print("[METADATA] Artist: \(metadata.artist ?? "unknown")")
-                    print("[METADATA] Album: \(metadata.album ?? "unknown")")
-                    if let artworkUrl = metadata.artworkURL {
-                        print("[METADATA] Artwork URL: \(artworkUrl)")
-                    }
-                }
-
-            case let .controllerStateUpdated(state):
-                if !useTUI {
-                    let cmds = state.supportedCommands.map(\.rawValue).joined(separator: ",")
-                    print("[CONTROLLER] commands=\(cmds) volume=\(state.volume) muted=\(state.muted)")
-                }
-
-            case let .artworkStreamStarted(channels):
-                if !useTUI {
-                    let desc = channels.enumerated().map { "ch\($0): \($1.source)/\($1.format) \($1.width)x\($1.height)" }.joined(separator: ", ")
-                    print("[EVENT] Artwork stream started: \(desc)")
-                }
-
-            case let .artworkReceived(channel, data):
-                if !useTUI {
-                    if data.isEmpty {
-                        print("[EVENT] Artwork cleared on channel \(channel)")
-                    } else {
-                        print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
-                    }
-                }
-
-            case let .visualizerData(data):
-                if !useTUI {
-                    print("[EVENT] Visualizer data: \(data.count) bytes")
-                }
-
-            case .streamCleared:
-                if !useTUI {
-                    print("[EVENT] Stream cleared (seek)")
-                }
-
-            case let .staticDelayChanged(delayMs):
-                if !useTUI {
-                    print("[EVENT] Static delay changed: \(delayMs)ms")
-                }
-
-            case let .lastPlayedServerChanged(serverId):
-                if !useTUI {
-                    print("[EVENT] Last played server: \(serverId)")
-                }
-
-            case .rawAudioChunk:
-                break // Raw audio passthrough; CLIPlayer uses the decoded pipeline
-
-            case let .disconnected(reason):
-                if !useTUI {
-                    print("[EVENT] Disconnected: \(reason)")
-                }
+        // `client.events` is kept alive by SendspinClient across reconnects,
+        // so we can't wait for the stream to finish naturally — we have to
+        // break out of the for-await explicitly on `.disconnected`.
+        eventLoop: for await event in client.events {
+            if useTUI {
+                await handleEventTUI(event)
+            } else {
+                handleEventLog(event)
+            }
+            if case .disconnected = event {
                 disconnectedContinuation.yield()
                 disconnectedContinuation.finish()
-
+                break eventLoop
             }
         }
-        // Event stream ended (client deallocated or connection dropped)
+        // Fallback: if the loop exits via cancellation or client deallocation,
+        // make sure the continuation is also finished so no one waits forever.
         disconnectedContinuation.yield()
         disconnectedContinuation.finish()
+    }
+
+    /// Handle events in TUI mode by pushing state updates into the StatusDisplay.
+    ///
+    /// Every ``ClientEvent`` case is listed explicitly — events the TUI doesn't
+    /// render still appear in an `ignored` block. If `ClientEvent` gains a new
+    /// case, this switch fails to compile, forcing a decision about whether
+    /// the TUI should show it.
+    @MainActor
+    private func handleEventTUI(_ event: ClientEvent) async {
+        switch event {
+        case let .serverConnected(info):
+            await display.updateServer(name: info.name)
+
+        case let .streamStarted(format), let .streamFormatChanged(format):
+            await display.updateStream(format: Self.formatString(format))
+
+        case .streamEnded:
+            await display.updateStream(format: "No stream")
+
+        case let .metadataReceived(metadata):
+            await display.updateMetadata(
+                title: metadata.title,
+                artist: metadata.artist,
+                album: metadata.album,
+                artworkUrl: metadata.artworkURL
+            )
+
+        // Ignored in TUI mode — these are either handled by log mode only, or
+        // have no corresponding on-screen element yet. Keep the list explicit
+        // so adding a new case is a compiler error, not a silent drop.
+        case .groupUpdated,
+             .controllerStateUpdated,
+             .artworkStreamStarted,
+             .artworkReceived,
+             .visualizerData,
+             .streamCleared,
+             .staticDelayChanged,
+             .lastPlayedServerChanged,
+             .rawAudioChunk,
+             .disconnected:
+            break
+        }
+    }
+
+    /// Handle events in log mode by printing a tagged line to stdout.
+    /// Not `@MainActor`-isolated — printing to stdout needs no isolation.
+    private nonisolated func handleEventLog(_ event: ClientEvent) {
+        switch event {
+        case let .serverConnected(info):
+            print("[EVENT] Server connected: \(info.name) (v\(info.version))")
+
+        case let .streamStarted(format):
+            print("[EVENT] Stream started: \(Self.formatString(format))")
+
+        case let .streamFormatChanged(format):
+            print("[EVENT] Format changed: \(Self.formatString(format))")
+
+        case .streamEnded:
+            print("[EVENT] Stream ended")
+
+        case let .groupUpdated(info):
+            print("[EVENT] Group updated: \(info.groupName) (\(info.playbackState?.rawValue ?? "unknown"))")
+
+        case let .metadataReceived(metadata):
+            print("[METADATA] Track: \(metadata.title ?? "unknown")")
+            print("[METADATA] Artist: \(metadata.artist ?? "unknown")")
+            print("[METADATA] Album: \(metadata.album ?? "unknown")")
+            if let artworkUrl = metadata.artworkURL {
+                print("[METADATA] Artwork URL: \(artworkUrl)")
+            }
+
+        case let .controllerStateUpdated(state):
+            let cmds = state.supportedCommands.map(\.rawValue).joined(separator: ",")
+            print("[CONTROLLER] commands=\(cmds) volume=\(state.volume) muted=\(state.muted)")
+
+        case let .artworkStreamStarted(channels):
+            let desc = channels.enumerated()
+                .map { "ch\($0): \($1.source)/\($1.format) \($1.width)x\($1.height)" }
+                .joined(separator: ", ")
+            print("[EVENT] Artwork stream started: \(desc)")
+
+        case let .artworkReceived(channel, data):
+            if data.isEmpty {
+                print("[EVENT] Artwork cleared on channel \(channel)")
+            } else {
+                print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
+            }
+
+        case let .visualizerData(data):
+            print("[EVENT] Visualizer data: \(data.count) bytes")
+
+        case .streamCleared:
+            print("[EVENT] Stream cleared (seek)")
+
+        case let .staticDelayChanged(delayMs):
+            print("[EVENT] Static delay changed: \(delayMs)ms")
+
+        case let .lastPlayedServerChanged(serverId):
+            print("[EVENT] Last played server: \(serverId)")
+
+        case let .disconnected(reason):
+            print("[EVENT] Disconnected: \(reason)")
+
+        case .rawAudioChunk:
+            break // Raw audio passthrough; CLIPlayer uses the decoded pipeline
+        }
+    }
+
+    /// Format an `AudioFormatSpec` for single-line display. Shared between TUI
+    /// and log modes — static + nonisolated so it can be called from either.
+    nonisolated static func formatString(_ format: AudioFormatSpec) -> String {
+        "\(format.codec.rawValue) \(format.sampleRate)Hz \(format.channels)ch \(format.bitDepth)bit"
     }
 
     /// Run a throwing async body and log the error to stderr if it fails.
@@ -325,14 +356,14 @@ final class CLIPlayer {
 
         for part in parts.dropFirst() {
             let str = String(part).lowercased()
-            if let c = AudioCodec(rawValue: str) {
-                codec = c
-            } else if let n = Int(str) {
+            if let parsedCodec = AudioCodec(rawValue: str) {
+                codec = parsedCodec
+            } else if let num = Int(str) {
                 // Heuristic: sample rates are > 1000, bit depths are <= 32
-                if n > 32 {
-                    sampleRate = n
+                if num > 32 {
+                    sampleRate = num
                 } else {
-                    bitDepth = n
+                    bitDepth = num
                 }
             }
         }
@@ -343,7 +374,10 @@ final class CLIPlayer {
             return
         }
 
-        fputs("[FORMAT] Requesting: codec=\(codec?.rawValue ?? "auto") rate=\(sampleRate.map(String.init) ?? "auto") bits=\(bitDepth.map(String.init) ?? "auto")\n", stderr)
+        let codecStr = codec?.rawValue ?? "auto"
+        let rateStr = sampleRate.map(String.init) ?? "auto"
+        let bitsStr = bitDepth.map(String.init) ?? "auto"
+        fputs("[FORMAT] Requesting: codec=\(codecStr) rate=\(rateStr) bits=\(bitsStr)\n", stderr)
         await attempt {
             try await client.requestPlayerFormat(
                 codec: codec,
@@ -388,7 +422,7 @@ final class CLIPlayer {
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
         if useTUI {
-            await display.start()
+            await display.start(client: client)
         }
 
         // Fire-and-forget stdin command loop
@@ -424,10 +458,6 @@ final class CLIPlayer {
 
     deinit {
         eventTask?.cancel()
-        // Disconnect client on cleanup
-        Task { @MainActor [weak client] in
-            await client?.disconnect()
-        }
     }
 }
 
@@ -476,21 +506,24 @@ actor StatusDisplay {
     private var trackArtworkUrl: String?
     private var clockOffset: Int64 = 0
     private var clockRTT: Int64 = 0
-    private var clockQuality: String = "lost"
-    private var chunksReceived: Int = 0
-    private var chunksPlayed: Int = 0
-    private var chunksDropped: Int = 0
-    private var bufferMs: Double = 0.0
+    private var clockSamples: Int64 = 0
+    /// Nil until the first accepted sample — mirrors the optional return of
+    /// `currentClockSyncStats()` so "no data yet" has a single representation.
+    private var clockQuality: ClockSyncQuality?
     private var volume: Int = 100
     private var isMuted: Bool = false
     private var uptime: TimeInterval = 0
     private let startTime = Date()
+    private weak var client: SendspinClient?
 
     init() {}
 
-    func start() {
+    /// Start the display loop, polling `client.currentClockSyncStats()` each tick
+    /// to keep the clock sync section live.
+    func start(client: SendspinClient? = nil) {
         guard !isRunning else { return }
         isRunning = true
+        self.client = client
 
         // Hide cursor and clear screen
         print(ANSI.hideCursor, terminator: "")
@@ -499,9 +532,23 @@ actor StatusDisplay {
 
         displayTask = Task {
             while !Task.isCancelled && isRunning {
+                await pollClockSync()
                 render()
                 try? await Task.sleep(for: .milliseconds(100))
             }
+        }
+    }
+
+    /// Fetch clock sync stats from the client and update local display state.
+    /// Uses ``ClockSyncStats/quality`` so the tier buckets match every other
+    /// SendspinKit consumer — no locally-defined thresholds.
+    private func pollClockSync() async {
+        guard let client else { return }
+        if let stats = await client.currentClockSyncStats() {
+            clockOffset = stats.offset
+            clockRTT = stats.rtt
+            clockSamples = stats.sampleCount
+            clockQuality = stats.quality
         }
     }
 
@@ -522,19 +569,6 @@ actor StatusDisplay {
 
     func updateStream(format: String) {
         streamFormat = format
-    }
-
-    func updateClock(offset: Int64, rtt: Int64, quality: String) {
-        clockOffset = offset
-        clockRTT = rtt
-        clockQuality = quality
-    }
-
-    func updateStats(received: Int, played: Int, dropped: Int, bufferMs: Double) {
-        chunksReceived = received
-        chunksPlayed = played
-        chunksDropped = dropped
-        self.bufferMs = bufferMs
     }
 
     func updateVolume(_ vol: Int, muted: Bool) {
@@ -585,20 +619,23 @@ actor StatusDisplay {
         }
         output += "\n"
 
-        // Clock sync
-        let qualityColor = clockQuality == "good" ? ANSI.green : (clockQuality == "degraded" ? ANSI.yellow : ANSI.red)
+        // Clock sync — label and color are derived from the public ClockSyncQuality
+        // enum so every SendspinKit consumer agrees on what "good" means.
+        let (qualityLabel, qualityColor): (String, String) = {
+            guard let quality = clockQuality else { return ("waiting", ANSI.yellow) }
+            switch quality {
+            case .excellent:    return ("excellent", ANSI.green)
+            case .good:         return ("good", ANSI.green)
+            case .fair:         return ("fair", ANSI.yellow)
+            case .poor:         return ("poor", ANSI.yellow)
+            case .unacceptable: return ("unacceptable", ANSI.red)
+            }
+        }()
         output += "\(ANSI.bold)CLOCK SYNC\(ANSI.reset)\n"
         output += "  Offset:  \(formatMicroseconds(clockOffset))\n"
         output += "  RTT:     \(formatMicroseconds(clockRTT))\n"
-        output += "  Quality: \(qualityColor)\(clockQuality)\(ANSI.reset)\n"
-        output += "\n"
-
-        // Playback stats
-        output += "\(ANSI.bold)PLAYBACK\(ANSI.reset)\n"
-        output += "  Received: \(ANSI.cyan)\(chunksReceived)\(ANSI.reset) chunks\n"
-        output += "  Played:   \(ANSI.green)\(chunksPlayed)\(ANSI.reset) chunks\n"
-        output += "  Dropped:  \(chunksDropped > 0 ? ANSI.red : ANSI.dim)\(chunksDropped)\(ANSI.reset) chunks\n"
-        output += "  Buffer:   \(formatBuffer(bufferMs))\n"
+        output += "  Samples: \(clockSamples)\n"
+        output += "  Quality: \(qualityColor)\(qualityLabel)\(ANSI.reset)\n"
         output += "\n"
 
         // Volume
@@ -641,11 +678,6 @@ actor StatusDisplay {
             let seconds = Double(microseconds) / 1_000_000.0
             return String(format: "%.2fs", seconds)
         }
-    }
-
-    private func formatBuffer(_ milliseconds: Double) -> String {
-        let color = milliseconds < 50 ? ANSI.red : (milliseconds < 100 ? ANSI.yellow : ANSI.green)
-        return "\(color)\(String(format: "%.1fms", milliseconds))\(ANSI.reset)"
     }
 
     private func makeVolumeBar(volume: Int, muted: Bool) -> String {

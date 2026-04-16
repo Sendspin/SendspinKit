@@ -15,12 +15,6 @@ let package = Package(
             dependencies: [
                 .product(name: "SendspinKit", package: "SendspinKit")
             ]
-        ),
-        .executableTarget(
-            name: "CLIController",
-            dependencies: [
-                .product(name: "SendspinKit", package: "SendspinKit")
-            ]
         )
     ]
 )
