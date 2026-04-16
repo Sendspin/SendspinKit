@@ -1,6 +1,7 @@
 // ABOUTME: Main entry point for CLI player
 // ABOUTME: Handles command-line arguments and launches the player
 
+import Dispatch
 import Foundation
 import SendspinKit
 
@@ -40,7 +41,7 @@ while argIndex < args.count {
                 exit(1)
             }
         }
-    } else if arg.starts(with: "ws://") {
+    } else if arg.starts(with: "ws://") || arg.starts(with: "wss://") {
         serverURL = arg
     } else if !arg.starts(with: "--") {
         clientName = arg
@@ -50,21 +51,37 @@ while argIndex < args.count {
 
 let player = CLIPlayer()
 
-// Catch SIGINT (Ctrl-C) for graceful shutdown — sends client/goodbye
-// so the server knows we're shutting down and won't keep retrying.
-signal(SIGINT) { _ in
-    fputs("\n[SHUTDOWN] Caught SIGINT, shutting down...\n", stderr)
-    // Schedule async disconnect on the main actor, then exit
+// SIGINT: graceful shutdown via DispatchSource (async-signal-safe, unlike
+// calling Swift async code from a C signal handler).
+//
+// The handler fires on `.main`, which serializes back through the main event
+// loop — so a second SIGINT is a distinct, ordered invocation. `shutdownLatch`
+// lets the FIRST signal start a graceful disconnect (with a 2s fallback) and
+// the SECOND signal skip straight to exit(1), matching user expectation that
+// Ctrl-C-Ctrl-C means "stop waiting, quit now". Because all dispatches are on
+// `.main`, a plain Bool is safe — no atomic or lock needed.
+signal(SIGINT, SIG_IGN)
+let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
+nonisolated(unsafe) var shutdownLatch = false
+sigintSource.setEventHandler {
+    if shutdownLatch {
+        fputs("\n[SHUTDOWN] Second SIGINT — force exit.\n", stderr)
+        exit(130) // 128 + SIGINT
+    }
+    shutdownLatch = true
+    fputs("\n[SHUTDOWN] Caught SIGINT, shutting down... (Ctrl-C again to force exit)\n", stderr)
     Task { @MainActor in
         await player.gracefulShutdown()
         exit(0)
     }
-    // Give the async work a moment, then force-exit as a fallback
+    // Fallback: force-exit if graceful shutdown hangs and the user hasn't
+    // pressed Ctrl-C a second time within the window.
     DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
         fputs("[SHUTDOWN] Timed out waiting for graceful disconnect\n", stderr)
         exit(1)
     }
 }
+sigintSource.resume()
 
 do {
     if listenMode {
@@ -73,29 +90,33 @@ do {
     } else {
         // Client-initiated: discover or connect to provided server URL
         if serverURL == nil {
-            print("🔍 Discovering Sendspin servers...")
+            print("Discovering Sendspin servers...")
             let servers = try await SendspinClient.discoverServers(timeout: .seconds(3))
 
             if servers.isEmpty {
-                print("❌ No Sendspin servers found on network")
-                print("💡 Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
-                print("          CLIPlayer [--no-tui] --listen [port] [client-name]")
+                print("No Sendspin servers found on network")
+                print("Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
+                print("       CLIPlayer [--no-tui] --listen [port] [client-name]")
                 exit(1)
             }
 
-            print("📡 Found \(servers.count) server(s):")
+            print("Found \(servers.count) server(s):")
             for (index, server) in servers.enumerated() {
                 print("  [\(index + 1)] \(server.name) - \(server.url)")
             }
 
             let selected = servers[0]
-            print("✅ Connecting to: \(selected.name)")
+            print("Connecting to: \(selected.name)")
             serverURL = selected.url.absoluteString
         }
 
-        try await player.run(serverURL: serverURL!, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
+        guard let url = serverURL else {
+            print("No server URL available")
+            exit(1)
+        }
+        try await player.run(serverURL: url, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
     }
 } catch {
-    print("❌ Fatal error: \(error)")
+    print("Fatal error: \(error)")
     exit(1)
 }

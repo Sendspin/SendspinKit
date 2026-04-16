@@ -11,3 +11,4 @@ output.txt
 /test-logs/
 scripts/smoke-test.sh
 /test.*
+Examples/*/.build
