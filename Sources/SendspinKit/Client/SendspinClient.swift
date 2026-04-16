@@ -686,6 +686,31 @@ public final class SendspinClient {
         return localNow + offset
     }
 
+    /// Snapshot of the current clock synchronization state.
+    ///
+    /// Returns `nil` if the client is not connected or clock sync has not
+    /// completed (no `server/time` responses accepted yet).
+    ///
+    /// Useful for diagnostics, telemetry dashboards, and debugging sync quality.
+    /// The returned values are a point-in-time snapshot — they may change on the
+    /// next `server/time` exchange.
+    @MainActor
+    public func currentClockSyncStats() async -> ClockSyncStats? {
+        guard let clockSync else { return nil }
+        // Single actor hop — all values are from the same point in time.
+        // `diagnosticSnapshot()` itself returns nil when the filter hasn't
+        // accepted any sample yet, which is our "no data" case.
+        guard let snap = await clockSync.diagnosticSnapshot() else { return nil }
+        return ClockSyncStats(
+            offset: snap.offset,
+            rtt: snap.rtt,
+            rawRtt: snap.rawRtt,
+            drift: snap.drift,
+            estimatedError: snap.estimatedError,
+            sampleCount: snap.sampleCount
+        )
+    }
+
     /// Set playback volume (0–100, perceived loudness per spec).
     ///
     /// The integer range 0–100 matches the Sendspin wire format. Internally,
