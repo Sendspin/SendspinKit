@@ -255,8 +255,17 @@ struct SendspinTimeFilterTests {
 
     @Test
     func adaptiveForgettingInflatesCovarianceOnLargeResidual() {
-        // Use minSamples=5 so we don't need 100 warmup measurements
-        var filter = SendspinTimeFilter(minSamples: 5)
+        // This test exercises the adaptive-forgetting path on a large residual.
+        // For the inflation to be *visible* in the covariance fields after the
+        // Kalman update's deflation, the filter needs some amount of process
+        // noise building covariance between samples. The library default for
+        // `driftProcessStdDev` is 0.0 (matching the reference README's
+        // recommended tuning), which makes drift covariance monotonically
+        // shrink — the 0.2% forgetting bump then gets swamped. We construct
+        // with a non-zero drift process noise so the inflation path is
+        // observable.
+        // Use minSamples=5 so we don't need 100 warmup measurements.
+        var filter = SendspinTimeFilter(driftProcessStdDev: 0.001, minSamples: 5)
 
         // Warm up past minSamples with consistent offset of 1000μs
         for i in 0 ..< 10 {
