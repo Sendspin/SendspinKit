@@ -95,8 +95,10 @@ extension SendspinClient {
         // Send initial client state (required by spec)
         try? await sendClientState()
 
-        // Perform initial clock sync, then start continuous loop
-        try? await performInitialSync()
+        // Start the continuous clock-sync task. It handles the initial
+        // double-tap burst (first two samples 10 ms apart) internally;
+        // `isClockSynced` flips event-driven in `handleServerTime` when
+        // the first server/time response arrives.
         clockSyncTask = Task.detached { [weak self] in
             await self?.runClockSync()
         }
@@ -112,6 +114,17 @@ extension SendspinClient {
             serverTransmitted: message.payload.serverTransmitted,
             clientReceived: now
         )
+
+        // Event-driven transition from "not synced" to "synced": flip the
+        // flag and clear the audio scheduler the moment the filter accepts
+        // its first sample. This replaces the previous polled behavior at
+        // the end of `performInitialSync`. The audio handler still has a
+        // lazy fallback for the edge case where an audio chunk arrives
+        // before the first server/time response does.
+        if !isClockSynced, await clockSync.hasSynced {
+            isClockSynced = true
+            await audioScheduler?.clear()
+        }
 
         // Push updated time filter state to the audio callback for sync correction.
         // This is the only cross-boundary needed — the callback does all the math.

@@ -451,43 +451,42 @@ public final class SendspinClient {
 
     // MARK: - Clock synchronization
 
-    /// Perform initial clock synchronization (5 quick rounds)
-    @MainActor
-    func performInitialSync() async throws {
-        guard let transport, let clockSync else {
-            throw SendspinClientError.notConnected
-        }
-
-        for _ in 0 ..< 5 {
-            let now = getCurrentMicroseconds()
-            let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
-            try await transport.send(message)
-            try? await Task.sleep(for: .milliseconds(100))
-        }
-
-        try? await Task.sleep(for: .milliseconds(200))
-
-        // Only mark synced if at least one sample was accepted
-        if await clockSync.hasSynced {
-            isClockSynced = true
-            await audioScheduler?.clear()
-        }
-        // Otherwise the continuous sync loop will eventually succeed
-    }
-
+    /// Continuous clock sync task. Sends `client/time` messages on a
+    /// rapid-then-relaxed cadence: the first two samples go out 10 ms
+    /// apart so the Kalman filter establishes both offset (from sample 1)
+    /// and drift (from the `count==1 → count==2` finite-difference branch
+    /// on sample 2) within ~20 ms of the server/hello handshake. After
+    /// that, samples settle into a 1-second cadence for ongoing drift
+    /// correction.
+    ///
+    /// Matches the double-tap approach used in sendspin-rs
+    /// (`src/protocol/client.rs`). The tight initial burst shortens
+    /// time-to-`isClockSynced` from several hundred milliseconds (the
+    /// previous 5×100 ms + 200 ms-tail approach) to roughly one RTT, and
+    /// the 1 s steady-state cadence gives a tighter asymptotic
+    /// `estimatedError` than the previous 5 s interval did.
     nonisolated func runClockSync() async {
         guard let transport = await transport else { return }
 
+        var sampleCount: UInt32 = 0
         while !Task.isCancelled {
+            let now = getCurrentMicroseconds()
+            let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
             do {
-                let now = getCurrentMicroseconds()
-                let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
                 try await transport.send(message)
+                sampleCount = sampleCount &+ 1
             } catch {
                 break // Connection lost
             }
 
-            try? await Task.sleep(for: .seconds(5))
+            // First two samples 10 ms apart so the filter's count==1→2
+            // branch fires quickly (that branch initializes drift from the
+            // finite difference between the first two samples); then relax
+            // to a 1-second cadence.
+            let delay: Duration = sampleCount < 2
+                ? .milliseconds(10)
+                : .seconds(1)
+            try? await Task.sleep(for: delay)
         }
     }
 

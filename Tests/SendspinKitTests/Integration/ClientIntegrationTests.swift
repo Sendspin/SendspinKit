@@ -88,10 +88,12 @@ private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV
 /// Injects a server/hello after the transport is accepted, then waits for
 /// `connectionState == .connected`. Returns the mock transport for further interaction.
 ///
-/// `performInitialSync` sends 5 clock sync rounds with 100ms sleeps (~500ms total).
-/// We don't inject server/time responses, so `isClockSynced` stays false, but
-/// `connectionState` becomes `.connected` immediately after server/hello is processed
-/// (well before initial sync finishes). The 3s timeout accommodates CI scheduling jitter.
+/// `runClockSync` fires its first two client/time samples 10 ms apart, then
+/// settles into a 1 s cadence. We don't inject server/time responses here, so
+/// `isClockSynced` stays false, but `connectionState` becomes `.connected`
+/// immediately after server/hello is processed (the sync task is spawned
+/// detached; `handleServerHello` doesn't await it). The 3s timeout accommodates
+/// CI scheduling jitter.
 @MainActor
 private func connectClient(
     _ client: SendspinClient,
