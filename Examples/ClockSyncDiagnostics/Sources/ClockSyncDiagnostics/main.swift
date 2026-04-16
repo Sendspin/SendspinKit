@@ -48,11 +48,11 @@ private func resolveServerURL(server: String?, discover: Bool, timeout: Double) 
 /// SendspinKit consumer agrees on what "good" means.
 private func display(for quality: ClockSyncQuality) -> (label: String, color: String) {
     switch quality {
-    case .excellent: return ("EXCELLENT", ANSI.green)
-    case .good:      return ("GOOD", ANSI.green)
-    case .fair:      return ("FAIR", ANSI.yellow)
-    case .poor:      return ("POOR", ANSI.red)
-    case .unknown:   return ("UNKNOWN", ANSI.yellow)
+    case .excellent:    return ("EXCELLENT", ANSI.green)
+    case .good:         return ("GOOD", ANSI.green)
+    case .fair:         return ("FAIR", ANSI.yellow)
+    case .poor:         return ("POOR", ANSI.yellow)
+    case .unacceptable: return ("UNACCEPTABLE", ANSI.red)
     }
 }
 
@@ -77,19 +77,21 @@ private func renderDashboard(stats: ClockSyncStats, serverName: String, refreshI
     // Drift is dimensionless (μs per μs); multiply by 1,000,000 for parts-per-million.
     let driftPPM = stats.drift * 1_000_000
 
-    let errStr: String
-    if let err = stats.estimatedError {
-        errStr = String(format: "%.2f μs", err)
-    } else {
-        errStr = "n/a (collecting samples)"
-    }
+    let errStr = String(format: "%.2f μs", stats.estimatedError)
 
-    let offsetStr = String(format: "%+d μs  (%+.3f ms)", stats.offset, offsetMs)
-    let rttStr = String(format: "%d μs  (%.3f ms)", stats.rtt, rttMs)
-    // Show raw RTT only when it differs from the accepted RTT — otherwise it's noise.
-    let rawRttStr = stats.rawRtt == stats.rtt
-        ? "(same as accepted)"
-        : String(format: "%d μs  (%.3f ms)", stats.rawRtt, rawRttMs)
+    // Format specifiers for Int64 must be `%lld`, not `%d`. `String(format:)`
+    // is C `printf` under the hood — `%d` expects a 32-bit `int` and silently
+    // truncates `Int64` to its low 32 bits, which is particularly nasty for
+    // offset values (easily in the billions of μs between two process-relative
+    // monotonic clocks). The `%.3f` ms conversion uses `Double`, so it's always
+    // correct — a disagreement between the μs and ms columns is the tell.
+    let offsetStr = String(format: "%+lld μs  (%+.3f ms)", stats.offset, offsetMs)
+    let rttStr = String(format: "%lld μs  (%.3f ms)", stats.rtt, rttMs)
+    // Raw RTT presentation uses `rawRttWasRejected` — comparing `rawRtt == rtt`
+    // confuses an accepted sample with a rejected one that happens to match.
+    let rawRttStr = stats.rawRttWasRejected
+        ? String(format: "%lld μs  (%.3f ms)  rejected", stats.rawRtt, rawRttMs)
+        : "(same as accepted)"
     let driftStr = String(format: "%+.3f PPM", driftPPM)
 
     // The box border is 66 chars wide (between ╔ and ╗). Each content row
@@ -188,8 +190,12 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
 
         // Background task: monitor connection events and print status changes.
         // Runs concurrently with the polling loop below.
+        //
+        // `client.events` is kept alive by SendspinClient across reconnects,
+        // so we explicitly break on `.disconnected` rather than relying on
+        // the stream finishing.
         let eventTask = Task { @MainActor in
-            for await event in client.events {
+            eventLoop: for await event in client.events {
                 switch event {
                 case .serverConnected(let info):
                     state.serverName = info.name
@@ -201,6 +207,7 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
                         break // SIGINT path — we already printed a message
                     }
                     state.shouldQuit = true
+                    break eventLoop
                 default:
                     break
                 }

@@ -299,9 +299,19 @@ public final class SendspinClient {
     /// to send it (e.g., the connection is already dead), disconnection proceeds
     /// normally without throwing.
     ///
+    /// Idempotent: calling `disconnect()` on an already-disconnected client is a
+    /// no-op and does not emit an additional `.disconnected` event. This matters
+    /// for signal handlers and shutdown paths that may invoke `disconnect()`
+    /// more than once (e.g. a user pounding Ctrl-C).
+    ///
     /// - Parameter reason: Why the client is disconnecting. Defaults to `.shutdown`.
     @MainActor
     public func disconnect(reason: GoodbyeReason = .shutdown) async {
+        // Idempotency guard: a second disconnect() while already disconnected
+        // would otherwise re-run teardown on nil state (harmless) and yield a
+        // ghost `.disconnected` event (not harmless — it spams event consumers).
+        guard connectionState != .disconnected else { return }
+
         // Send client/goodbye before tearing down (best-effort)
         if let transport {
             let goodbye = ClientGoodbyeMessage(
@@ -705,6 +715,7 @@ public final class SendspinClient {
             offset: snap.offset,
             rtt: snap.rtt,
             rawRtt: snap.rawRtt,
+            rawRttWasRejected: snap.rawRttWasRejected,
             drift: snap.drift,
             estimatedError: snap.estimatedError,
             sampleCount: snap.sampleCount

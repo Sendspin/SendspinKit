@@ -51,31 +51,37 @@ while argIndex < args.count {
 
 let player = CLIPlayer()
 
+// Shared SIGINT state: first SIGINT arms graceful shutdown, a second SIGINT
+// force-exits. MainActor isolation keeps this consistent with the other
+// examples (see RetryState / DashboardState) — Tasks enqueue FIFO on the
+// main actor, so the second SIGINT's handler observes the flag set by the
+// first without needing `nonisolated(unsafe)`.
+@MainActor
+final class ShutdownState {
+    var latched = false
+}
+let shutdown = ShutdownState()
+
 // SIGINT: graceful shutdown via DispatchSource (async-signal-safe, unlike
-// calling Swift async code from a C signal handler).
-//
-// The handler fires on `.main`, which serializes back through the main event
-// loop — so a second SIGINT is a distinct, ordered invocation. `shutdownLatch`
-// lets the FIRST signal start a graceful disconnect (with a 2s fallback) and
-// the SECOND signal skip straight to exit(1), matching user expectation that
-// Ctrl-C-Ctrl-C means "stop waiting, quit now". Because all dispatches are on
-// `.main`, a plain Bool is safe — no atomic or lock needed.
+// calling Swift async code from a C signal handler). The handler fires on
+// `.main` and hops onto MainActor to touch `ShutdownState` / run async work.
 signal(SIGINT, SIG_IGN)
 let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
-nonisolated(unsafe) var shutdownLatch = false
 sigintSource.setEventHandler {
-    if shutdownLatch {
-        fputs("\n[SHUTDOWN] Second SIGINT — force exit.\n", stderr)
-        exit(130) // 128 + SIGINT
-    }
-    shutdownLatch = true
-    fputs("\n[SHUTDOWN] Caught SIGINT, shutting down... (Ctrl-C again to force exit)\n", stderr)
     Task { @MainActor in
+        if shutdown.latched {
+            fputs("\n[SHUTDOWN] Second SIGINT — force exit.\n", stderr)
+            exit(130) // 128 + SIGINT
+        }
+        shutdown.latched = true
+        fputs("\n[SHUTDOWN] Caught SIGINT, shutting down... (Ctrl-C again to force exit)\n", stderr)
         await player.gracefulShutdown()
         exit(0)
     }
     // Fallback: force-exit if graceful shutdown hangs and the user hasn't
-    // pressed Ctrl-C a second time within the window.
+    // pressed Ctrl-C a second time within the window. Scheduled from the
+    // dispatch handler itself (not the MainActor Task) so the fallback fires
+    // even if the main actor is wedged.
     DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
         fputs("[SHUTDOWN] Timed out waiting for graceful disconnect\n", stderr)
         exit(1)

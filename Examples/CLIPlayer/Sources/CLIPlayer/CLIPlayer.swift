@@ -137,7 +137,10 @@ final class CLIPlayer {
 
     @MainActor
     private func monitorEvents(client: SendspinClient, useTUI: Bool) async {
-        for await event in client.events {
+        // `client.events` is kept alive by SendspinClient across reconnects,
+        // so we can't wait for the stream to finish naturally — we have to
+        // break out of the for-await explicitly on `.disconnected`.
+        eventLoop: for await event in client.events {
             if useTUI {
                 await handleEventTUI(event)
             } else {
@@ -146,9 +149,11 @@ final class CLIPlayer {
             if case .disconnected = event {
                 disconnectedContinuation.yield()
                 disconnectedContinuation.finish()
+                break eventLoop
             }
         }
-        // Event stream ended (client deallocated or connection dropped)
+        // Fallback: if the loop exits via cancellation or client deallocation,
+        // make sure the continuation is also finished so no one waits forever.
         disconnectedContinuation.yield()
         disconnectedContinuation.finish()
     }
@@ -501,9 +506,10 @@ actor StatusDisplay {
     private var trackArtworkUrl: String?
     private var clockOffset: Int64 = 0
     private var clockRTT: Int64 = 0
-    private var clockQuality: ClockSyncQuality = .unknown
-    private var clockHasData: Bool = false
     private var clockSamples: Int64 = 0
+    /// Nil until the first accepted sample — mirrors the optional return of
+    /// `currentClockSyncStats()` so "no data yet" has a single representation.
+    private var clockQuality: ClockSyncQuality?
     private var volume: Int = 100
     private var isMuted: Bool = false
     private var uptime: TimeInterval = 0
@@ -543,7 +549,6 @@ actor StatusDisplay {
             clockRTT = stats.rtt
             clockSamples = stats.sampleCount
             clockQuality = stats.quality
-            clockHasData = true
         }
     }
 
@@ -617,13 +622,13 @@ actor StatusDisplay {
         // Clock sync — label and color are derived from the public ClockSyncQuality
         // enum so every SendspinKit consumer agrees on what "good" means.
         let (qualityLabel, qualityColor): (String, String) = {
-            guard clockHasData else { return ("waiting", ANSI.yellow) }
-            switch clockQuality {
-            case .excellent: return ("excellent", ANSI.green)
-            case .good:      return ("good", ANSI.green)
-            case .fair:      return ("fair", ANSI.yellow)
-            case .poor:      return ("poor", ANSI.red)
-            case .unknown:   return ("converging", ANSI.yellow)
+            guard let quality = clockQuality else { return ("waiting", ANSI.yellow) }
+            switch quality {
+            case .excellent:    return ("excellent", ANSI.green)
+            case .good:         return ("good", ANSI.green)
+            case .fair:         return ("fair", ANSI.yellow)
+            case .poor:         return ("poor", ANSI.yellow)
+            case .unacceptable: return ("unacceptable", ANSI.red)
             }
         }()
         output += "\(ANSI.bold)CLOCK SYNC\(ANSI.reset)\n"

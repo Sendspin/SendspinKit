@@ -10,24 +10,33 @@ import SendspinKit
 
 /// Read the current terminal attributes so we can restore them on exit.
 /// Capture this BEFORE the first `enableRawMode()` call.
-private func captureTerminalMode() -> termios {
+///
+/// Returns `nil` if stdin is not a TTY — e.g. when input is redirected from a
+/// file or pipe. Callers must handle this: we can't usefully interact without
+/// a terminal, and writing zero-initialized `termios` back via `tcsetattr`
+/// would leave the user's shell mis-configured.
+private func captureTerminalMode() -> termios? {
     var mode = termios()
-    tcgetattr(STDIN_FILENO, &mode)
+    guard tcgetattr(STDIN_FILENO, &mode) == 0 else { return nil }
     return mode
 }
 
 /// Switch stdin to raw mode: single-byte reads, no echo, no line buffering.
 /// Pairs with `restoreTerminalMode(_:)` — always restore before exit or the
 /// user's shell is left in an unusable state.
-private func enableRawMode() {
+///
+/// Returns `false` if the stdin is not a TTY. In that case nothing has been
+/// mutated and there is nothing to restore.
+@discardableResult
+private func enableRawMode() -> Bool {
     var raw = termios()
-    tcgetattr(STDIN_FILENO, &raw)
+    guard tcgetattr(STDIN_FILENO, &raw) == 0 else { return false }
     raw.c_lflag &= ~UInt(ICANON | ECHO)
     withUnsafeMutableBytes(of: &raw.c_cc) { ccBytes in
         ccBytes[Int(VMIN)] = 1
         ccBytes[Int(VTIME)] = 0
     }
-    tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw)
+    return tcsetattr(STDIN_FILENO, TCSAFLUSH, &raw) == 0
 }
 
 /// Restore the terminal attributes captured by `captureTerminalMode()`.
@@ -93,6 +102,15 @@ struct ControllerClient: AsyncParsableCommand {
 
     @MainActor
     func run() async throws {
+        // TTY guard FIRST — capturing terminal attributes fails if stdin is
+        // redirected from a file or pipe. Without a real terminal, raw-mode
+        // single-keypress reads don't make sense, and writing zero-initialized
+        // `termios` back on exit would leave the parent shell broken.
+        guard let originalTermios = captureTerminalMode() else {
+            fputs("stdin is not a TTY — ControllerClient requires an interactive terminal.\n", stderr)
+            throw ExitCode.failure
+        }
+
         let url = try await resolveServerURL(server: server, discover: discover, timeout: timeout)
 
         let client = try SendspinClient(
@@ -110,15 +128,23 @@ struct ControllerClient: AsyncParsableCommand {
             await Self.monitorEvents(client: client, state: state)
         }
 
-        // Enable raw mode — single keypress, no Enter required.
-        // Capture the original attributes FIRST, then switch to raw. The defer
+        // Enable raw mode — single keypress, no Enter required. The defer
         // ensures the terminal is restored even if we exit via an unhandled
         // error or unexpected throw — a broken terminal is miserable.
-        let originalTermios = captureTerminalMode()
         enableRawMode()
         defer { restoreTerminalMode(originalTermios) }
 
-        await Self.runKeyLoop(client: client, state: state, originalTermios: originalTermios)
+        // Closure for the `h`/`?` path: briefly return to cooked mode so help
+        // prints with normal line endings, then switch back. Captures
+        // `originalTermios` so `handleKey` doesn't have to take it as an arg.
+        let showHelpInCookedMode: @MainActor () -> Void = {
+            restoreTerminalMode(originalTermios)
+            print("")
+            printHelp()
+            enableRawMode()
+        }
+
+        await Self.runKeyLoop(client: client, state: state, showHelp: showHelpInCookedMode)
 
         // defer handles restoreTerminalMode — no manual call needed here.
         print("\nDisconnecting...")
@@ -179,7 +205,7 @@ struct ControllerClient: AsyncParsableCommand {
     private static func runKeyLoop(
         client: SendspinClient,
         state: PlaybackUIState,
-        originalTermios: termios
+        showHelp: @MainActor () -> Void
     ) async {
         // Key-reading loop on main actor (read() is blocking but ArgumentParser's
         // AsyncParsableCommand runs on a dedicated thread so we won't starve the
@@ -198,82 +224,115 @@ struct ControllerClient: AsyncParsableCommand {
                 return bytesRead > 0 ? byte : 0
             }.value
 
-            keepRunning = await handleKey(key, client: client, state: state, originalTermios: originalTermios)
+            keepRunning = await handleKey(key, client: client, state: state, showHelp: showHelp)
         }
     }
 
     /// Dispatch a single keypress. Returns `false` when the user has requested exit.
+    ///
+    /// Local state (`state.isPlaying`, `state.currentVolume`, …) is committed
+    /// only *after* the send succeeds. On send failure, we leave local state
+    /// unchanged and print a `[… failed]` line — the next server event will
+    /// reconcile any drift caused by a server-side rejection.
     @MainActor
     private static func handleKey(
         _ key: UInt8,
         client: SendspinClient,
         state: PlaybackUIState,
-        originalTermios: termios
+        showHelp: @MainActor () -> Void
     ) async -> Bool {
         switch key {
         case UInt8(ascii: " "):
-            if state.isPlaying {
-                try? await client.pause()
-                state.isPlaying = false
-                print("\r[pause]       ", terminator: "")
-            } else {
-                try? await client.play()
-                state.isPlaying = true
-                print("\r[play]        ", terminator: "")
+            let targetPlaying = !state.isPlaying
+            do {
+                if targetPlaying {
+                    try await client.play()
+                    print("\r[play]        ", terminator: "")
+                } else {
+                    try await client.pause()
+                    print("\r[pause]       ", terminator: "")
+                }
+                state.isPlaying = targetPlaying
+            } catch {
+                print("\r[play/pause failed: \(error.localizedDescription)]  ", terminator: "")
             }
 
         case UInt8(ascii: "n"):
-            try? await client.next()
-            print("\r[next]        ", terminator: "")
+            do {
+                try await client.next()
+                print("\r[next]        ", terminator: "")
+            } catch {
+                print("\r[next failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "p"):
-            try? await client.previous()
-            print("\r[previous]    ", terminator: "")
+            do {
+                try await client.previous()
+                print("\r[previous]    ", terminator: "")
+            } catch {
+                print("\r[previous failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "+"), UInt8(ascii: "]"):
-            state.currentVolume = min(100, state.currentVolume + 5)
-            try? await client.setGroupVolume(state.currentVolume)
-            print("\r[volume] \(state.currentVolume)   ", terminator: "")
+            let newVolume = min(100, state.currentVolume + 5)
+            do {
+                try await client.setGroupVolume(newVolume)
+                state.currentVolume = newVolume
+                print("\r[volume] \(newVolume)   ", terminator: "")
+            } catch {
+                print("\r[volume up failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "-"), UInt8(ascii: "["):
-            state.currentVolume = max(0, state.currentVolume - 5)
-            try? await client.setGroupVolume(state.currentVolume)
-            print("\r[volume] \(state.currentVolume)   ", terminator: "")
+            let newVolume = max(0, state.currentVolume - 5)
+            do {
+                try await client.setGroupVolume(newVolume)
+                state.currentVolume = newVolume
+                print("\r[volume] \(newVolume)   ", terminator: "")
+            } catch {
+                print("\r[volume down failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "m"):
-            state.isMuted.toggle()
-            try? await client.setGroupMute(state.isMuted)
-            print("\r[mute] \(state.isMuted ? "on" : "off")   ", terminator: "")
+            let newMuted = !state.isMuted
+            do {
+                try await client.setGroupMute(newMuted)
+                state.isMuted = newMuted
+                print("\r[mute] \(newMuted ? "on" : "off")   ", terminator: "")
+            } catch {
+                print("\r[mute failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "s"):
-            state.isShuffled.toggle()
-            try? await client.setShuffle(state.isShuffled)
-            print("\r[shuffle] \(state.isShuffled ? "on" : "off")   ", terminator: "")
+            let newShuffle = !state.isShuffled
+            do {
+                try await client.setShuffle(newShuffle)
+                state.isShuffled = newShuffle
+                print("\r[shuffle] \(newShuffle ? "on" : "off")   ", terminator: "")
+            } catch {
+                print("\r[shuffle failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "r"):
             // Cycle repeat: off -> one -> all -> off
-            switch state.repeatMode {
-            case .off:
-                state.repeatMode = .one
-            case .one:
-                state.repeatMode = .all
-            case .all:
-                state.repeatMode = .off
+            let nextMode: RepeatMode = switch state.repeatMode {
+            case .off: .one
+            case .one: .all
+            case .all: .off
             }
-            try? await client.setRepeatMode(state.repeatMode)
-            print("\r[repeat] \(state.repeatMode.rawValue)   ", terminator: "")
+            do {
+                try await client.setRepeatMode(nextMode)
+                state.repeatMode = nextMode
+                print("\r[repeat] \(nextMode.rawValue)   ", terminator: "")
+            } catch {
+                print("\r[repeat failed: \(error.localizedDescription)]  ", terminator: "")
+            }
 
         case UInt8(ascii: "q"):
             return false
 
         case UInt8(ascii: "?"), UInt8(ascii: "h"):
-            // Restore normal mode briefly so help text displays cleanly,
-            // then switch back to raw. We keep `originalTermios` for the defer
-            // in the caller — no need to re-capture.
-            restoreTerminalMode(originalTermios)
-            print("")
-            printHelp()
-            enableRawMode()
+            showHelp()
 
         default:
             break

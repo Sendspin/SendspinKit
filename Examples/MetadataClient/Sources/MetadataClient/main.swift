@@ -169,7 +169,11 @@ struct MetadataClient: AsyncParsableCommand {
 
             // MARK: disconnected
             // Fired when the connection drops (network loss) or when disconnect()
-            // is called explicitly (SIGINT handler above). Break out of the loop.
+            // is called explicitly (SIGINT handler above). We `return` so the
+            // function (and therefore the whole example) exits — the
+            // `client.events` stream is intentionally kept alive by
+            // SendspinClient across reconnects, so we can't rely on the stream
+            // finishing to break out of this `for await`.
             case .disconnected(let reason):
                 switch reason {
                 case .connectionLost:
@@ -177,7 +181,7 @@ struct MetadataClient: AsyncParsableCommand {
                 case .explicit(let goodbye):
                     print("--- Disconnected (\(goodbye.rawValue)) ---")
                 }
-                // The stream is now finished; the for-await loop will exit naturally.
+                return
 
             default:
                 // Events like .controllerStateUpdated, .artworkStreamStarted, etc.

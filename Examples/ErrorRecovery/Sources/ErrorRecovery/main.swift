@@ -43,7 +43,11 @@ private func resolveServerURL(server: String?, discover: Bool, timeout: Double) 
 /// treated as fatal so a typo'd URL or a library change doesn't put us into
 /// an unbounded retry loop. If you need retry on a new error type, add it here.
 private func isRetryableError(_ error: any Error) -> Bool {
-    // Cooperative cancellation (SIGINT → disconnect()) — definitely fatal.
+    // Cooperative cancellation (SIGINT → disconnect()) — fatal in this tool.
+    // SIGINT is our only source of task cancellation; if another cancellation
+    // path is added later (e.g. this example getting wrapped in a parent task
+    // that cancels), this classification should be revisited. For a stand-alone
+    // retry loop, "someone asked us to stop" is always a reason to exit.
     if error is CancellationError { return false }
 
     if let streaming = error as? StreamingError {
@@ -87,6 +91,11 @@ private func isRetryableError(_ error: any Error) -> Bool {
             // won't help.
             return false
         case .notConnected, .sendFailed:
+            // `sendFailed` surfaces after the transport has already dropped —
+            // by the time we see it, the connection is dead. A fresh
+            // `connect()` starts a new transport, so retrying is the right
+            // move. `notConnected` is likewise fine to retry — connect()
+            // rebuilds from scratch.
             return true
         }
     }
@@ -212,9 +221,13 @@ struct ErrorRecovery: AsyncParsableCommand {
                 // built up during earlier failures.
                 attempt = 0
 
-                // Monitor events until disconnect.
-                // The loop exits when the AsyncStream finishes (i.e. after disconnect).
-                for await event in client.events {
+                // Monitor events until disconnect. We break out of this loop
+                // explicitly on `.disconnected` — `client.events` is kept alive
+                // by SendspinClient across reconnects, so it won't finish on
+                // its own. The labeled break exits the for-await, and the
+                // outer retry loop then decides whether to reconnect based on
+                // `state.shouldQuit` (set by SIGINT handler or `.explicit`).
+                eventLoop: for await event in client.events {
                     switch event {
                     case .serverConnected(let info):
                         print("[\(timestamp())] Server: \(info.name) (id: \(info.serverId))")
@@ -235,7 +248,7 @@ struct ErrorRecovery: AsyncParsableCommand {
                             // An explicit disconnect from SIGINT — we're done.
                             state.shouldQuit = true
                         }
-                        // The stream is finished; the inner for-await exits naturally.
+                        break eventLoop
 
                     default:
                         break

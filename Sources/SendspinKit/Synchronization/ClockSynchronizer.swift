@@ -14,13 +14,20 @@ actor ClockSynchronizer: ClockSyncProtocol {
     ///
     /// `rtt` is the most recent accepted RTT. `rawRtt` is the most recent RTT including
     /// samples rejected by the RTT gate — useful for spotting connectivity spikes in
-    /// telemetry where the gate would otherwise hide them.
+    /// telemetry where the gate would otherwise hide them. `rawRttWasRejected` is
+    /// `true` when the most recent sample failed the RTT gate, so consumers don't
+    /// have to infer rejection from `rawRtt != rtt` (which misses coincidental
+    /// equality and is wrong while the latched values are both 0 at startup).
+    ///
+    /// `estimatedError` is non-optional here because this snapshot is only
+    /// produced after `filter.isInitialized` is true — see ``diagnosticSnapshot()``.
     struct DiagnosticSnapshot {
         let offset: Int64
         let rtt: Int64
         let rawRtt: Int64
+        let rawRttWasRejected: Bool
         let drift: Double
-        let estimatedError: Double?
+        let estimatedError: Double
         let sampleCount: Int64
     }
 
@@ -52,6 +59,11 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// (default 100) as an internal warmup counter, this keeps counting so
     /// telemetry can show "we've processed N accepted samples since connect."
     private(set) var totalSamplesAccepted: Int64 = 0
+
+    /// `true` when the most recent `processServerTime` call rejected its sample
+    /// via the RTT gate. Lets consumers distinguish a coincidentally-equal
+    /// `rawRtt == latestAcceptedRtt` from an actually-accepted sample.
+    private(set) var lastSampleWasRejected: Bool = false
 
     /// Absolute anchor: converts process-relative client timestamps to Unix epoch.
     /// Uses `MonotonicClock.epochAnchorMicroseconds` which captures both clocks
@@ -96,8 +108,12 @@ actor ClockSynchronizer: ClockSyncProtocol {
         latestRawRtt = rtt
 
         // Gate: reject samples with negative or excessive RTT
-        guard rtt >= 0, rtt <= Self.maxAcceptableRttMicroseconds else { return }
+        guard rtt >= 0, rtt <= Self.maxAcceptableRttMicroseconds else {
+            lastSampleWasRejected = true
+            return
+        }
 
+        lastSampleWasRejected = false
         latestAcceptedRtt = rtt
 
         // Feed into the Kalman filter
@@ -154,13 +170,14 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// Returns `nil` before the first sample is accepted by the filter —
     /// callers use this as the "no data yet" signal.
     func diagnosticSnapshot() -> DiagnosticSnapshot? {
-        guard filter.isInitialized else { return nil }
+        guard filter.isInitialized, let estimatedError = filter.estimatedError else { return nil }
         return DiagnosticSnapshot(
             offset: currentOffset,
             rtt: latestAcceptedRtt,
             rawRtt: latestRawRtt,
+            rawRttWasRejected: lastSampleWasRejected,
             drift: filter.drift,
-            estimatedError: filter.estimatedError,
+            estimatedError: estimatedError,
             sampleCount: totalSamplesAccepted
         )
     }

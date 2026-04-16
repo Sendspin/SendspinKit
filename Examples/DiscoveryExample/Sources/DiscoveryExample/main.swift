@@ -31,8 +31,11 @@ struct DiscoveryExample: AsyncParsableCommand {
         // browsing, waits for the given duration, then returns whatever was found.
         // For a continuously-updating live list use the overload that returns
         // ServerDiscovery with an AsyncStream<[DiscoveredServer]>.
+        //
+        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
+        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
         let servers = try await SendspinClient.discoverServers(
-            timeout: .seconds(Int(timeout))
+            timeout: .milliseconds(Int(timeout * 1000))
         )
 
         guard !servers.isEmpty else {
