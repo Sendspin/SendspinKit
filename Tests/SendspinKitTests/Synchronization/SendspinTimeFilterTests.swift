@@ -27,7 +27,8 @@ struct SendspinTimeFilterTests {
         #expect(filter.count == 1)
         #expect(filter.offset == 500.0)
         #expect(filter.drift == 0.0)
-        #expect(filter.offsetCovariance == 2_500.0) // 50²
+        // (maxError · maxErrorScale)² = (50 · 0.5)² = 625
+        #expect(filter.offsetCovariance == 625.0)
     }
 
     @Test
@@ -59,10 +60,9 @@ struct SendspinTimeFilterTests {
         #expect(abs(filter.offset - trueOffset) < 1.0)
         // Drift should be near zero
         #expect(abs(filter.drift) < 0.0001)
-        // Covariance should be much smaller than initial measurement variance (625)
-        // but process noise prevents it from reaching zero
-        #expect(filter.offsetCovariance < 650.0)
-        #expect(filter.offsetCovariance < 2_500.0) // well below initial prior
+        // Initial measurement variance is (25 · 0.5)² = 156.25; steady-state
+        // covariance should be at or below that with consistent measurements.
+        #expect(filter.offsetCovariance < 200.0)
     }
 
     @Test
@@ -86,11 +86,12 @@ struct SendspinTimeFilterTests {
     @Test
     func handlesZeroMaxErrorLocalhost() {
         var filter = SendspinTimeFilter()
-        // maxError of 0 should be floored to 1.0 internally
+        // maxError of 0 should be floored to 1.0μs internally
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 0.0)
 
         #expect(filter.isInitialized)
-        #expect(filter.offsetCovariance == 1.0) // 1² = 1
+        // (floor · maxErrorScale)² = (1.0 · 0.5)² = 0.25
+        #expect(filter.offsetCovariance == 0.25)
         #expect(!filter.offset.isNaN)
         #expect(!filter.offsetCovariance.isNaN)
     }
@@ -257,13 +258,12 @@ struct SendspinTimeFilterTests {
     func adaptiveForgettingInflatesCovarianceOnLargeResidual() {
         // This test exercises the adaptive-forgetting path on a large residual.
         // For the inflation to be *visible* in the covariance fields after the
-        // Kalman update's deflation, the filter needs some amount of process
-        // noise building covariance between samples. The library default for
-        // `driftProcessStdDev` is 0.0 (matching the reference README's
-        // recommended tuning), which makes drift covariance monotonically
-        // shrink — the 0.2% forgetting bump then gets swamped. We construct
-        // with a non-zero drift process noise so the inflation path is
-        // observable.
+        // Kalman update's deflation, the filter needs enough drift process
+        // noise to accumulate covariance between samples. The library default
+        // for `driftProcessStdDev` (`1e-11`) is small enough that drift
+        // covariance barely accumulates over the test's timescale, so we
+        // construct with a much larger drift process noise to make the
+        // inflation path unambiguously observable.
         // Use minSamples=5 so we don't need 100 warmup measurements.
         var filter = SendspinTimeFilter(driftProcessStdDev: 0.001, minSamples: 5)
 
@@ -277,8 +277,9 @@ struct SendspinTimeFilterTests {
         let driftCovarianceBefore = filter.driftCovariance
 
         // Inject a measurement with a 9000μs jump from predicted offset.
-        // With maxError=50 and cutoff=0.75, forgetting triggers when |residual| > 37.5μs.
-        // Residual ≈ 9000 >> 37.5, so all three covariances should be inflated.
+        // With maxError=50 and the default cutoff=3.0, forgetting triggers
+        // when |residual| > 150μs. Residual ≈ 9000 >> 150, so all three
+        // covariances are inflated by forgetFactor² = 4.
         filter.update(timeAdded: 1_100_000, measurement: 10_000.0, maxError: 50.0)
 
         // With covariance inflation, offset should jump closer to the outlier (10_000)
@@ -362,10 +363,11 @@ struct SendspinTimeFilterTests {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
 
-        // After first measurement: offsetCovariance = maxError² = 2500
-        // estimatedError = √2500 = 50.0 (exactly representable in IEEE 754)
+        // After first measurement: offsetCovariance = (maxError · maxErrorScale)²
+        //                                           = (50 · 0.5)² = 625
+        // estimatedError = √625 = 25.0 (exactly representable in IEEE 754)
         let error = try #require(filter.estimatedError)
-        #expect(error == 50.0)
+        #expect(error == 25.0)
     }
 
     @Test
