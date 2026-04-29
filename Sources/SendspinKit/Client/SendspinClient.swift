@@ -617,14 +617,20 @@ public final class SendspinClient {
                 let currentStats = await audioScheduler.stats
                 guard currentStats.received > 0 else { continue }
 
+                // Atomic snapshot of clock-sync state — single actor hop covers
+                // offset, RTT, and the Kalman convergence diagnostics.
+                guard let syncSnap = await clockSync.diagnosticSnapshot() else { continue }
+
                 let framesScheduled = currentStats.received - lastTelemetryStats.received
                 let framesPlayed = currentStats.played - lastTelemetryStats.played
                 let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
 
-                let offset = await clockSync.currentOffset
-                let rtt = await clockSync.latestAcceptedRtt
-                let clockOffsetMs = Double(offset) / 1_000.0
-                let rttMs = Double(rtt) / 1_000.0
+                let clockOffsetMs = Double(syncSnap.offset) / 1_000.0
+                let rttMs = Double(syncSnap.rtt) / 1_000.0
+                let estErrUs = Int64(syncSnap.estimatedError.rounded())
+                // Drift is dimensionless (μs of offset per μs of time); ppm is the
+                // human-readable form for clock-drift rates.
+                let driftPpm = syncSnap.drift * 1_000_000.0
 
                 // Read sync error computed by the audio callback (precise, no actor jitter)
                 let tSnap = await audioPlayer.telemetrySnapshot
@@ -642,6 +648,9 @@ public final class SendspinClient {
                     + " buf=\(String(format: "%.1f", currentStats.bufferFillMs))ms"
                     + " offset=\(String(format: "%.2f", clockOffsetMs))ms"
                     + " rtt=\(String(format: "%.2f", rttMs))ms"
+                    + " est=\(estErrUs)us"
+                    + " drift=\(String(format: "%.2f", driftPpm))ppm"
+                    + " samples=\(syncSnap.sampleCount)"
                     + " queue=\(currentStats.queueSize)"
                     + " sync=\(syncErrorUs)us"
                     + " correcting=\(correcting)"

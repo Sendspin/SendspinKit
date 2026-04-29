@@ -5,22 +5,22 @@ import Foundation
 
 /// Two-dimensional Kalman filter tracking clock offset and drift rate.
 ///
-/// This is a faithful port of the C++ reference implementation with:
+/// Features:
 /// - Full 2x2 covariance matrix propagation
 /// - Per-sample measurement noise derived from RTT
 /// - Adaptive forgetting factor for changing network conditions
 /// - Drift significance SNR gate (only applies drift when statistically meaningful)
-/// - RTT floor of 1μs to prevent zero-variance NaN on localhost (from Rust port)
-///
-/// Defaults match the reference project's README recommendations
-/// (`time-filter/README.md`, "Recommended Values") — notably
-/// `driftProcessStdDev = 0.0`. A nonzero drift process noise with typical
-/// sync intervals (hundreds of ms) inflates `driftCovariance` fast enough
-/// that the prediction step's `driftCov · dt²` term dominates `R`,
-/// pinning `offsetCovariance` at `measurementVariance` every step — i.e.
-/// the filter never learns from more than one sample.
+/// - `maxError` scaling (`maxErrorScale = 0.5` by default): `maxError` is a
+///   worst-case bound (RTT/2), not a 1σ estimate, so using it unscaled
+///   over-inflates the measurement variance and slows convergence.
+/// - RTT floor of 1μs to prevent zero-variance NaN on localhost.
 ///
 /// Units: all timestamps in microseconds (Int64), offset/drift in microseconds (Double).
+/// `processStdDev` is a diffusion coefficient with units μs/√μs; offset
+/// variance grows by `processStdDev² · dt` per μs of elapsed time.
+/// `driftProcessStdDev` is a diffusion coefficient with units 1/√μs; drift is
+/// dimensionless (μs of offset per μs of time), so its variance also grows
+/// by `driftProcessStdDev² · dt` per μs of elapsed time.
 struct SendspinTimeFilter {
     // MARK: - State
 
@@ -59,7 +59,7 @@ struct SendspinTimeFilter {
     /// Adaptive forgetting: covariance inflation factor (squared)
     private let forgetVarianceFactor: Double
 
-    /// Adaptive forgetting: residual cutoff as fraction of max_error
+    /// Adaptive forgetting: residual cutoff as a multiple of max_error
     private let adaptiveForgettingCutoff: Double
 
     /// Minimum samples before adaptive forgetting engages
@@ -68,34 +68,46 @@ struct SendspinTimeFilter {
     /// Drift SNR threshold (squared): drift² must exceed this × driftCovariance
     private let driftSignificanceThresholdSquared: Double
 
+    /// Scale factor applied to `maxError` before it is squared into the
+    /// measurement variance. `maxError` (RTT/2) is a worst-case bound, not
+    /// a 1σ estimate, so values < 1 better reflect typical measurement noise.
+    private let maxErrorScale: Double
+
     // MARK: - Init
 
     /// Create a new time filter.
     ///
-    /// Defaults match the reference project's `README.md` "Recommended Values"
-    /// section. In particular, `driftProcessStdDev` defaults to `0.0` — a
-    /// nonzero value causes `driftCovariance` to grow by `dt · q_drift` each
-    /// step, and the `driftCov · dt²` term in the offset prediction then
-    /// pins `offsetCovariance` at `measurementVariance` every cycle (the
-    /// filter stops learning from multiple samples).
-    ///
     /// - Parameters:
-    ///   - processStdDev: Standard deviation of offset process noise. Default 0.01.
-    ///   - driftProcessStdDev: Standard deviation of drift process noise.
-    ///     Default 0.0 — treat drift as effectively constant between samples
-    ///     (valid over minutes for any real oscillator).
-    ///   - forgetFactor: Adaptive forgetting inflation factor (>1). Applied when
-    ///     residuals exceed the cutoff after min_samples. Default 1.001.
-    ///   - adaptiveCutoff: Fraction of max_error that triggers forgetting. Default 0.75.
-    ///   - minSamples: Minimum measurements before forgetting engages. Default 100.
-    ///   - driftSignificanceThreshold: SNR threshold for applying drift. Default 2.0.
+    ///   - processStdDev: Diffusion coefficient for the offset random walk
+    ///     (μs/√μs). Offset variance grows by `processStdDev² · dt` per μs of
+    ///     elapsed time. Default `0.0`.
+    ///   - driftProcessStdDev: Diffusion coefficient for the drift random walk
+    ///     (1/√μs). Drift is dimensionless, so its variance grows by
+    ///     `driftProcessStdDev² · dt` per μs of elapsed time. Default `1e-11`
+    ///     — small enough to behave like zero on short timescales while keeping
+    ///     drift covariance from collapsing to literally zero.
+    ///   - forgetFactor: Covariance inflation factor (>1) applied when large
+    ///     residuals are detected. Higher values enable faster recovery from
+    ///     disruptions but reduce stability. Default `2.0`.
+    ///   - adaptiveCutoff: Multiple of `maxError` that triggers adaptive
+    ///     forgetting. Forgetting fires when `|residual| > adaptiveCutoff · maxError`;
+    ///     values > 1 require larger residuals. Default `3.0`.
+    ///   - minSamples: Minimum measurements before adaptive forgetting engages.
+    ///     Default `100`.
+    ///   - driftSignificanceThreshold: SNR threshold for applying drift. Drift
+    ///     is only used when `drift² > threshold² · driftCovariance`. Default `2.0`.
+    ///   - maxErrorScale: Scale factor applied to `maxError` before it is fed to
+    ///     the Kalman update. `maxError` is a worst-case bound on measurement
+    ///     error, not a 1σ estimate, so using it unscaled over-inflates the
+    ///     measurement variance. Default `0.5`.
     init(
-        processStdDev: Double = 0.01,
-        driftProcessStdDev: Double = 0.0,
-        forgetFactor: Double = 1.001,
-        adaptiveCutoff: Double = 0.75,
+        processStdDev: Double = 0.0,
+        driftProcessStdDev: Double = 1e-11,
+        forgetFactor: Double = 2.0,
+        adaptiveCutoff: Double = 3.0,
         minSamples: UInt8 = 100,
-        driftSignificanceThreshold: Double = 2.0
+        driftSignificanceThreshold: Double = 2.0,
+        maxErrorScale: Double = 0.5
     ) {
         processVariance = processStdDev * processStdDev
         driftProcessVariance = driftProcessStdDev * driftProcessStdDev
@@ -103,6 +115,7 @@ struct SendspinTimeFilter {
         adaptiveForgettingCutoff = adaptiveCutoff
         minSamplesForForgetting = minSamples
         driftSignificanceThresholdSquared = driftSignificanceThreshold * driftSignificanceThreshold
+        self.maxErrorScale = maxErrorScale
     }
 
     // MARK: - Update
@@ -119,9 +132,14 @@ struct SendspinTimeFilter {
         // Guard: timestamps must be strictly monotonic
         guard timeAdded > lastUpdate || count == 0 else { return }
 
-        // Floor max_error to 1μs to prevent zero measurement variance (Rust port fix)
+        // Floor maxError to 1μs to prevent zero measurement variance:
+        // localhost can produce maxError = 0, which would NaN the Kalman gain.
         let clampedMaxError = max(maxError, 1.0)
-        let measurementVariance = clampedMaxError * clampedMaxError
+
+        // Scale before squaring: maxError is a worst-case bound (RTT/2), not
+        // a 1σ estimate, so using it unscaled over-inflates R.
+        let updateStdDev = clampedMaxError * maxErrorScale
+        let measurementVariance = updateStdDev * updateStdDev
 
         let dt = Double(timeAdded - lastUpdate)
 
@@ -231,7 +249,7 @@ struct SendspinTimeFilter {
     }
 
     /// Estimated standard deviation of the offset in microseconds.
-    /// Equivalent to C++ `get_error()`. Returns `nil` before the first measurement.
+    /// Returns `nil` before the first measurement.
     var estimatedError: Double? {
         guard isInitialized else { return nil }
         assert(offsetCovariance >= 0, "Covariance matrix lost positive-semidefiniteness")
