@@ -599,6 +599,7 @@ public final class SendspinClient {
     private nonisolated func runSyncCorrectionAndTelemetry() async {
         var lastTelemetryStats = SchedulerStats()
         var tickCount = 0
+        var underrunMonitor = UnderrunMonitor()
 
         while !Task.isCancelled {
             // 500ms poll — reanchors are rare events, no need to check faster.
@@ -613,6 +614,20 @@ public final class SendspinClient {
             // --- Poll for reanchor requests from the audio callback ---
             if let reanchorTarget = await audioPlayer.pollReanchor() {
                 await audioPlayer.reanchorCursor(to: reanchorTarget)
+            }
+
+            let tSnap = await audioPlayer.telemetrySnapshot
+
+            // Report buffer starvation as `error`/`synchronized` (spec §Playback
+            // Synchronization). The audio callback only counts underruns; this
+            // off-thread loop is where we can reach the server.
+            switch await clientOperationalState {
+            case .externalSource:
+                // Re-baseline: underruns accrued while not playing must not trip an
+                // error once we rejoin.
+                underrunMonitor.resetBaseline(underrunCount: tSnap.underrunCount)
+            case .synchronized, .error:
+                await applyUnderrunTransition(underrunMonitor.observe(underrunCount: tSnap.underrunCount))
             }
 
             // --- Telemetry (every 2s = every 4 ticks) ---
@@ -635,8 +650,8 @@ public final class SendspinClient {
                 // human-readable form for clock-drift rates.
                 let driftPpm = syncSnap.drift * 1_000_000.0
 
-                // Read sync error computed by the audio callback (precise, no actor jitter)
-                let tSnap = await audioPlayer.telemetrySnapshot
+                // Sync error computed by the audio callback (precise, no actor jitter);
+                // reuse the per-tick telemetry snapshot read above.
                 let syncErrorUs = tSnap.syncErrorUs
                 let dropN = tSnap.correctionSchedule.dropEveryNFrames
                 let insertN = tSnap.correctionSchedule.insertEveryNFrames
@@ -821,6 +836,24 @@ public final class SendspinClient {
         } catch {
             clientOperationalState = previous
             throw SendspinClientError.sendFailed(error.localizedDescription)
+        }
+    }
+
+    /// Apply an underrun transition from the telemetry loop's ``UnderrunMonitor``.
+    ///
+    /// Guarded to only move `.synchronized` ↔ `.error`, so it can't clobber
+    /// `.externalSource` or a codec/format `.error`. Send failures are ignored;
+    /// the next state change re-syncs the server.
+    func applyUnderrunTransition(_ transition: UnderrunMonitor.Transition) async {
+        switch transition {
+        case .none:
+            break
+        case .toError:
+            guard clientOperationalState == .synchronized else { return }
+            try? await transitionOperationalState(to: .error)
+        case .toSynchronized:
+            guard clientOperationalState == .error else { return }
+            try? await transitionOperationalState(to: .synchronized)
         }
     }
 }
