@@ -504,4 +504,22 @@ struct ClientIntegrationTests {
 
         await client.disconnect()
     }
+
+    // MARK: 11. default disconnect sends restart so the server keeps auto-reconnect
+
+    @Test
+    func disconnect_defaultReasonIsRestart() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        let countBefore = await mock.sentTextMessages.count
+        await client.disconnect()
+
+        let messages = await mock.sentTextMessages
+        let goodbye = messages.dropFirst(countBefore).compactMap { data in
+            try? JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
+        }.last
+        let sent = try #require(goodbye, "Expected a client/goodbye after disconnect()")
+        #expect(sent.payload?.reason == .restart)
+    }
 }
