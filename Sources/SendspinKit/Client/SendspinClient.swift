@@ -304,9 +304,12 @@ public final class SendspinClient {
     /// for signal handlers and shutdown paths that may invoke `disconnect()`
     /// more than once (e.g. a user pounding Ctrl-C).
     ///
-    /// - Parameter reason: Why the client is disconnecting. Defaults to `.shutdown`.
+    /// - Parameter reason: Why the client is disconnecting. Defaults to `.restart`,
+    ///   matching the reason a server assumes when a client vanishes without a
+    ///   goodbye. Pass `.shutdown` or `.userRequest` to explicitly tell the
+    ///   server not to auto-reconnect.
     @MainActor
-    public func disconnect(reason: GoodbyeReason = .shutdown) async {
+    public func disconnect(reason: GoodbyeReason = .restart) async {
         // Idempotency guard: a second disconnect() while already disconnected
         // would otherwise re-run teardown on nil state (harmless) and yield a
         // ghost `.disconnected` event (not harmless — it spams event consumers).
