@@ -190,6 +190,17 @@ private func lastSentCommand(from mock: MockTransport, after offset: Int) async 
     }.last
 }
 
+/// Decode the last `ClientStateMessage` payload sent after `offset`.
+///
+/// Uses a plain decoder (no snake-case conversion) because the nested
+/// `PlayerStateObject` defines explicit snake_case `CodingKeys`.
+private func lastClientState(from mock: MockTransport, after offset: Int) async -> ClientStatePayload? {
+    let messages = await mock.sentTextMessages
+    return messages.dropFirst(offset).compactMap { data in
+        try? JSONDecoder().decode(ClientStateMessage.self, from: data)
+    }.last?.payload
+}
+
 // MARK: - Tests
 
 @MainActor
@@ -521,5 +532,53 @@ struct ClientIntegrationTests {
         }.last
         let sent = try #require(goodbye, "Expected a client/goodbye after disconnect()")
         #expect(sent.payload?.reason == .restart)
+    }
+
+    // MARK: 12. underrun-driven operational state reporting is guarded
+
+    @Test
+    func applyUnderrunTransition_toErrorFromSynchronizedReportsError() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        let countBefore = await mock.sentTextMessages.count
+        await client.applyUnderrunTransition(.toError)
+
+        #expect(client.clientOperationalState == .error)
+        let payload = await lastClientState(from: mock, after: countBefore)
+        #expect(payload?.state == .error)
+    }
+
+    @Test
+    func applyUnderrunTransition_toSynchronizedRecoversFromError() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        await client.applyUnderrunTransition(.toError)
+        #expect(client.clientOperationalState == .error)
+
+        let countBefore = await mock.sentTextMessages.count
+        await client.applyUnderrunTransition(.toSynchronized)
+
+        #expect(client.clientOperationalState == .synchronized)
+        let payload = await lastClientState(from: mock, after: countBefore)
+        #expect(payload?.state == .synchronized)
+    }
+
+    @Test
+    func applyUnderrunTransition_toErrorIsIgnoredDuringExternalSource() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await client.enterExternalSource()
+        #expect(client.clientOperationalState == .externalSource)
+
+        let countBefore = await mock.sentTextMessages.count
+        await client.applyUnderrunTransition(.toError)
+
+        // The guard must leave external-source untouched and send nothing.
+        #expect(client.clientOperationalState == .externalSource)
+        let sentAfter = await mock.sentTextMessages.count
+        #expect(sentAfter == countBefore)
     }
 }
