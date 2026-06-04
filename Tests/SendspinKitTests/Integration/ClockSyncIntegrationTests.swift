@@ -58,12 +58,20 @@ struct ClockSyncIntegrationTests {
     func timeConversionMaintainsBidirectionalAccuracy() async {
         let sync = ClockSynchronizer()
 
-        // Initialize with known offset
+        // Initialize with known offset. Two rounds: the filter needs count >= 2
+        // before time conversion applies the offset (otherwise both directions
+        // hit the zero-offset placeholder and the round-trip passes trivially).
         await sync.processServerTime(
             clientTransmitted: 1_000,
             serverReceived: 1_500,
             serverTransmitted: 1_505,
             clientReceived: 2_005
+        )
+        await sync.processServerTime(
+            clientTransmitted: 3_000,
+            serverReceived: 3_500,
+            serverTransmitted: 3_505,
+            clientReceived: 4_005
         )
 
         let testServerTime: Int64 = 10_000

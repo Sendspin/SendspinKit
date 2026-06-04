@@ -66,12 +66,19 @@ struct ClockSynchronizerTests {
     func convertServerTimeToLocalTime() async {
         let sync = ClockSynchronizer()
 
-        // Server ahead by 200, symmetric 100us delays
+        // Server ahead by 200, symmetric 100us delays. Two rounds: the filter
+        // needs count >= 2 before serverTimeToLocal applies the offset.
         await sync.processServerTime(
             clientTransmitted: 1_000,
             serverReceived: 1_300, // 1000 + 100 delay + 200 offset
             serverTransmitted: 1_305,
             clientReceived: 1_405 // 1305 + 100 delay
+        )
+        await sync.processServerTime(
+            clientTransmitted: 2_000,
+            serverReceived: 2_300,
+            serverTransmitted: 2_305,
+            clientReceived: 2_405
         )
         // offset = ((1300-1000) + (1305-1405)) / 2 = (300 + -100) / 2 = 100
 
