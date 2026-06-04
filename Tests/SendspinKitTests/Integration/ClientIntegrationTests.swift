@@ -62,6 +62,17 @@ private func groupUpdateJSON(
     return String(bytes: data, encoding: .utf8) ?? ""
 }
 
+/// Encode a `server/command` `set_static_delay` message using the actual Codable types.
+private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
+    let message = ServerCommandMessage(
+        payload: ServerCommandPayload(
+            player: PlayerCommandObject(command: .setStaticDelay, staticDelayMs: delayMs)
+        )
+    )
+    let data = try JSONEncoder().encode(message)
+    return String(bytes: data, encoding: .utf8) ?? ""
+}
+
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
 private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV1]) throws -> SendspinClient {
@@ -441,6 +452,55 @@ struct ClientIntegrationTests {
         await #expect(throws: SendspinClientError.alreadyConnected) {
             try await client.connect(to: #require(URL(string: "ws://localhost:9999")))
         }
+
+        await client.disconnect()
+    }
+
+    // MARK: 9. set_static_delay server command drives state and notifies the host
+
+    @Test
+    func serverSetStaticDelay_updatesStateAndEmitsChangedEvent() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        let newDelayMs = 250
+        let eventTask = Task {
+            await collectEvent(from: client) { event in
+                if case .staticDelayChanged = event { return true }
+                return false
+            }
+        }
+
+        try await mock.injectText(setStaticDelayCommandJSON(newDelayMs))
+
+        let event = await eventTask.value
+        #expect(event == .staticDelayChanged(milliseconds: newDelayMs))
+        #expect(client.staticDelayMs == newDelayMs)
+
+        await client.disconnect()
+    }
+
+    // MARK: 10. set_static_delay clamps out-of-range server input to the spec maximum
+
+    @Test
+    func serverSetStaticDelay_clampsAboveMaximumToSpecLimit() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        // Spec range is 0–5000; setStaticDelay clamps rather than trusting the server.
+        let maxDelayMs = 5_000
+        let eventTask = Task {
+            await collectEvent(from: client) { event in
+                if case .staticDelayChanged = event { return true }
+                return false
+            }
+        }
+
+        try await mock.injectText(setStaticDelayCommandJSON(maxDelayMs + 1_000))
+
+        let event = await eventTask.value
+        #expect(event == .staticDelayChanged(milliseconds: maxDelayMs))
+        #expect(client.staticDelayMs == maxDelayMs)
 
         await client.disconnect()
     }
