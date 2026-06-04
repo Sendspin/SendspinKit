@@ -243,9 +243,17 @@ struct SendspinTimeFilter {
 
     // MARK: - Diagnostics
 
-    /// Whether the filter has received at least one measurement
+    /// Whether the filter has received at least one measurement (offset is set).
+    /// Gates diagnostics; time conversion requires the stricter ``isSynchronized``.
     var isInitialized: Bool {
         count > 0
+    }
+
+    /// Whether the filter can produce a usable time conversion: at least two
+    /// measurements (so drift is established from finite differences) and a
+    /// finite offset covariance.
+    var isSynchronized: Bool {
+        count >= 2 && offsetCovariance.isFinite
     }
 
     /// Estimated standard deviation of the offset in microseconds.

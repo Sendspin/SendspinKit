@@ -23,7 +23,9 @@ struct SendspinTimeFilterTests {
         var filter = SendspinTimeFilter()
         filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
 
+        // One measurement sets the offset (initialized) but isn't yet synchronized.
         #expect(filter.isInitialized)
+        #expect(!filter.isSynchronized)
         #expect(filter.count == 1)
         #expect(filter.offset == 500.0)
         #expect(filter.drift == 0.0)
@@ -41,6 +43,19 @@ struct SendspinTimeFilterTests {
         #expect(filter.offset == 510.0)
         // drift = (510 - 500) / (2000 - 1000) = 0.01
         #expect(filter.drift == 0.01)
+    }
+
+    @Test
+    func synchronizationRequiresTwoMeasurements() {
+        var filter = SendspinTimeFilter()
+        #expect(!filter.isSynchronized)
+
+        filter.update(timeAdded: 1_000, measurement: 500.0, maxError: 50.0)
+        #expect(!filter.isSynchronized) // one sample: offset only, no drift yet
+
+        filter.update(timeAdded: 2_000, measurement: 510.0, maxError: 50.0)
+        #expect(filter.isSynchronized)
+        #expect(filter.offsetCovariance.isFinite)
     }
 
     // MARK: - Convergence

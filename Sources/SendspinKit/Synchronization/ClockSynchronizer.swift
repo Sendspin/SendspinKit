@@ -82,9 +82,9 @@ actor ClockSynchronizer: ClockSyncProtocol {
         Int64(filter.offset.rounded())
     }
 
-    /// Whether at least one sync sample has been accepted
+    /// Whether the filter is synchronized enough to convert times (count >= 2).
     var hasSynced: Bool {
-        filter.isInitialized
+        filter.isSynchronized
     }
 
     /// Process a server/time response to update the clock model.
@@ -136,7 +136,7 @@ actor ClockSynchronizer: ClockSyncProtocol {
     ///   before using the result for playback scheduling. `SendspinClient` enforces this
     ///   by dropping audio chunks until `hasSynced` is true.
     func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
-        guard filter.isInitialized else {
+        guard filter.isSynchronized else {
             // No sync data yet — assume zero offset. This produces a value in the
             // correct absolute-time domain but with an unknown error equal to the
             // true server-client offset. Only useful as a placeholder until the
@@ -155,7 +155,7 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// - Important: Before the first successful sync, assumes zero offset.
     ///   See ``serverTimeToLocal(_:)`` for details.
     func localTimeToServer(_ localTime: Int64) -> Int64 {
-        guard filter.isInitialized else {
+        guard filter.isSynchronized else {
             return localTime - clientProcessStartAbsolute
         }
 
@@ -185,7 +185,7 @@ actor ClockSynchronizer: ClockSyncProtocol {
     /// Create an immutable snapshot of the current filter state for audio-thread use.
     /// Returns `nil` before the first successful sync.
     func snapshot() -> TimeFilterSnapshot? {
-        guard filter.isInitialized else { return nil }
+        guard filter.isSynchronized else { return nil }
         return TimeFilterSnapshot(
             offset: filter.offset,
             drift: filter.drift,
