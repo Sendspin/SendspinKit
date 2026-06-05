@@ -92,6 +92,9 @@ extension SendspinClient {
         )
         eventsContinuation.yield(.serverConnected(info))
 
+        // Reset delta tracking: a (re)connected server holds no prior client
+        // state, so the post-hello send must be the full baseline, not a delta.
+        lastSentClientState = nil
         // Send initial client state (required by spec)
         try? await sendClientState()
 

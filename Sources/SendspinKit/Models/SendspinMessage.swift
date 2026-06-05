@@ -231,15 +231,20 @@ struct ClientStatePayload: Codable, Equatable {
 }
 
 /// Player state object within client/state message.
-/// Per spec: volume/muted are optional (only if supported), but static_delay_ms is always required.
+///
+/// Every field is optional so this type can express both the initial full
+/// state and subsequent deltas. Per spec, the initial `client/state` after
+/// `server/hello` includes `static_delay_ms`; later delta updates omit any
+/// field that has not changed (the server merges them into existing state).
 struct PlayerStateObject: Codable, Equatable {
     /// Volume level (0-100), only if 'volume' is in supported_commands from player@v1_support
     let volume: Int?
     /// Mute state, only if 'mute' is in supported_commands from player@v1_support
     let muted: Bool?
-    /// Static delay in milliseconds (0-5000), always required for players.
-    /// Compensates for delay beyond the audio port (external speakers, amplifiers).
-    let staticDelayMs: Int
+    /// Static delay in milliseconds (0-5000). Present in the initial full state;
+    /// omitted from a delta when unchanged. Compensates for delay beyond the
+    /// audio port (external speakers, amplifiers).
+    let staticDelayMs: Int?
     /// Supported commands that can change at runtime (e.g. when audio output changes).
     /// Per spec, currently only `set_static_delay` is valid here.
     let supportedCommands: [PlayerCommand]?
@@ -251,17 +256,17 @@ struct PlayerStateObject: Codable, Equatable {
         case supportedCommands = "supported_commands"
     }
 
-    /// Validates volume and static delay ranges.
-    private static func validate(volume: Int?, staticDelayMs: Int) throws(ConfigurationError) {
+    /// Validates volume and static delay ranges when present.
+    private static func validate(volume: Int?, staticDelayMs: Int?) throws(ConfigurationError) {
         if let vol = volume {
             guard vol >= 0, vol <= 100 else { throw .volumeOutOfRange(vol) }
         }
-        guard staticDelayMs >= 0, staticDelayMs <= 5_000 else {
-            throw .staticDelayOutOfRange(staticDelayMs)
+        if let delay = staticDelayMs {
+            guard delay >= 0, delay <= 5_000 else { throw .staticDelayOutOfRange(delay) }
         }
     }
 
-    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int = 0, supportedCommands: [PlayerCommand]? = nil) throws(ConfigurationError) {
+    init(volume: Int? = nil, muted: Bool? = nil, staticDelayMs: Int? = nil, supportedCommands: [PlayerCommand]? = nil) throws(ConfigurationError) {
         try Self.validate(volume: volume, staticDelayMs: staticDelayMs)
         self.volume = volume
         self.muted = muted
@@ -273,7 +278,7 @@ struct PlayerStateObject: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let volume = try container.decodeIfPresent(Int.self, forKey: .volume)
         let muted = try container.decodeIfPresent(Bool.self, forKey: .muted)
-        let staticDelayMs = try container.decode(Int.self, forKey: .staticDelayMs)
+        let staticDelayMs = try container.decodeIfPresent(Int.self, forKey: .staticDelayMs)
         let supportedCommands = try container.decodeIfPresent([PlayerCommand].self, forKey: .supportedCommands)
 
         do {
