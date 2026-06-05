@@ -165,6 +165,12 @@ struct ControllerClient: AsyncParsableCommand {
             case let .controllerStateUpdated(ctrl):
                 state.currentVolume = ctrl.volume
                 state.isMuted = ctrl.muted
+                if let mode = ctrl.repeatMode {
+                    state.repeatMode = mode
+                }
+                if let shuffle = ctrl.shuffle {
+                    state.isShuffled = shuffle
+                }
                 let supported = ctrl.supportedCommands.map(\.rawValue).sorted().joined(separator: ", ")
                 print("\n[controller] vol=\(ctrl.volume) muted=\(ctrl.muted) commands: \(supported)")
 
@@ -173,12 +179,6 @@ struct ControllerClient: AsyncParsableCommand {
                 let title = metadata.title ?? "Unknown"
                 if let progress = metadata.progress {
                     state.isPlaying = progress.playbackSpeedX1000 != 0
-                }
-                if let mode = metadata.repeatMode {
-                    state.repeatMode = mode
-                }
-                if let shuffle = metadata.shuffle {
-                    state.isShuffled = shuffle
                 }
                 print("\n[now playing] \(artist) - \(title)")
 

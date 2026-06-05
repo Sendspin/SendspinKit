@@ -173,9 +173,7 @@ extension SendspinClient {
                 track: metadata.track.merge(previous: prev?.track),
                 year: metadata.year.merge(previous: prev?.year),
                 artworkURL: metadata.artworkUrl.merge(previous: prev?.artworkURL),
-                progress: progress,
-                repeatMode: metadata.repeat.merge(previous: prev?.repeatMode),
-                shuffle: metadata.shuffle.merge(previous: prev?.shuffle)
+                progress: progress
             )
             updateMetadata(merged)
             eventsContinuation.yield(.metadataReceived(merged))
@@ -203,7 +201,9 @@ extension SendspinClient {
             let state = ControllerState(
                 supportedCommands: cmds,
                 volume: vol,
-                muted: muted
+                muted: muted,
+                repeatMode: controller.repeat ?? prev?.repeatMode,
+                shuffle: controller.shuffle ?? prev?.shuffle
             )
             updateControllerState(state)
             eventsContinuation.yield(.controllerStateUpdated(state))

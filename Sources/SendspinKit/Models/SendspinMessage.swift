@@ -344,17 +344,31 @@ struct ServerControllerState: Codable, Equatable {
     let volume: Int?
     /// Group mute state (true only when all players muted)
     let muted: Bool?
+    /// Group repeat mode
+    let `repeat`: RepeatMode?
+    /// Group shuffle state
+    let shuffle: Bool?
 
     enum CodingKeys: String, CodingKey {
         case supportedCommands = "supported_commands"
         case volume
         case muted
+        case `repeat`
+        case shuffle
     }
 
-    init(supportedCommands: [ControllerCommandType]? = nil, volume: Int? = nil, muted: Bool? = nil) {
+    init(
+        supportedCommands: [ControllerCommandType]? = nil,
+        volume: Int? = nil,
+        muted: Bool? = nil,
+        repeat: RepeatMode? = nil,
+        shuffle: Bool? = nil
+    ) {
         self.supportedCommands = supportedCommands
         self.volume = volume
         self.muted = muted
+        self.repeat = `repeat`
+        self.shuffle = shuffle
     }
 }
 
@@ -445,8 +459,6 @@ struct ServerMetadataState: Equatable {
     let year: Nullable<Int>
     let track: Nullable<Int>
     let progress: Nullable<MetadataProgress>
-    let `repeat`: Nullable<RepeatMode>
-    let shuffle: Nullable<Bool>
 
     enum CodingKeys: String, CodingKey {
         case timestamp
@@ -458,15 +470,12 @@ struct ServerMetadataState: Equatable {
         case year
         case track
         case progress
-        case `repeat`
-        case shuffle
     }
 
     init(
         timestamp: Int64? = nil, title: Nullable<String> = .absent, artist: Nullable<String> = .absent,
         albumArtist: Nullable<String> = .absent, album: Nullable<String> = .absent, artworkUrl: Nullable<String> = .absent,
-        year: Nullable<Int> = .absent, track: Nullable<Int> = .absent, progress: Nullable<MetadataProgress> = .absent,
-        repeat: Nullable<RepeatMode> = .absent, shuffle: Nullable<Bool> = .absent
+        year: Nullable<Int> = .absent, track: Nullable<Int> = .absent, progress: Nullable<MetadataProgress> = .absent
     ) {
         self.timestamp = timestamp
         self.title = title
@@ -477,8 +486,6 @@ struct ServerMetadataState: Equatable {
         self.year = year
         self.track = track
         self.progress = progress
-        self.repeat = `repeat`
-        self.shuffle = shuffle
     }
 }
 
@@ -494,8 +501,6 @@ extension ServerMetadataState: Decodable {
         year = container.contains(.year) ? try container.decode(Nullable<Int>.self, forKey: .year) : .absent
         track = container.contains(.track) ? try container.decode(Nullable<Int>.self, forKey: .track) : .absent
         progress = container.contains(.progress) ? try container.decode(Nullable<MetadataProgress>.self, forKey: .progress) : .absent
-        `repeat` = container.contains(.repeat) ? try container.decode(Nullable<RepeatMode>.self, forKey: .repeat) : .absent
-        shuffle = container.contains(.shuffle) ? try container.decode(Nullable<Bool>.self, forKey: .shuffle) : .absent
     }
 }
 
@@ -512,8 +517,6 @@ extension ServerMetadataState: Encodable {
         if !year.isAbsent { try container.encode(year, forKey: .year) }
         if !track.isAbsent { try container.encode(track, forKey: .track) }
         if !progress.isAbsent { try container.encode(progress, forKey: .progress) }
-        if !`repeat`.isAbsent { try container.encode(`repeat`, forKey: .repeat) }
-        if !shuffle.isAbsent { try container.encode(shuffle, forKey: .shuffle) }
     }
 }
 

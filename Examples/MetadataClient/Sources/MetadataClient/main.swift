@@ -124,12 +124,7 @@ struct MetadataClient: AsyncParsableCommand {
                 if let art = metadata.artworkURL {
                     print("  Artwork URL:  \(art)")
                 }
-                if let mode = metadata.repeatMode {
-                    print("  Repeat:       \(mode.rawValue)")
-                }
-                if let shuffle = metadata.shuffle {
-                    print("  Shuffle:      \(shuffle)")
-                }
+                // Repeat/shuffle now live on the controller role's state, not metadata.
                 // Progress contains a snapshot timestamp — use currentPositionMs(at:)
                 // with client.currentServerTimeMicroseconds() to interpolate live.
                 if let progress = metadata.progress {

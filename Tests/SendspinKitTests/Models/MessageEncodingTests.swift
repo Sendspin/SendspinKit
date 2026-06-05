@@ -205,7 +205,7 @@ struct MessageEncodingTests {
                     "timestamp": 12345678,
                     "title": null, "artist": null, "album": null,
                     "album_artist": null, "artwork_url": null, "year": null,
-                    "track": null, "progress": null, "repeat": null, "shuffle": null
+                    "track": null, "progress": null
                 }
             }
         }
@@ -240,6 +240,29 @@ struct MessageEncodingTests {
         #expect(metadata.album.merge(previous: "Previous Album") == "Previous Album")
         #expect(metadata.year.merge(previous: 2_024) == 2_024)
         // Absent with no previous should remain nil
-        #expect(metadata.shuffle.merge(previous: nil) == nil)
+        #expect(metadata.track.merge(previous: nil) == nil)
+    }
+
+    @Test
+    func serverState_decodesControllerRepeatAndShuffle() throws {
+        // Per spec, repeat/shuffle live on the controller object, not metadata.
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "controller": {
+                    "supported_commands": ["repeat_all", "shuffle"],
+                    "volume": 50, "muted": false,
+                    "repeat": "all", "shuffle": true
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+
+        let controller = try #require(message.payload.controller)
+        #expect(controller.repeat == .all)
+        #expect(controller.shuffle == true)
     }
 }
