@@ -15,6 +15,10 @@ public final class SendspinClient {
     let roles: Set<VersionedRole>
     let playerConfig: PlayerConfiguration?
     let artworkConfig: ArtworkConfiguration?
+    /// Optional storage hook for the spec's "last played server" bookkeeping.
+    /// Saved on every `group/update` that reports playback started; read by the
+    /// multi-server arbitration tiebreak.
+    let persistenceProvider: (any SendspinPersistenceProvider)?
     /// Resolved volume capabilities and control implementation
     let volumeCapabilities: VolumeCapabilities
     let volumeControl: VolumeControl
@@ -90,7 +94,8 @@ public final class SendspinClient {
         name: String,
         roles: Set<VersionedRole>,
         playerConfig: PlayerConfiguration? = nil,
-        artworkConfig: ArtworkConfiguration? = nil
+        artworkConfig: ArtworkConfiguration? = nil,
+        persistenceProvider: (any SendspinPersistenceProvider)? = nil
     ) throws(ConfigurationError) {
         if roles.contains(.playerV1), playerConfig == nil {
             throw .playerRoleRequiresConfiguration
@@ -104,6 +109,7 @@ public final class SendspinClient {
         self.roles = roles
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
+        self.persistenceProvider = persistenceProvider
         staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
 
         // Resolve volume mode into concrete capabilities and control implementation
