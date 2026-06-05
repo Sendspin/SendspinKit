@@ -15,7 +15,7 @@ private let testServerId = "test-server"
 // MARK: - Test helpers
 
 /// Encode a server/hello message using the actual Codable types.
-private func serverHelloJSON(
+func serverHelloJSON(
     serverId: String = testServerId,
     name: String = "Test Server",
     version: Int = 1,
@@ -75,7 +75,7 @@ private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
 
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
-private func makeTestClient(
+func makeTestClient(
     roles: Set<VersionedRole> = [.playerV1, .controllerV1],
     persistenceProvider: (any SendspinPersistenceProvider)? = nil
 ) throws -> SendspinClient {
@@ -120,7 +120,7 @@ private actor MockPersistenceProvider: SendspinPersistenceProvider {
 
 /// Poll `condition` until it returns `true` or the deadline passes.
 /// Returns the final evaluation so callers can assert positively or negatively.
-private func waitUntil(
+func waitUntil(
     timeout: Duration = .seconds(2),
     _ condition: @Sendable () async -> Bool
 ) async -> Bool {
@@ -144,7 +144,7 @@ private func waitUntil(
 /// detached; `handleServerHello` doesn't await it). The 3s timeout accommodates
 /// CI scheduling jitter.
 @MainActor
-private func connectClient(
+func connectClient(
     _ client: SendspinClient,
     activeRoles: [VersionedRole] = [.playerV1, .controllerV1],
     connectionReason: ConnectionReason = .discovery

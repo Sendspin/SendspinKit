@@ -58,6 +58,12 @@ public final class SendspinClient {
     /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
     var shouldEmitRawAudio = false
 
+    /// Snapshot of the last `client/state` successfully sent to the current
+    /// server session, or `nil` before the initial send. Reset on every
+    /// `server/hello` so a (re)connected server receives a full baseline;
+    /// subsequent sends transmit only changed fields (spec delta semantics).
+    var lastSentClientState: SentClientState?
+
     /// Accumulated state (merged from server deltas per spec)
     /// Current track metadata, accumulated from `server/state` deltas.
     public private(set) var currentMetadata: TrackMetadata?
@@ -425,29 +431,6 @@ public final class SendspinClient {
 
         let payload = buildClientHelloPayload()
         try await transport.send(ClientHelloMessage(payload: payload))
-    }
-
-    func sendClientState() async throws {
-        guard let transport else {
-            throw SendspinClientError.notConnected
-        }
-
-        var playerStateObject: PlayerStateObject?
-        if roles.contains(.playerV1) {
-            // Values are already validated (clamped on set), so this should never throw.
-            playerStateObject = try PlayerStateObject(
-                volume: currentVolume,
-                muted: currentMuted,
-                staticDelayMs: staticDelayMs,
-                supportedCommands: [.setStaticDelay]
-            )
-        }
-
-        let payload = ClientStatePayload(
-            state: clientOperationalState,
-            player: playerStateObject
-        )
-        try await transport.send(ClientStateMessage(payload: payload))
     }
 
     // MARK: - Clock synchronization
