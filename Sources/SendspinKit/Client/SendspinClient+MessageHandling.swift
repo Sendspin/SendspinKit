@@ -99,6 +99,11 @@ extension SendspinClient {
         // double-tap burst (first two samples 10 ms apart) internally;
         // `isClockSynced` flips event-driven in `handleServerTime` when
         // the first server/time response arrives.
+        //
+        // Cancel any prior task first: a server may re-send server/hello on the
+        // same connection, and reassigning without cancelling would orphan the
+        // previous clock-sync task (it would keep sending client/time forever).
+        clockSyncTask?.cancel()
         clockSyncTask = Task.detached { [weak self] in
             await self?.runClockSync()
         }

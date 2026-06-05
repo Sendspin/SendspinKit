@@ -247,8 +247,17 @@ public final class SendspinClient {
     }
 
     /// Common setup for both client-initiated and server-initiated connections.
+    ///
+    /// - Parameter preReadHello: When non-nil, the `client/hello` was already sent
+    ///   and the `server/hello` already consumed during competing-connection
+    ///   arbitration. In that case we process the hello directly instead of sending
+    ///   another `client/hello`, and the message loop resumes the transport's stream
+    ///   from the (buffered) frames that follow.
     @MainActor
-    private func setupConnection(with transport: any SendspinTransport) async throws {
+    func setupConnection(
+        with transport: any SendspinTransport,
+        preReadHello: ServerHelloMessage? = nil
+    ) async throws {
         let clockSync = ClockSynchronizer()
         let audioScheduler = AudioScheduler(clockSync: clockSync)
 
@@ -278,7 +287,14 @@ public final class SendspinClient {
             shouldEmitRawAudio = playerConfig.emitRawAudioEvents
         }
 
-        try await sendClientHello()
+        if let preReadHello {
+            // Competing-connection path: client/hello already sent and server/hello
+            // already read during arbitration. Process it before the loop starts so
+            // clock sync is running by the time subsequent frames are dispatched.
+            await handleServerHello(preReadHello)
+        } else {
+            try await sendClientHello()
+        }
 
         let textStream = transport.textMessages
         let binaryStream = transport.binaryMessages
@@ -371,34 +387,10 @@ public final class SendspinClient {
         eventsContinuation.yield(.disconnected(reason: .explicit(reason)))
     }
 
-    // MARK: - Multi-server logic
-
-    /// Handle a competing server connection per the spec's multi-server rules.
-    ///
-    /// The spec says to complete the handshake with the new server before deciding.
-    /// However, reading server/hello from a separate stream would consume other
-    /// messages (like stream/start) that the normal message loop needs. Instead,
-    /// we take a simpler approach: switch to the new server unconditionally and
-    /// let the normal handleServerHello track the connection reason. If the old
-    /// server had playback priority, it will reconnect and reclaim us.
-    ///
-    /// This matches the real-world behavior: servers reconnect with
-    /// connection_reason: playback when they need a client for playback.
-    @MainActor
-    private func handleCompetingConnection(_ newTransport: any SendspinTransport) async throws {
-        // Disconnect old server with 'another_server'
-        await disconnect(reason: .anotherServer)
-
-        // Set up normally with new transport — the regular message loop
-        // will handle server/hello (tracking connectionReason) and stream/start
-        connectionState = .connecting
-        try await setupConnection(with: newTransport)
-    }
-
     // MARK: - Outbound messages
 
     /// Build the client/hello payload (used by both connect paths)
-    private func buildClientHelloPayload() -> ClientHelloPayload {
+    func buildClientHelloPayload() -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
         if roles.contains(.playerV1), let playerConfig {
             playerV1Support = PlayerSupport(
