@@ -20,13 +20,11 @@ private struct DelegateState {
 /// briefly (just setting a bool or consuming a continuation), so contention
 /// is negligible.
 private final class StarscreamDelegate: WebSocketDelegate, Sendable {
-    let textContinuation: AsyncStream<String>.Continuation
-    let binaryContinuation: AsyncStream<Data>.Continuation
+    let frameContinuation: AsyncStream<TransportFrame>.Continuation
     let state = OSAllocatedUnfairLock(initialState: DelegateState())
 
-    init(textContinuation: AsyncStream<String>.Continuation, binaryContinuation: AsyncStream<Data>.Continuation) {
-        self.textContinuation = textContinuation
-        self.binaryContinuation = binaryContinuation
+    init(frameContinuation: AsyncStream<TransportFrame>.Continuation) {
+        self.frameContinuation = frameContinuation
     }
 
     /// Whether the WebSocket is connected. Thread-safe read.
@@ -55,10 +53,10 @@ private final class StarscreamDelegate: WebSocketDelegate, Sendable {
             handleDisconnection(error: error ?? TransportError.connectionFailed)
 
         case let .text(string):
-            textContinuation.yield(string)
+            frameContinuation.yield(.text(string))
 
         case let .binary(data):
-            binaryContinuation.yield(data)
+            frameContinuation.yield(.binary(data))
 
         case .ping, .pong, .viabilityChanged, .reconnectSuggested:
             break
@@ -83,8 +81,7 @@ private final class StarscreamDelegate: WebSocketDelegate, Sendable {
             return cont
         }
         continuation?.resume(throwing: error)
-        textContinuation.finish()
-        binaryContinuation.finish()
+        frameContinuation.finish()
     }
 }
 
@@ -97,22 +94,15 @@ actor WebSocketTransport: SendspinTransport {
     /// Confined to actor isolation — do not pass across isolation boundaries.
     private let encoder = SendspinEncoding.makeEncoder()
 
-    /// Stream of incoming text messages (JSON)
-    nonisolated let textMessages: AsyncStream<String>
-
-    /// Stream of incoming binary messages (audio, artwork, etc.)
-    nonisolated let binaryMessages: AsyncStream<Data>
+    /// Ordered stream of incoming frames (text + binary), in wire order.
+    nonisolated let frames: AsyncStream<TransportFrame>
 
     init(url: URL) {
         self.url = url
 
-        // Create streams and pass continuations to delegate
-        let (textStream, textCont) = AsyncStream<String>.makeStream()
-        let (binaryStream, binaryCont) = AsyncStream<Data>.makeStream()
-
-        textMessages = textStream
-        binaryMessages = binaryStream
-        delegate = StarscreamDelegate(textContinuation: textCont, binaryContinuation: binaryCont)
+        let (frameStream, frameCont) = AsyncStream<TransportFrame>.makeStream()
+        frames = frameStream
+        delegate = StarscreamDelegate(frameContinuation: frameCont)
     }
 
     /// Connect to the WebSocket server

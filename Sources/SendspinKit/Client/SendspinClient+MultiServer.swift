@@ -97,11 +97,11 @@ extension SendspinClient {
 
         return try await withThrowingTaskGroup(of: ServerHelloMessage?.self) { group in
             group.addTask {
-                for await text in transport.textMessages {
-                    if let hello = Self.decodeServerHello(text) {
-                        return hello
-                    }
+                for await frame in transport.frames {
                     // server/hello is the first message per spec; ignore anything before it.
+                    guard case let .text(text) = frame,
+                          let hello = Self.decodeServerHello(text) else { continue }
+                    return hello
                 }
                 return nil // stream ended without a server/hello
             }

@@ -9,8 +9,10 @@ import os
 /// Created by `ClientAdvertiser` when a server connects to the client's WebSocket endpoint.
 actor NWWebSocketTransport: SendspinTransport {
     private var connection: NWConnection?
-    private let textContinuation: AsyncStream<String>.Continuation
-    private let binaryContinuation: AsyncStream<Data>.Continuation
+    /// `nonisolated` so the receive callback can yield frames directly in
+    /// arrival order. Hopping onto the actor via a per-frame `Task` would let
+    /// independent tasks run out of order and shuffle frames (audio included).
+    private nonisolated let frameContinuation: AsyncStream<TransportFrame>.Continuation
     /// Confined to actor isolation — do not pass across isolation boundaries.
     private let encoder = SendspinEncoding.makeEncoder()
 
@@ -19,20 +21,16 @@ actor NWWebSocketTransport: SendspinTransport {
     /// so we can suppress the noisy (but expected) post-close receive error log.
     private var closeReceived = false
 
-    nonisolated let textMessages: AsyncStream<String>
-    nonisolated let binaryMessages: AsyncStream<Data>
+    nonisolated let frames: AsyncStream<TransportFrame>
 
     /// Initialize with an already-established NWConnection that has WebSocket framing.
     /// The connection should be in the `.ready` state.
     init(connection: NWConnection) {
         self.connection = connection
 
-        let (textStream, textCont) = AsyncStream<String>.makeStream()
-        let (binaryStream, binaryCont) = AsyncStream<Data>.makeStream()
-        textMessages = textStream
-        binaryMessages = binaryStream
-        textContinuation = textCont
-        binaryContinuation = binaryCont
+        let (frameStream, frameCont) = AsyncStream<TransportFrame>.makeStream()
+        frames = frameStream
+        frameContinuation = frameCont
     }
 
     /// Start receiving messages from the connection.
@@ -104,8 +102,7 @@ actor NWWebSocketTransport: SendspinTransport {
     func disconnect() async {
         connection?.cancel()
         connection = nil
-        textContinuation.finish()
-        binaryContinuation.finish()
+        frameContinuation.finish()
     }
 
     // MARK: - Private
@@ -132,11 +129,11 @@ actor NWWebSocketTransport: SendspinTransport {
                 switch metadata.opcode {
                 case .text:
                     if let data = content, let text = String(data: data, encoding: .utf8) {
-                        Task { await self.yieldText(text) }
+                        frameContinuation.yield(.text(text))
                     }
                 case .binary:
                     if let data = content {
-                        Task { await self.yieldBinary(data) }
+                        frameContinuation.yield(.binary(data))
                     }
                 case .close:
                     // Note the close but keep receiving — data frames may be queued
@@ -152,14 +149,6 @@ actor NWWebSocketTransport: SendspinTransport {
             // Continue receiving
             receiveNext(on: connection)
         }
-    }
-
-    private func yieldText(_ text: String) {
-        textContinuation.yield(text)
-    }
-
-    private func yieldBinary(_ data: Data) {
-        binaryContinuation.yield(data)
     }
 
     /// Called on WebSocket close frame. We note it but do NOT finish the stream
@@ -181,7 +170,6 @@ actor NWWebSocketTransport: SendspinTransport {
 
     /// Called when the receive loop terminates (error or connection gone).
     private func finishStreams() {
-        textContinuation.finish()
-        binaryContinuation.finish()
+        frameContinuation.finish()
     }
 }

@@ -10,11 +10,9 @@ import Foundation
 /// Inspect client-sent messages via `sentTextMessages` and `sentBinaryMessages`.
 /// Simulate failures via `setShouldFailOnSend(_:)`.
 actor MockTransport: SendspinTransport {
-    nonisolated let textMessages: AsyncStream<String>
-    nonisolated let binaryMessages: AsyncStream<Data>
+    nonisolated let frames: AsyncStream<TransportFrame>
 
-    private let textContinuation: AsyncStream<String>.Continuation
-    private let binaryContinuation: AsyncStream<Data>.Continuation
+    private let frameContinuation: AsyncStream<TransportFrame>.Continuation
 
     /// JSON-encoded messages sent by the client, captured as raw Data.
     private(set) var sentTextMessages: [Data] = []
@@ -31,8 +29,7 @@ actor MockTransport: SendspinTransport {
     private let encoder = SendspinEncoding.makeEncoder()
 
     init() {
-        (textMessages, textContinuation) = AsyncStream.makeStream()
-        (binaryMessages, binaryContinuation) = AsyncStream.makeStream()
+        (frames, frameContinuation) = AsyncStream.makeStream()
     }
 
     // MARK: - SendspinTransport conformance
@@ -63,20 +60,19 @@ actor MockTransport: SendspinTransport {
 
     /// Inject a JSON text message as if the server sent it.
     func injectText(_ json: String) {
-        textContinuation.yield(json)
+        frameContinuation.yield(.text(json))
     }
 
     /// Inject raw binary data as if the server sent it.
     func injectBinary(_ data: Data) {
-        binaryContinuation.yield(data)
+        frameContinuation.yield(.binary(data))
     }
 
-    /// Finish both streams (simulates connection close without changing `isConnected`).
+    /// Finish the frame stream (simulates connection close without changing `isConnected`).
     /// `disconnect()` delegates here for the stream teardown portion.
     /// Safe to call multiple times — `AsyncStream.Continuation.finish()` is idempotent.
     func finishStreams() {
-        textContinuation.finish()
-        binaryContinuation.finish()
+        frameContinuation.finish()
     }
 
     /// Enable or disable simulated send failures.
