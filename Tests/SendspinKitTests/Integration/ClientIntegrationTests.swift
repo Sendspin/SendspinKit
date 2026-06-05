@@ -228,6 +228,42 @@ private func lastSentCommand(from mock: MockTransport, after offset: Int) async 
     }.last
 }
 
+/// Drive a competing connection to completion: start `acceptConnection` and,
+/// concurrently, inject the new server's `server/hello` (which `performHandshake`
+/// blocks on). Returns the new mock once `acceptConnection` resolves.
+@MainActor
+private func acceptCompeting(
+    _ client: SendspinClient,
+    serverId: String,
+    connectionReason: ConnectionReason,
+    activeRoles: [VersionedRole] = [.playerV1, .controllerV1]
+) async throws -> MockTransport {
+    let mock = MockTransport()
+    async let accepted: Void = client.acceptConnection(mock)
+    try await mock.injectText(serverHelloJSON(
+        serverId: serverId,
+        activeRoles: activeRoles,
+        connectionReason: connectionReason
+    ))
+    try await accepted
+    return mock
+}
+
+/// Reasons from every `client/goodbye` the client sent on `mock`.
+///
+/// `ClientGoodbyeMessage`'s synthesized decoder overwrites its constant `type`
+/// from the JSON, so other message types decode "successfully" — filter on the
+/// decoded `type` to keep only real goodbyes.
+private func sentGoodbyeReasons(from mock: MockTransport) async -> [GoodbyeReason] {
+    let decoder = JSONDecoder()
+    decoder.keyDecodingStrategy = .convertFromSnakeCase
+    let messages = await mock.sentTextMessages
+    return messages
+        .compactMap { try? decoder.decode(ClientGoodbyeMessage.self, from: $0) }
+        .filter { $0.type == "client/goodbye" }
+        .compactMap { $0.payload?.reason }
+}
+
 /// Decode the last `ClientStateMessage` payload sent after `offset`.
 ///
 /// Uses a plain decoder (no snake-case conversion) because the nested
@@ -243,7 +279,7 @@ private func lastClientState(from mock: MockTransport, after offset: Int) async 
 
 @MainActor
 struct ClientIntegrationTests {
-    // MARK: 1. Rollback on external source failure
+    // MARK: Rollback on external source failure
 
     @Test
     func enterExternalSource_rollsBackOnSendFailure() async throws {
@@ -261,7 +297,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 2. streamCleared event
+    // MARK: streamCleared event
 
     @Test
     func streamClear_injectsStreamClearedEvent() async throws {
@@ -284,7 +320,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 3. lastPlayedServerChanged event
+    // MARK: lastPlayedServerChanged event
 
     @Test
     func groupUpdate_withPlayingEmitsLastPlayedServerChanged() async throws {
@@ -350,7 +386,133 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 4. setRepeatMode and setShuffle wire format
+    // MARK: Multi-server arbitration (handshake-first)
+
+    @Test
+    func competingPlayback_overExistingDiscovery_switches() async throws {
+        let client = try makeTestClient()
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
+        let newServerId = "server-2"
+
+        let mock2 = try await acceptCompeting(client, serverId: newServerId, connectionReason: .playback)
+
+        #expect(client.currentServerId == newServerId)
+        #expect(client.connectionState == .connected)
+        // Left the old server with `another_server`, and dropped it.
+        let oldGoodbyes = await sentGoodbyeReasons(from: mock1)
+        let oldDisconnected = await mock1.disconnectCalled
+        let newDisconnected = await mock2.disconnectCalled
+        #expect(oldGoodbyes == [.anotherServer])
+        #expect(oldDisconnected)
+        #expect(!newDisconnected)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func competingDiscovery_underExistingPlayback_keepsExisting() async throws {
+        let client = try makeTestClient()
+        let mock1 = try await connectClient(client, connectionReason: .playback)
+
+        let mock2 = try await acceptCompeting(client, serverId: "server-2", connectionReason: .discovery)
+
+        #expect(client.currentServerId == testServerId)
+        #expect(client.connectionState == .connected)
+        // The losing (new) server is told `another_server` and dropped; old untouched.
+        let newGoodbyes = await sentGoodbyeReasons(from: mock2)
+        let newDisconnected = await mock2.disconnectCalled
+        let oldDisconnected = await mock1.disconnectCalled
+        #expect(newGoodbyes == [.anotherServer])
+        #expect(newDisconnected)
+        #expect(!oldDisconnected)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func competingDiscovery_bothDiscoveryLastPlayedIsNew_switches() async throws {
+        let newServerId = "server-2"
+        let provider = MockPersistenceProvider(stored: newServerId)
+        let client = try makeTestClient(persistenceProvider: provider)
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
+
+        _ = try await acceptCompeting(client, serverId: newServerId, connectionReason: .discovery)
+
+        #expect(client.currentServerId == newServerId)
+        #expect(await mock1.disconnectCalled)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func competingDiscovery_bothDiscoveryNoLastPlayed_keepsExisting() async throws {
+        let client = try makeTestClient()
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
+
+        let mock2 = try await acceptCompeting(client, serverId: "server-2", connectionReason: .discovery)
+
+        let newDisconnected = await mock2.disconnectCalled
+        let oldDisconnected = await mock1.disconnectCalled
+        #expect(client.currentServerId == testServerId)
+        #expect(newDisconnected)
+        #expect(!oldDisconnected)
+
+        await client.disconnect()
+    }
+
+    /// A new server whose handshake never completes must not disturb the existing
+    /// connection. Closing the new transport's streams makes `performHandshake`
+    /// fail fast (no 5 s timeout wait).
+    @Test
+    func competingConnection_handshakeNeverCompletes_keepsExisting() async throws {
+        let client = try makeTestClient()
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
+
+        let mock2 = MockTransport()
+        async let accepted: Void = client.acceptConnection(mock2)
+        try await mock2.finishStreams() // never sends server/hello
+        try await accepted
+
+        let oldDisconnected = await mock1.disconnectCalled
+        let newDisconnected = await mock2.disconnectCalled
+        #expect(client.currentServerId == testServerId)
+        #expect(client.connectionState == .connected)
+        #expect(!oldDisconnected)
+        #expect(newDisconnected)
+
+        await client.disconnect()
+    }
+
+    /// On a switch, frames the new server sent immediately after `server/hello`
+    /// must still be processed once the message loop resumes the (already-read)
+    /// stream. Guards the sequential-iterator handoff in `performHandshake`.
+    @Test
+    func competingSwitch_processesFramesBufferedAfterHello() async throws {
+        let client = try makeTestClient()
+        _ = try await connectClient(client, connectionReason: .discovery)
+        let newServerId = "server-2"
+
+        let mock2 = MockTransport()
+        async let accepted: Void = client.acceptConnection(mock2)
+        try await mock2.injectText(serverHelloJSON(serverId: newServerId, connectionReason: .playback))
+        try await mock2.injectText(groupUpdateJSON(
+            groupId: "group-2",
+            groupName: "Kitchen",
+            playbackState: .playing
+        ))
+        try await accepted
+
+        let sawPlaying = await waitUntil {
+            let state = await MainActor.run { client.currentGroup?.playbackState }
+            return state == .playing
+        }
+        #expect(sawPlaying, "Frame buffered after server/hello must be handled once the loop resumes")
+        #expect(client.currentServerId == newServerId)
+
+        await client.disconnect()
+    }
+
+    // MARK: setRepeatMode and setShuffle wire format
 
     @Test
     func setRepeatMode_oneSendsCorrectCommand() async throws {
@@ -384,7 +546,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 5. sendFailed wrapping
+    // MARK: sendFailed wrapping
 
     @Test
     func play_throwsSendFailedWhenTransportFails() async throws {
@@ -404,7 +566,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 6. activeRoles populated from server/hello
+    // MARK: activeRoles populated from server/hello
 
     @Test
     func serverHello_populatesActiveRoles() async throws {
@@ -439,7 +601,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 7. rawAudioChunk emitted for chunks arriving before stream/start
+    // MARK: rawAudioChunk emitted for chunks arriving before stream/start
 
     @Test
     func rawAudioChunks_emittedEvenWhenArrivingBeforeStreamStart() async throws {
@@ -531,7 +693,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 8. connect throws alreadyConnected
+    // MARK: connect throws alreadyConnected
 
     @Test
     func connect_throwsAlreadyConnectedWhenConnected() async throws {
@@ -545,7 +707,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 9. set_static_delay server command drives state and notifies the host
+    // MARK: set_static_delay server command drives state and notifies the host
 
     @Test
     func serverSetStaticDelay_updatesStateAndEmitsChangedEvent() async throws {
@@ -569,7 +731,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 10. set_static_delay clamps out-of-range server input to the spec maximum
+    // MARK: set_static_delay clamps out-of-range server input to the spec maximum
 
     @Test
     func serverSetStaticDelay_clampsAboveMaximumToSpecLimit() async throws {
@@ -594,7 +756,7 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: 11. default disconnect sends restart so the server keeps auto-reconnect
+    // MARK: default disconnect sends restart so the server keeps auto-reconnect
 
     @Test
     func disconnect_defaultReasonIsRestart() async throws {
@@ -612,7 +774,7 @@ struct ClientIntegrationTests {
         #expect(sent.payload?.reason == .restart)
     }
 
-    // MARK: 12. underrun-driven operational state reporting is guarded
+    // MARK: underrun-driven operational state reporting is guarded
 
     @Test
     func applyUnderrunTransition_toErrorFromSynchronizedReportsError() async throws {
