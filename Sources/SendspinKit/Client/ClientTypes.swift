@@ -173,8 +173,6 @@ public struct TrackMetadata: Sendable, Hashable {
     /// metadata to external systems or for clients that fetch images themselves.
     public let artworkURL: String?
     public let progress: PlaybackProgress?
-    public let repeatMode: RepeatMode?
-    public let shuffle: Bool?
 }
 
 /// Controller state from the server.
@@ -190,6 +188,10 @@ public struct ControllerState: Sendable, Hashable {
     public let volume: Int
     /// Group mute state (`true` only when all players in the group are muted)
     public let muted: Bool
+    /// Group repeat mode, `nil` if the server has not reported one.
+    public let repeatMode: RepeatMode?
+    /// Group shuffle state, `nil` if the server has not reported one.
+    public let shuffle: Bool?
 }
 
 /// Errors thrown by `SendspinClient` methods.

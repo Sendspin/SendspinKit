@@ -73,6 +73,13 @@ private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
     return String(bytes: data, encoding: .utf8) ?? ""
 }
 
+/// Encode a `server/state` message carrying only a controller object.
+private func serverStateControllerJSON(_ controller: ServerControllerState) throws -> String {
+    let message = ServerStateMessage(payload: ServerStatePayload(controller: controller))
+    let data = try JSONEncoder().encode(message)
+    return String(bytes: data, encoding: .utf8) ?? ""
+}
+
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
 func makeTestClient(
@@ -542,6 +549,36 @@ struct ClientIntegrationTests {
         let command = try await lastSentCommand(from: mock, after: countBefore)
         let sent = try #require(command, "Expected a ClientCommandMessage after setShuffle(true)")
         #expect(sent.payload.controller?.command == .shuffle)
+
+        await client.disconnect()
+    }
+
+    // MARK: server-initiated controller repeat/shuffle
+
+    @Test
+    func serverState_controllerRepeatShuffle_surfacesAndMergesOnPublicState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.repeatAll, .shuffle], volume: 50, muted: false,
+            repeat: .all, shuffle: true
+        )))
+
+        let sawValues = await waitUntil {
+            let state = await MainActor.run { client.currentControllerState }
+            return state?.repeatMode == .all && state?.shuffle == true
+        }
+        #expect(sawValues, "Controller repeat/shuffle must surface on the public state")
+
+        // A later delta that omits repeat/shuffle must preserve the prior values.
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(volume: 60)))
+
+        let preserved = await waitUntil {
+            let state = await MainActor.run { client.currentControllerState }
+            return state?.volume == 60 && state?.repeatMode == .all && state?.shuffle == true
+        }
+        #expect(preserved, "Absent repeat/shuffle in a delta must keep previous values")
 
         await client.disconnect()
     }
