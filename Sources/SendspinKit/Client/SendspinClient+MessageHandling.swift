@@ -380,7 +380,12 @@ extension SendspinClient {
         // and also surfaced as an event for observation (e.g. UI).
         if message.payload.playbackState == .playing, let serverId = currentServerId {
             eventsContinuation.yield(.lastPlayedServerChanged(serverId: serverId))
-            await persistenceProvider?.saveLastPlayedServerId(serverId)
+            // Fire-and-forget: the host provider may do slow I/O, and frames are
+            // now dispatched on a single ordered task — awaiting here would stall
+            // audio-frame intake behind a storage write.
+            if let persistenceProvider {
+                Task { await persistenceProvider.saveLastPlayedServerId(serverId) }
+            }
         }
 
         // Per spec: "Contains delta updates with only the changed fields.

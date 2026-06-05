@@ -302,11 +302,10 @@ public final class SendspinClient {
             try await sendClientHello()
         }
 
-        let textStream = transport.textMessages
-        let binaryStream = transport.binaryMessages
+        let frames = transport.frames
 
         messageLoopTask = Task.detached { [weak self] in
-            await self?.runMessageLoop(textStream: textStream, binaryStream: binaryStream)
+            await self?.runMessageLoop(frames: frames)
         }
 
         // Clock sync starts after server/hello is received (in handleServerHello)
@@ -476,27 +475,24 @@ public final class SendspinClient {
 
     // MARK: - Message loop
 
-    private nonisolated func runMessageLoop(
-        textStream: AsyncStream<String>,
-        binaryStream: AsyncStream<Data>
-    ) async {
-        await withTaskGroup(of: Void.self) { group in
-            group.addTask { [weak self] in
-                guard let self else { return }
-                for await text in textStream {
-                    await handleTextMessage(text)
-                }
-            }
-
-            group.addTask { [weak self] in
-                guard let self else { return }
-                for await data in binaryStream {
-                    await handleBinaryMessage(data)
-                }
+    /// Dispatch incoming frames in wire order on a single task.
+    ///
+    /// Text and binary frames share one ordered stream so a control message can
+    /// never overtake the audio frames that preceded it (e.g. `stream/end` must
+    /// be handled only after the audio chunks the server sent before it). Audio
+    /// *output* is decoupled on ``runSchedulerOutput()``, so serial frame
+    /// dispatch here does not gate playback.
+    private nonisolated func runMessageLoop(frames: AsyncStream<TransportFrame>) async {
+        for await frame in frames {
+            switch frame {
+            case let .text(text):
+                await handleTextMessage(text)
+            case let .binary(data):
+                await handleBinaryMessage(data)
             }
         }
 
-        // Both streams ended — connection was lost (not an explicit disconnect,
+        // The frame stream ended — connection was lost (not an explicit disconnect,
         // which cancels this task before streams end naturally)
         await MainActor.run { [weak self] in
             guard let self else { return }
