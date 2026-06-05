@@ -54,6 +54,14 @@ public final class SendspinClient {
     /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
     /// updated when the server sends a `set_static_delay` command.
     public private(set) var staticDelayMs: Int
+    /// Gate `stream/request-format`: a format request renegotiates an existing
+    /// stream, so it's only valid between a role's `stream/start` and `stream/end`.
+    /// Tracks the server's stream *intent*, not local playability — it opens even
+    /// when the client couldn't begin playback (e.g. an unsupported codec), which
+    /// is precisely the state a client recovers from by requesting a format it
+    /// supports. The two roles are independent — `stream/end` can end one without
+    /// the other.
+    var playerStreamActive = false
     var artworkStreamActive = false
     /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
     var shouldEmitRawAudio = false
@@ -376,12 +384,7 @@ public final class SendspinClient {
         isClockSynced = false
         currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
         currentMuted = false
-        updateStreamFormat(nil)
-        updateCodecHeader(nil)
-        shouldEmitRawAudio = false
-        pendingFormat = nil
-        pendingCodecHeader = nil
-        artworkStreamActive = false
+        resetStreamState()
         currentConnectionReason = nil
         currentServerId = nil
         currentMetadata = nil
@@ -390,6 +393,22 @@ public final class SendspinClient {
 
         connectionState = .disconnected
         eventsContinuation.yield(.disconnected(reason: .explicit(reason)))
+    }
+
+    /// Clear every marker of the currently-active stream(s). Shared by
+    /// ``disconnect(reason:)`` and the connection-lost path so a dropped link
+    /// leaves the same coherent "no active stream" state an explicit disconnect
+    /// would. Without this on connection loss, the `stream/request-format` gates
+    /// stay open against a dead transport, so a request would pass the gate and
+    /// then fail with the wrong error (`sendFailed`, not `streamNotActive`).
+    func resetStreamState() {
+        updateStreamFormat(nil)
+        updateCodecHeader(nil)
+        shouldEmitRawAudio = false
+        pendingFormat = nil
+        pendingCodecHeader = nil
+        playerStreamActive = false
+        artworkStreamActive = false
     }
 
     // MARK: - Outbound messages
@@ -497,6 +516,11 @@ public final class SendspinClient {
         await MainActor.run { [weak self] in
             guard let self else { return }
             if connectionState != .disconnected {
+                // Clear stream markers before announcing the loss, so a consumer
+                // reacting to `.disconnected` sees no phantom active stream. The
+                // rest of the connection (transport handle, group membership) is
+                // left for an explicit `disconnect()` or reconnect to settle.
+                resetStreamState()
                 connectionState = .disconnected
                 eventsContinuation.yield(.disconnected(reason: .connectionLost))
             }

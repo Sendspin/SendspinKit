@@ -64,7 +64,12 @@ public extension SendspinClient {
     /// - Full format change: `try await requestPlayerFormat(codec: .flac, sampleRate: 48000, bitDepth: 24)`
     /// - Downgrade under load: `try await requestPlayerFormat(codec: .opus)`
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// Only valid while a player stream is active (between its `stream/start`
+    /// and `stream/end`): the server answers with a `stream/start` that
+    /// renegotiates that stream, so there is nothing to renegotiate otherwise.
+    ///
+    /// - Throws: ``SendspinClientError/streamNotActive(_:)`` if no player stream
+    ///   is active, or ``SendspinClientError/notConnected`` if not connected.
     @MainActor
     func requestPlayerFormat(
         codec: AudioCodec? = nil,
@@ -72,6 +77,7 @@ public extension SendspinClient {
         sampleRate: Int? = nil,
         bitDepth: Int? = nil
     ) async throws {
+        guard playerStreamActive else { throw SendspinClientError.streamNotActive(.player) }
         let request = PlayerFormatRequest(
             codec: codec,
             channels: channels,
@@ -105,7 +111,11 @@ public extension SendspinClient {
     /// Request the server to change artwork format for a specific channel.
     /// The server will respond with `stream/start` containing the updated config.
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// Only valid while an artwork stream is active (between its `stream/start`
+    /// and `stream/end`).
+    ///
+    /// - Throws: ``SendspinClientError/streamNotActive(_:)`` if no artwork stream
+    ///   is active, or ``SendspinClientError/notConnected`` if not connected.
     @MainActor
     func requestArtworkFormat(
         channel: Int,
@@ -114,6 +124,7 @@ public extension SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async throws {
+        guard artworkStreamActive else { throw SendspinClientError.streamNotActive(.artwork) }
         let request = try ArtworkFormatRequest(
             channel: channel,
             source: source,

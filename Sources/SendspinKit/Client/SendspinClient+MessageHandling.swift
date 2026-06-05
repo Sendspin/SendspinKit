@@ -222,6 +222,10 @@ extension SendspinClient {
             Log.client.info("stream/start: artwork only (no player payload)")
             return
         }
+        // Must precede the audioPlayer guard and the awaits/yields below: the gate
+        // has to be open before a consumer observes the resulting stream event, and
+        // open even when this client has no audioPlayer to actually play the stream.
+        playerStreamActive = true
         guard let audioPlayer else {
             Log.client.error("stream/start: player payload received but audioPlayer is nil!")
             return
@@ -357,6 +361,9 @@ extension SendspinClient {
         let endedRoles = message.payload.roles
 
         if endedRoles == nil || endedRoles?.contains("player") == true {
+            // Settle the gate before teardown awaits, so a reentrant format
+            // request during teardown is already rejected.
+            playerStreamActive = false
             if let audioPlayer {
                 await audioScheduler?.stop()
                 await audioScheduler?.clear()
