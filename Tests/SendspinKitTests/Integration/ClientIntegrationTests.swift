@@ -75,7 +75,10 @@ private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
 
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
-private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV1]) throws -> SendspinClient {
+private func makeTestClient(
+    roles: Set<VersionedRole> = [.playerV1, .controllerV1],
+    persistenceProvider: (any SendspinPersistenceProvider)? = nil
+) throws -> SendspinClient {
     var playerConfig: PlayerConfiguration?
     if roles.contains(.playerV1) {
         playerConfig = try PlayerConfiguration(
@@ -90,8 +93,43 @@ private func makeTestClient(roles: Set<VersionedRole> = [.playerV1, .controllerV
         clientId: "test-client",
         name: "Test Client",
         roles: roles,
-        playerConfig: playerConfig
+        playerConfig: playerConfig,
+        persistenceProvider: persistenceProvider
     )
+}
+
+/// In-memory ``SendspinPersistenceProvider`` for tests. Records every saved
+/// `server_id` and serves a preloaded value back from `load`.
+private actor MockPersistenceProvider: SendspinPersistenceProvider {
+    private(set) var savedServerIds: [String] = []
+    private var storedServerId: String?
+
+    init(stored storedServerId: String? = nil) {
+        self.storedServerId = storedServerId
+    }
+
+    func loadLastPlayedServerId() async -> String? {
+        storedServerId
+    }
+
+    func saveLastPlayedServerId(_ serverId: String) async {
+        savedServerIds.append(serverId)
+        storedServerId = serverId
+    }
+}
+
+/// Poll `condition` until it returns `true` or the deadline passes.
+/// Returns the final evaluation so callers can assert positively or negatively.
+private func waitUntil(
+    timeout: Duration = .seconds(2),
+    _ condition: @Sendable () async -> Bool
+) async -> Bool {
+    let deadline = ContinuousClock.now + timeout
+    while ContinuousClock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return await condition()
 }
 
 /// Accept a mock transport connection and wait for the handshake to complete.
@@ -268,6 +306,46 @@ struct ClientIntegrationTests {
 
         let event = await eventTask.value
         #expect(event == .lastPlayedServerChanged(serverId: testServerId))
+
+        await client.disconnect()
+    }
+
+    @Test
+    func groupUpdate_withPlayingSavesServerIdToProvider() async throws {
+        let provider = MockPersistenceProvider()
+        let client = try makeTestClient(persistenceProvider: provider)
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(groupUpdateJSON(
+            groupId: "group-1",
+            groupName: "Living Room",
+            playbackState: .playing
+        ))
+
+        let saved = await waitUntil { await provider.savedServerIds == [testServerId] }
+        #expect(saved, "Expected the provider to persist the last-played server_id")
+
+        await client.disconnect()
+    }
+
+    @Test
+    func groupUpdate_withStoppedDoesNotSaveServerId() async throws {
+        let provider = MockPersistenceProvider()
+        let client = try makeTestClient(persistenceProvider: provider)
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(groupUpdateJSON(
+            groupId: "group-1",
+            groupName: "Living Room",
+            playbackState: .stopped
+        ))
+
+        // Negative assertion: give the message time to be processed, then confirm
+        // nothing was persisted. A non-playing update must not touch storage.
+        let savedSomething = await waitUntil(timeout: .milliseconds(200)) {
+            await !provider.savedServerIds.isEmpty
+        }
+        #expect(!savedSomething, "Stopped playback must not persist a last-played server")
 
         await client.disconnect()
     }

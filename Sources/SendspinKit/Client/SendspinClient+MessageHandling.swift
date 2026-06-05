@@ -368,9 +368,11 @@ extension SendspinClient {
 
     func handleGroupUpdate(_ message: GroupUpdateMessage) async {
         // Per spec: persist server_id when playback_state transitions to 'playing'.
-        // Emitted as an event so the host app can persist using its own storage.
+        // Persisted via the injected provider (the storage path used by arbitration)
+        // and also surfaced as an event for observation (e.g. UI).
         if message.payload.playbackState == .playing, let serverId = currentServerId {
             eventsContinuation.yield(.lastPlayedServerChanged(serverId: serverId))
+            await persistenceProvider?.saveLastPlayedServerId(serverId)
         }
 
         // Per spec: "Contains delta updates with only the changed fields.
