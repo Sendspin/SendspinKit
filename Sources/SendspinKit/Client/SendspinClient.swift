@@ -98,6 +98,21 @@ public final class SendspinClient {
     var clockSyncTask: Task<Void, Never>?
     var schedulerOutputTask: Task<Void, Never>?
     var syncTelemetryTask: Task<Void, Never>?
+    /// Bumped on every ``setupConnection(with:preReadHello:)``. A message loop
+    /// captures the value live at its creation; on exit it tears the connection
+    /// down only if the value still matches, so a loop superseded by a fast
+    /// reconnect (e.g. a network-path change firing before its `.disconnected`
+    /// event drains) cannot clobber the connection that replaced it.
+    var connectionGeneration: UInt64 = 0
+
+    /// The reason an in-flight ``disconnect(reason:)`` intends to report, recorded
+    /// before it suspends on the goodbye send. If a connection loss races that
+    /// suspended disconnect and settles first, it adopts this reason instead of
+    /// `.connectionLost`, so the local `.disconnected` event preserves the user's
+    /// intent — host apps branch on it (e.g. suppress auto-reconnect on
+    /// `.userRequest`/`.anotherServer`, but retry on `.connectionLost`). Consumed
+    /// by the settling teardown and cleared on each new connection.
+    var explicitDisconnectReason: GoodbyeReason?
 
     // Event stream
     let eventsContinuation: AsyncStream<ClientEvent>.Continuation
@@ -279,6 +294,17 @@ public final class SendspinClient {
         // re-hello, where the accumulated state is still valid.
         resetServerSessionState()
 
+        // Establish this connection's identity before any `await` below. A stale
+        // handleConnectionLost(generation:) from a prior link that interleaves during
+        // those suspensions then sees the bumped generation and skips its teardown,
+        // instead of clobbering the connection now being set up.
+        connectionGeneration &+= 1
+        let generation = connectionGeneration
+
+        // A fresh session never inherits a prior disconnect's reason: drop any intent
+        // a disconnect recorded but didn't settle (it bailed on a generation change).
+        explicitDisconnectReason = nil
+
         let clockSync = ClockSynchronizer()
         let audioScheduler = AudioScheduler(clockSync: clockSync)
 
@@ -320,7 +346,7 @@ public final class SendspinClient {
         let frames = transport.frames
 
         messageLoopTask = Task.detached { [weak self] in
-            await self?.runMessageLoop(frames: frames)
+            await self?.runMessageLoop(frames: frames, generation: generation)
         }
 
         // Clock sync starts after server/hello is received (in handleServerHello)
@@ -357,6 +383,13 @@ public final class SendspinClient {
         // ghost `.disconnected` event (not harmless — it spams event consumers).
         guard connectionState != .disconnected else { return }
 
+        let generation = connectionGeneration
+
+        // Record intent before the goodbye await: if a connection loss races this
+        // suspended disconnect and settles first, it reports this reason, not
+        // `.connectionLost`.
+        explicitDisconnectReason = reason
+
         // Send client/goodbye before tearing down (best-effort)
         if let transport {
             let goodbye = ClientGoodbyeMessage(
@@ -365,40 +398,32 @@ public final class SendspinClient {
             try? await transport.send(goodbye)
         }
 
-        messageLoopTask?.cancel()
-        clockSyncTask?.cancel()
-        schedulerOutputTask?.cancel()
-        syncTelemetryTask?.cancel()
-        messageLoopTask = nil
-        clockSyncTask = nil
-        schedulerOutputTask = nil
-        syncTelemetryTask = nil
+        // Shared guarded teardown: bails (emitting nothing) if a connection-loss
+        // teardown or a competing connection already settled this one while the
+        // goodbye was in flight — collapsing the race to a single `.disconnected`.
+        guard await teardownLiveConnection(generation: generation) else { return }
 
-        if let audioPlayer {
-            await audioPlayer.stop()
-        }
-
-        await audioScheduler?.finish()
-        await audioScheduler?.clear()
-        await transport?.disconnect()
-
-        transport = nil
-        clockSync = nil
-        audioScheduler = nil
-        audioPlayer = nil
-
-        clientOperationalState = .synchronized
-        isClockSynced = false
         currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
         currentMuted = false
-        resetStreamState()
         resetServerSessionState()
         currentConnectionReason = nil
         currentServerId = nil
         // Don't clear currentGroup — spec says group membership persists across reconnections
 
+        settleDisconnected()
+    }
+
+    /// Settle `connectionState` to `.disconnected` and emit a single `.disconnected`
+    /// event. Shared by ``disconnect(reason:)`` and ``handleConnectionLost(generation:)``
+    /// so the emitted reason is resolved in one place: an explicit disconnect's intent
+    /// wins if one is in flight, otherwise it's a `.connectionLost`. Must be called with
+    /// no `await` between the teardown's final guard and here, so racing teardowns
+    /// cannot double-settle.
+    private func settleDisconnected() {
         connectionState = .disconnected
-        eventsContinuation.yield(.disconnected(reason: .explicit(reason)))
+        let reason: DisconnectReason = explicitDisconnectReason.map(DisconnectReason.explicit) ?? .connectionLost
+        explicitDisconnectReason = nil
+        eventsContinuation.yield(.disconnected(reason: reason))
     }
 
     /// Clear every marker of the currently-active stream(s). Shared by
@@ -427,6 +452,23 @@ public final class SendspinClient {
     func resetServerSessionState() {
         updateMetadata(nil)
         updateControllerState(nil)
+    }
+
+    /// Cancel and release the four long-lived connection tasks. Shared by
+    /// ``disconnect(reason:)`` and the connection-lost path. The latter cannot
+    /// rely on a later `disconnect()` to do this: once connection loss sets
+    /// `.disconnected`, `disconnect()` hits its idempotency guard and returns
+    /// before reaching here, which is how the scheduler-output and telemetry
+    /// loops would otherwise leak (and double-run after a reconnect).
+    func cancelConnectionTasks() {
+        messageLoopTask?.cancel()
+        clockSyncTask?.cancel()
+        schedulerOutputTask?.cancel()
+        syncTelemetryTask?.cancel()
+        messageLoopTask = nil
+        clockSyncTask = nil
+        schedulerOutputTask = nil
+        syncTelemetryTask = nil
     }
 
     // MARK: - Outbound messages
@@ -519,7 +561,7 @@ public final class SendspinClient {
     /// be handled only after the audio chunks the server sent before it). Audio
     /// *output* is decoupled on ``runSchedulerOutput()``, so serial frame
     /// dispatch here does not gate playback.
-    private nonisolated func runMessageLoop(frames: AsyncStream<TransportFrame>) async {
+    private nonisolated func runMessageLoop(frames: AsyncStream<TransportFrame>, generation: UInt64) async {
         for await frame in frames {
             switch frame {
             case let .text(text):
@@ -530,173 +572,82 @@ public final class SendspinClient {
         }
 
         // The frame stream ended — connection was lost (not an explicit disconnect,
-        // which cancels this task before streams end naturally)
-        await MainActor.run { [weak self] in
-            guard let self else { return }
-            if connectionState != .disconnected {
-                // Clear stream markers before announcing the loss, so a consumer
-                // reacting to `.disconnected` sees no phantom active stream. The
-                // rest of the connection (transport handle, group membership) is
-                // left for an explicit `disconnect()` or reconnect to settle.
-                resetStreamState()
-                connectionState = .disconnected
-                eventsContinuation.yield(.disconnected(reason: .connectionLost))
-            }
-        }
+        // which cancels this task before streams end naturally).
+        await handleConnectionLost(generation: generation)
     }
 
-    // MARK: - Scheduler output
-
-    /// Number of chunks to pre-buffer before rebuilding the AudioQueue during
-    /// a format transition. This gives the AudioQueue headroom so the sync
-    /// correction doesn't engage aggressively on the first few samples.
-    /// 2 chunks ≈ 200ms — enough headroom without overshooting.
-    private nonisolated static let formatTransitionPreBuffer = 2
-
-    private nonisolated func runSchedulerOutput() async {
-        guard let audioScheduler = await audioScheduler,
-              let audioPlayer = await audioPlayer
-        else { return }
-
-        var activeGeneration: UInt64 = await streamGeneration
-
-        for await chunk in audioScheduler.scheduledChunks {
-            if chunk.generation != activeGeneration {
-                if chunk.generation < activeGeneration {
-                    // Old-generation chunk after a format change already happened.
-                    // This shouldn't occur since old chunks have earlier timestamps,
-                    // but discard just in case.
-                    continue
-                }
-
-                // New generation — first chunk decoded in the new format.
-                // Accumulate a few chunks before rebuilding the AudioQueue
-                // so we have buffer headroom for clean sync convergence.
-                let pending = await MainActor.run { () -> (AudioFormatSpec?, Data?) in
-                    let fmt = self.pendingFormat
-                    let hdr = self.pendingCodecHeader
-                    self.pendingFormat = nil
-                    self.pendingCodecHeader = nil
-                    return (fmt, hdr)
-                }
-
-                activeGeneration = chunk.generation
-
-                guard let format = pending.0 else {
-                    try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
-                    continue
-                }
-
-                // Pre-buffer: collect this chunk + one more before switching
-                var preBuffer: [(pcm: Data, timestamp: Int64)] = [
-                    (chunk.pcmData, chunk.originalTimestamp)
-                ]
-
-                for await nextChunk in audioScheduler.scheduledChunks {
-                    preBuffer.append((nextChunk.pcmData, nextChunk.originalTimestamp))
-                    if preBuffer.count >= Self.formatTransitionPreBuffer {
-                        break
-                    }
-                }
-
-                // Rebuild AudioQueue and feed pre-buffered chunks
-                Log.client.info("Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)")
-                try? await audioPlayer.start(format: format, codecHeader: pending.1)
-
-                for buffered in preBuffer {
-                    try? await audioPlayer.playPCM(buffered.pcm, serverTimestamp: buffered.timestamp)
-                }
-                continue
-            }
-            try? await audioPlayer.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
-        }
+    /// Tear down a connection that dropped without an explicit ``disconnect(reason:)``.
+    ///
+    /// Mirrors `disconnect()`'s resource teardown — stop audio, finish the
+    /// scheduler, close and release the transport, cancel the connection tasks —
+    /// so a dropped link leaves no live AudioQueue, socket, or background loop.
+    /// It deliberately preserves the *observable* session state (metadata,
+    /// controller, group, volume, server identity) so a UI keeps showing the
+    /// last-known state through a transient drop; that state is reset at the next
+    /// connection by ``setupConnection(with:preReadHello:)``, not here.
+    ///
+    /// - Parameter generation: the connection generation this loop was started
+    ///   for. If a newer connection has since been established, this teardown is
+    ///   stale and must do nothing.
+    ///
+    /// Internal rather than private so the generation guard can be tested directly
+    /// (its failure mode — a stale teardown clobbering a live reconnect — is a race
+    /// that can't be reproduced deterministically through the public surface).
+    @MainActor
+    func handleConnectionLost(generation: UInt64) async {
+        guard await teardownLiveConnection(generation: generation) else { return }
+        settleDisconnected()
     }
 
-    /// Polls for reanchor requests from the audio callback and logs telemetry.
-    /// Sync correction is now computed inside the AudioQueue callback itself,
-    /// so this loop only handles rare reanchor events and periodic logging.
-    private nonisolated func runSyncCorrectionAndTelemetry() async {
-        var lastTelemetryStats = SchedulerStats()
-        var tickCount = 0
-        var underrunMonitor = UnderrunMonitor()
+    /// Idempotently tear down the live connection's resources — stop audio, finish
+    /// the scheduler, close and release the transport, cancel the background tasks —
+    /// guarding against a competing connection that replaced them while suspended.
+    ///
+    /// Returns `true` if this call performed the teardown; `false` if a newer
+    /// connection has taken over (generation bumped) or another teardown path
+    /// already settled this one. On `false` the caller must not settle
+    /// `connectionState` or emit an event.
+    ///
+    /// Shared by ``handleConnectionLost(generation:)`` and ``disconnect(reason:)`` so
+    /// concurrent teardowns (a user disconnect racing a dropped link) collapse to a
+    /// single settle and a single `.disconnected` event. The observable session
+    /// state (metadata, controller, group, volume, server identity) is intentionally
+    /// left for the caller to handle — connection-loss preserves it; explicit
+    /// disconnect resets it.
+    @MainActor
+    func teardownLiveConnection(generation: UInt64) async -> Bool {
+        guard generation == connectionGeneration, connectionState != .disconnected else { return false }
 
-        while !Task.isCancelled {
-            // 500ms poll — reanchors are rare events, no need to check faster.
-            // Telemetry logs every 4th tick (2s).
-            try? await Task.sleep(for: .milliseconds(500))
-            tickCount += 1
+        // Operate on captured locals, not `self.*`: these awaits suspend the
+        // MainActor, during which a competing connection can replace the live
+        // dependencies. Closing the locals tears down the resources this connection
+        // owned, never a replacement's. Teardown is idempotent, so re-running it on
+        // already-closed resources (a concurrent disconnect got here first) is safe.
+        let closingPlayer = audioPlayer
+        let closingScheduler = audioScheduler
+        let closingTransport = transport
 
-            guard let audioScheduler = await audioScheduler,
-                  let clockSync = await clockSync,
-                  let audioPlayer = await audioPlayer else { continue }
+        await closingPlayer?.stop()
+        await closingScheduler?.finish()
+        await closingScheduler?.clear()
+        await closingTransport?.disconnect()
 
-            // --- Poll for reanchor requests from the audio callback ---
-            if let reanchorTarget = await audioPlayer.pollReanchor() {
-                await audioPlayer.reanchorCursor(to: reanchorTarget)
-            }
+        // Re-check before mutating shared state. There must be no `await` between
+        // here and the caller's `connectionState = .disconnected`, so two racing
+        // teardowns cannot both pass this guard and double-settle.
+        guard generation == connectionGeneration, connectionState != .disconnected else { return false }
 
-            let tSnap = await audioPlayer.telemetrySnapshot
+        transport = nil
+        clockSync = nil
+        audioScheduler = nil
+        audioPlayer = nil
 
-            // Report buffer starvation as `error`/`synchronized` (spec §Playback
-            // Synchronization). The audio callback only counts underruns; this
-            // off-thread loop is where we can reach the server.
-            switch await clientOperationalState {
-            case .externalSource:
-                // Re-baseline: underruns accrued while not playing must not trip an
-                // error once we rejoin.
-                underrunMonitor.resetBaseline(underrunCount: tSnap.underrunCount)
-            case .synchronized, .error:
-                await applyUnderrunTransition(underrunMonitor.observe(underrunCount: tSnap.underrunCount))
-            }
+        cancelConnectionTasks()
 
-            // --- Telemetry (every 2s = every 4 ticks) ---
-            if tickCount % 4 == 0 {
-                let currentStats = await audioScheduler.stats
-                guard currentStats.received > 0 else { continue }
-
-                // Atomic snapshot of clock-sync state — single actor hop covers
-                // offset, RTT, and the Kalman convergence diagnostics.
-                guard let syncSnap = await clockSync.diagnosticSnapshot() else { continue }
-
-                let framesScheduled = currentStats.received - lastTelemetryStats.received
-                let framesPlayed = currentStats.played - lastTelemetryStats.played
-                let framesDroppedLate = currentStats.droppedLate - lastTelemetryStats.droppedLate
-
-                let clockOffsetMs = Double(syncSnap.offset) / 1_000.0
-                let rttMs = Double(syncSnap.rtt) / 1_000.0
-                let estErrUs = Int64(syncSnap.estimatedError.rounded())
-                // Drift is dimensionless (μs of offset per μs of time); ppm is the
-                // human-readable form for clock-drift rates.
-                let driftPpm = syncSnap.drift * 1_000_000.0
-
-                // Sync error computed by the audio callback (precise, no actor jitter);
-                // reuse the per-tick telemetry snapshot read above.
-                let syncErrorUs = tSnap.syncErrorUs
-                let dropN = tSnap.correctionSchedule.dropEveryNFrames
-                let insertN = tSnap.correctionSchedule.insertEveryNFrames
-
-                let correcting = tSnap.correctionSchedule.isCorrecting
-
-                // Telemetry is pre-formatted into a single String because os.Logger's
-                // type checker can't handle this many inline interpolation segments.
-                // The cost (unconditional formatting) is acceptable at the 2s tick rate.
-                let telemetry = "sched=\(framesScheduled) played=\(framesPlayed)"
-                    + " late=\(framesDroppedLate)"
-                    + " buf=\(String(format: "%.1f", currentStats.bufferFillMs))ms"
-                    + " offset=\(String(format: "%.2f", clockOffsetMs))ms"
-                    + " rtt=\(String(format: "%.2f", rttMs))ms"
-                    + " est=\(estErrUs)us"
-                    + " drift=\(String(format: "%.2f", driftPpm))ppm"
-                    + " samples=\(syncSnap.sampleCount)"
-                    + " queue=\(currentStats.queueSize)"
-                    + " sync=\(syncErrorUs)us"
-                    + " correcting=\(correcting)"
-                    + " drop=\(dropN) insert=\(insertN)"
-                Log.client.debug("\(telemetry, privacy: .public)")
-
-                lastTelemetryStats = currentStats
-            }
-        }
+        clientOperationalState = .synchronized
+        isClockSynced = false
+        resetStreamState()
+        return true
     }
 
     // MARK: - Utilities

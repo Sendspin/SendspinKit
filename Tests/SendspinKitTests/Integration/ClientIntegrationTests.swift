@@ -405,6 +405,10 @@ struct ClientIntegrationTests {
 
         #expect(client.currentServerId == newServerId)
         #expect(client.connectionState == .connected)
+        // The superseded old connection's teardown must not have clobbered the new
+        // transport: a stale handleConnectionLost interleaving the switch is gated
+        // out by the connection generation.
+        #expect(client.transport != nil, "Competing-switch must leave the new transport live")
         // Left the old server with `another_server`, and dropped it.
         let oldGoodbyes = await sentGoodbyeReasons(from: mock1)
         let oldDisconnected = await mock1.disconnectCalled
