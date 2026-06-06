@@ -272,6 +272,13 @@ public final class SendspinClient {
         with transport: any SendspinTransport,
         preReadHello: ServerHelloMessage? = nil
     ) async throws {
+        // A new connection is a new session: drop any server-reported state carried
+        // over from a prior connection (notably one lost without an explicit
+        // disconnect) before the first server/state can merge a delta onto it.
+        // Placed here, not in handleServerHello — that also fires on a same-connection
+        // re-hello, where the accumulated state is still valid.
+        resetServerSessionState()
+
         let clockSync = ClockSynchronizer()
         let audioScheduler = AudioScheduler(clockSync: clockSync)
 
@@ -385,10 +392,9 @@ public final class SendspinClient {
         currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
         currentMuted = false
         resetStreamState()
+        resetServerSessionState()
         currentConnectionReason = nil
         currentServerId = nil
-        currentMetadata = nil
-        currentControllerState = nil
         // Don't clear currentGroup — spec says group membership persists across reconnections
 
         connectionState = .disconnected
@@ -409,6 +415,18 @@ public final class SendspinClient {
         pendingCodecHeader = nil
         playerStreamActive = false
         artworkStreamActive = false
+    }
+
+    /// Clear server-reported state that is scoped to a single connection. A
+    /// `server/state` delta merges onto the *previous* value (absent field = keep
+    /// previous), so without this a reconnected server's first partial delta would
+    /// inherit the dead connection's metadata/controller. `currentServerId` and
+    /// `currentConnectionReason` are excluded — ``handleServerHello(_:)`` overwrites
+    /// them on every hello — and `currentGroup` is excluded because the spec keeps
+    /// group membership across reconnections.
+    func resetServerSessionState() {
+        updateMetadata(nil)
+        updateControllerState(nil)
     }
 
     // MARK: - Outbound messages
