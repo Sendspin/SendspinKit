@@ -222,17 +222,22 @@ private func collectEvent(
     }
 }
 
-/// Decode the last `ClientCommandMessage` from the mock's sent messages.
+/// Decode the last `client/command` sent after `offset`.
 ///
 /// The mock encodes with `.convertToSnakeCase` (via `SendspinEncoding`),
 /// so we must decode with `.convertFromSnakeCase` to round-trip correctly.
+///
+/// Dispatches on `SendspinEncoding.messageType` — the same wire-tag read the client
+/// uses to route inbound frames — so background `client/time` traffic (which decodes
+/// "successfully" as an empty command) can't be mistaken for the real command.
 private func lastSentCommand(from mock: MockTransport, after offset: Int) async throws -> ClientCommandMessage? {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset).compactMap { data in
-        try? decoder.decode(ClientCommandMessage.self, from: data)
-    }.last
+    return messages.dropFirst(offset)
+        .filter { SendspinEncoding.messageType(of: $0) == "client/command" }
+        .compactMap { try? decoder.decode(ClientCommandMessage.self, from: $0) }
+        .last
 }
 
 /// Drive a competing connection to completion: start `acceptConnection` and,
@@ -256,30 +261,27 @@ private func acceptCompeting(
     return mock
 }
 
-/// Reasons from every `client/goodbye` the client sent on `mock`.
-///
-/// `ClientGoodbyeMessage`'s synthesized decoder overwrites its constant `type`
-/// from the JSON, so other message types decode "successfully" — filter on the
-/// decoded `type` to keep only real goodbyes.
+/// Reasons from every `client/goodbye` the client sent on `mock`, in send order.
 private func sentGoodbyeReasons(from mock: MockTransport) async -> [GoodbyeReason] {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let messages = await mock.sentTextMessages
     return messages
-        .compactMap { try? decoder.decode(ClientGoodbyeMessage.self, from: $0) }
-        .filter { $0.type == "client/goodbye" }
-        .compactMap { $0.payload?.reason }
+        .filter { SendspinEncoding.messageType(of: $0) == "client/goodbye" }
+        .compactMap { (try? decoder.decode(ClientGoodbyeMessage.self, from: $0))?.payload?.reason }
 }
 
-/// Decode the last `ClientStateMessage` payload sent after `offset`.
+/// Decode the last `client/state` payload sent after `offset`.
 ///
 /// Uses a plain decoder (no snake-case conversion) because the nested
 /// `PlayerStateObject` defines explicit snake_case `CodingKeys`.
 private func lastClientState(from mock: MockTransport, after offset: Int) async -> ClientStatePayload? {
     let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset).compactMap { data in
-        try? JSONDecoder().decode(ClientStateMessage.self, from: data)
-    }.last?.payload
+    return messages.dropFirst(offset)
+        .filter { SendspinEncoding.messageType(of: $0) == "client/state" }
+        .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0) }
+        .last?
+        .payload
 }
 
 // MARK: - Tests
@@ -712,15 +714,12 @@ struct ClientIntegrationTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        let countBefore = await mock.sentTextMessages.count
         await client.disconnect()
 
-        let messages = await mock.sentTextMessages
-        let goodbye = messages.dropFirst(countBefore).compactMap { data in
-            try? JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
-        }.last
-        let sent = try #require(goodbye, "Expected a client/goodbye after disconnect()")
-        #expect(sent.payload?.reason == .restart)
+        // Exactly one goodbye, carrying .restart. sentGoodbyeReasons filters on the
+        // decoded `type`, so background client/time traffic can't masquerade as one.
+        let reasons = await sentGoodbyeReasons(from: mock)
+        #expect(reasons == [.restart], "disconnect() must send one client/goodbye with reason .restart")
     }
 
     // MARK: underrun-driven operational state reporting is guarded
@@ -765,9 +764,11 @@ struct ClientIntegrationTests {
         let countBefore = await mock.sentTextMessages.count
         await client.applyUnderrunTransition(.toError)
 
-        // The guard must leave external-source untouched and send nothing.
+        // The guard must leave external-source untouched and send no client/state.
+        // (Asserting on raw message count is wrong: a connected client emits
+        // background client/time traffic that would inflate the count regardless.)
         #expect(client.clientOperationalState == .externalSource)
-        let sentAfter = await mock.sentTextMessages.count
-        #expect(sentAfter == countBefore)
+        let stateAfter = await lastClientState(from: mock, after: countBefore)
+        #expect(stateAfter == nil, "An ignored underrun transition must not send a client/state")
     }
 }

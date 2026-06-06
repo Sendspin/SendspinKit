@@ -14,9 +14,7 @@ extension SendspinClient {
         // This avoids the O(n) try-all-types chain where every message pays the cost
         // of trying earlier types, and eliminates cross-type ambiguity from messages
         // with all-optional payloads (like ServerStateMessage).
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let msgType = json["type"] as? String
-        else {
+        guard let msgType = SendspinEncoding.messageType(of: data) else {
             Log.client.error("Message missing 'type' field: \(text.prefix(200))")
             return
         }
