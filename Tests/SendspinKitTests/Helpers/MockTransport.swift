@@ -26,6 +26,10 @@ actor MockTransport: SendspinTransport {
     private(set) var isConnected = true
     private(set) var disconnectCalled = false
 
+    /// When enabled, a `client/goodbye` send suspends until ``releaseGoodbyeGate()``.
+    private var goodbyeGateEnabled = false
+    private var goodbyeGateContinuation: CheckedContinuation<Void, Never>?
+
     private let encoder = SendspinEncoding.makeEncoder()
 
     init() {
@@ -39,6 +43,14 @@ actor MockTransport: SendspinTransport {
             throw MockTransportError.simulatedFailure
         }
         let data = try encoder.encode(message)
+        // Deterministic seam for the disconnect-vs-loss race: block only the
+        // `client/goodbye` send so a test can pin `disconnect()` past its entry
+        // guard, mid-teardown, while another teardown path runs.
+        // Match "goodbye" rather than the full "client/goodbye": JSONEncoder escapes
+        // the slash ("client\/goodbye"), and only the goodbye message carries the word.
+        if goodbyeGateEnabled, let text = String(data: data, encoding: .utf8), text.contains("goodbye") {
+            await withCheckedContinuation { goodbyeGateContinuation = $0 }
+        }
         sentTextMessages.append(data)
     }
 
@@ -81,6 +93,24 @@ actor MockTransport: SendspinTransport {
     /// so this method provides the cross-isolation mutation point.
     func setShouldFailOnSend(_ value: Bool) {
         shouldFailOnSend = value
+    }
+
+    /// Arm the goodbye gate: the next `client/goodbye` send will suspend until
+    /// ``releaseGoodbyeGate()``.
+    func enableGoodbyeGate() {
+        goodbyeGateEnabled = true
+    }
+
+    /// Whether a `client/goodbye` send is currently parked on the gate.
+    var isGoodbyeGateWaiting: Bool {
+        goodbyeGateContinuation != nil
+    }
+
+    /// Release a parked goodbye send and disarm the gate.
+    func releaseGoodbyeGate() {
+        goodbyeGateEnabled = false
+        goodbyeGateContinuation?.resume()
+        goodbyeGateContinuation = nil
     }
 }
 
