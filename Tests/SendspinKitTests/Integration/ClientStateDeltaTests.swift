@@ -5,16 +5,14 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-/// Decode every `client/state` payload sent after `offset`, filtering on the
-/// JSON `type` field. Necessary because `ClientStatePayload`'s fields are all
-/// optional, so other message types decode "successfully" as an empty payload.
+/// Decode every `client/state` payload sent after `offset`, dispatching on the wire
+/// `type` tag. Necessary because `ClientStatePayload`'s fields are all optional, so
+/// other message types decode "successfully" as an empty payload.
 private func clientStatePayloads(from mock: MockTransport, after offset: Int = 0) async -> [ClientStatePayload] {
     let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset).compactMap { data -> ClientStatePayload? in
-        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              object["type"] as? String == "client/state" else { return nil }
-        return try? JSONDecoder().decode(ClientStateMessage.self, from: data).payload
-    }
+    return messages.dropFirst(offset)
+        .filter { SendspinEncoding.messageType(of: $0) == "client/state" }
+        .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
 }
 
 @MainActor

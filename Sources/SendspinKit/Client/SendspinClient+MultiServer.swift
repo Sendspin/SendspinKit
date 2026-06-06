@@ -121,8 +121,7 @@ extension SendspinClient {
     /// message type. Mirrors the type-first dispatch in `handleTextMessage`.
     private nonisolated static func decodeServerHello(_ text: String) -> ServerHelloMessage? {
         guard let data = text.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              json["type"] as? String == "server/hello"
+              SendspinEncoding.messageType(of: data) == "server/hello"
         else { return nil }
         return try? JSONDecoder().decode(ServerHelloMessage.self, from: data)
     }

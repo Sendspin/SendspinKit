@@ -1,5 +1,5 @@
 // ABOUTME: JSON encoding utilities for the Sendspin wire format
-// ABOUTME: Provides a configured encoder factory for transport implementations
+// ABOUTME: Provides a configured encoder factory and the wire-type dispatch tag reader
 
 import Foundation
 
@@ -15,5 +15,16 @@ enum SendspinEncoding {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
         return encoder
+    }
+
+    /// The `type` tag of a wire frame, read without decoding the payload.
+    ///
+    /// Every Sendspin frame is `{ "type": "...", "payload": {...} }`. Callers MUST
+    /// read this tag and dispatch on it *before* decoding the concrete message: each
+    /// message's `type` is a `let` constant the synthesized decoder leaves untouched,
+    /// and payloads are all-optional, so any frame decodes "successfully" as the wrong
+    /// type. The wire tag is the only reliable discriminator.
+    static func messageType(of data: Data) -> String? {
+        (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["type"] as? String
     }
 }
