@@ -194,6 +194,13 @@ public struct ControllerState: Sendable, Hashable {
     public let shuffle: Bool?
 }
 
+/// A role that carries its own independently-negotiated stream and can be the
+/// subject of a `stream/request-format`.
+public enum StreamRole: String, Sendable, Hashable {
+    case player
+    case artwork
+}
+
 /// Errors thrown by `SendspinClient` methods.
 ///
 /// Runtime errors during streaming surface as
@@ -207,6 +214,11 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     /// A command or message could not be sent over the transport.
     /// The associated string describes the underlying transport error.
     case sendFailed(String)
+    /// A `stream/request-format` was attempted for a role whose stream is not
+    /// currently active. Per spec the server answers a format request with a
+    /// `stream/start` that renegotiates an existing stream, so there is nothing
+    /// to renegotiate before the role's `stream/start` (or after its `stream/end`).
+    case streamNotActive(StreamRole)
 
     public var errorDescription: String? {
         switch self {
@@ -216,6 +228,8 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
             "Already connected or connecting to a Sendspin server"
         case let .sendFailed(reason):
             "Failed to send message: \(reason)"
+        case let .streamNotActive(role):
+            "Cannot request \(role.rawValue) format: no active \(role.rawValue) stream to renegotiate"
         }
     }
 }
