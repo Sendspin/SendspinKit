@@ -182,8 +182,13 @@ actor AudioScheduler {
         }
     }
 
-    /// Check queue and output ready chunks
-    private func checkQueue() {
+    /// Check queue and output ready chunks.
+    ///
+    /// Called internally by the scheduling timer loop. Exposed as internal so
+    /// tests can drive a single pass deterministically without depending on the
+    /// timer task (which competes for cooperative-pool threads under heavy
+    /// parallel-test load).
+    func checkQueue() {
         let nowUs = MonotonicClock.absoluteMicroseconds()
 
         while readIndex < queue.count {

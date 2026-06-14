@@ -9,26 +9,16 @@ import SendspinKit
 // MARK: - URL resolution helper
 
 private func resolveServerURL(server: String?, discover: Bool, timeout: Double) async throws -> URL {
-    if let server {
-        guard let url = URL(string: server) else {
-            throw ValidationError("Invalid server URL: \(server)")
-        }
-        return url
-    }
     if discover {
         print("Discovering Sendspin servers (\(timeout)s timeout)...")
-        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
-        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
-        let servers = try await SendspinClient.discoverServers(
-            timeout: .milliseconds(Int(timeout * 1000))
-        )
-        guard let first = servers.first else {
-            throw ValidationError("No servers found via mDNS discovery")
-        }
-        print("Discovered: \(first.name) at \(first.url)")
-        return first.url
     }
-    throw ValidationError("Provide --server <url> or --discover")
+    let url = try await SendspinClient.resolveServerURL(
+        server: server,
+        discover: discover,
+        timeout: .milliseconds(Int(timeout * 1000))
+    )
+    if discover { print("Discovered: \(url)") }
+    return url
 }
 
 // MARK: - Error classification
@@ -97,6 +87,10 @@ private func isRetryableError(_ error: any Error) -> Bool {
             // move. `notConnected` is likewise fine to retry — connect()
             // rebuilds from scratch.
             return true
+        case .roleNotActive, .streamNotActive, .invalidServerURL, .noDiscoveredServers, .serverURLRequired:
+            // Logic/configuration errors are not transient connection failures —
+            // retrying the connection won't help.
+            return false
         }
     }
 
@@ -222,12 +216,12 @@ struct ErrorRecovery: AsyncParsableCommand {
                 attempt = 0
 
                 // Monitor events until disconnect. We break out of this loop
-                // explicitly on `.disconnected` — `client.events` is kept alive
-                // by SendspinClient across reconnects, so it won't finish on
-                // its own. The labeled break exits the for-await, and the
-                // outer retry loop then decides whether to reconnect based on
-                // `state.shouldQuit` (set by SIGINT handler or `.explicit`).
-                eventLoop: for await event in client.events {
+                // explicitly on `.disconnected` — `client.events()` returns a fresh
+                // stream for this monitor, so we don't rely on stream termination.
+                // The labeled break exits the for-await, and the outer retry loop
+                // then decides whether to reconnect based on `state.shouldQuit`
+                // (set by SIGINT handler or `.explicit`).
+                eventLoop: for await event in client.events() {
                     switch event {
                     case .serverConnected(let info):
                         print("[\(timestamp())] Server: \(info.name) (id: \(info.serverId))")
@@ -236,8 +230,8 @@ struct ErrorRecovery: AsyncParsableCommand {
                         print("[\(timestamp())] Stream started: \(format.codec.rawValue) " +
                               "\(format.sampleRate)Hz \(format.channels)ch \(format.bitDepth)-bit")
 
-                    case .streamEnded:
-                        print("[\(timestamp())] Stream ended.")
+                    case let .streamEnded(roles):
+                        print("[\(timestamp())] Stream ended: \(roles?.joined(separator: ", ") ?? "all")")
 
                     case .disconnected(let reason):
                         switch reason {

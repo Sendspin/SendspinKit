@@ -137,10 +137,9 @@ final class CLIPlayer {
 
     @MainActor
     private func monitorEvents(client: SendspinClient, useTUI: Bool) async {
-        // `client.events` is kept alive by SendspinClient across reconnects,
-        // so we can't wait for the stream to finish naturally — we have to
-        // break out of the for-await explicitly on `.disconnected`.
-        eventLoop: for await event in client.events {
+        // `client.events()` returns a fresh stream for this monitor.
+        // Break out of the for-await explicitly on `.disconnected`.
+        eventLoop: for await event in client.events() {
             if useTUI {
                 await handleEventTUI(event)
             } else {
@@ -173,8 +172,10 @@ final class CLIPlayer {
         case let .streamStarted(format), let .streamFormatChanged(format):
             await display.updateStream(format: Self.formatString(format))
 
-        case .streamEnded:
-            await display.updateStream(format: "No stream")
+        case let .streamEnded(roles):
+            if roles == nil || roles?.contains(StreamRole.player.rawValue) == true {
+                await display.updateStream(format: "No stream")
+            }
 
         case let .metadataReceived(metadata):
             await display.updateMetadata(
@@ -190,12 +191,9 @@ final class CLIPlayer {
         case .groupUpdated,
              .controllerStateUpdated,
              .artworkStreamStarted,
-             .artworkReceived,
-             .visualizerData,
              .streamCleared,
              .staticDelayChanged,
              .lastPlayedServerChanged,
-             .rawAudioChunk,
              .disconnected:
             break
         }
@@ -214,8 +212,8 @@ final class CLIPlayer {
         case let .streamFormatChanged(format):
             print("[EVENT] Format changed: \(Self.formatString(format))")
 
-        case .streamEnded:
-            print("[EVENT] Stream ended")
+        case let .streamEnded(roles):
+            print("[EVENT] Stream ended: \(roles?.joined(separator: ", ") ?? "all")")
 
         case let .groupUpdated(info):
             print("[EVENT] Group updated: \(info.groupName) (\(info.playbackState?.rawValue ?? "unknown"))")
@@ -238,16 +236,6 @@ final class CLIPlayer {
                 .joined(separator: ", ")
             print("[EVENT] Artwork stream started: \(desc)")
 
-        case let .artworkReceived(channel, data):
-            if data.isEmpty {
-                print("[EVENT] Artwork cleared on channel \(channel)")
-            } else {
-                print("[EVENT] Artwork received on channel \(channel): \(data.count) bytes")
-            }
-
-        case let .visualizerData(data):
-            print("[EVENT] Visualizer data: \(data.count) bytes")
-
         case .streamCleared:
             print("[EVENT] Stream cleared (seek)")
 
@@ -259,9 +247,6 @@ final class CLIPlayer {
 
         case let .disconnected(reason):
             print("[EVENT] Disconnected: \(reason)")
-
-        case .rawAudioChunk:
-            break // Raw audio passthrough; CLIPlayer uses the decoded pipeline
         }
     }
 

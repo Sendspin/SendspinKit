@@ -48,25 +48,13 @@ private func restoreTerminalMode(_ mode: termios) {
 // MARK: - Server URL resolution
 
 private func resolveServerURL(server: String?, discover: Bool, timeout: Double) async throws -> URL {
-    if let server {
-        guard let url = URL(string: server) else {
-            throw ValidationError("Invalid server URL: \(server)")
-        }
-        return url
-    }
-    if discover {
-        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
-        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
-        let servers = try await SendspinClient.discoverServers(
-            timeout: .milliseconds(Int(timeout * 1000))
-        )
-        guard let first = servers.first else {
-            throw ValidationError("No servers found via mDNS discovery")
-        }
-        print("Discovered: \(first.name) at \(first.url)")
-        return first.url
-    }
-    throw ValidationError("Provide --server <url> or --discover")
+    let url = try await SendspinClient.resolveServerURL(
+        server: server,
+        discover: discover,
+        timeout: .milliseconds(Int(timeout * 1000))
+    )
+    if discover { print("Discovered: \(url)") }
+    return url
 }
 
 // MARK: - Shared playback state
@@ -156,7 +144,7 @@ struct ControllerClient: AsyncParsableCommand {
     /// Exits the event loop when the connection drops.
     @MainActor
     private static func monitorEvents(client: SendspinClient, state: PlaybackUIState) async {
-        for await event in client.events {
+        for await event in client.events() {
             switch event {
             case let .serverConnected(info):
                 let roles = info.activeRoles.map(\.identifier).joined(separator: ", ")

@@ -19,26 +19,16 @@ private enum ANSI {
 // MARK: - URL resolution helper
 
 private func resolveServerURL(server: String?, discover: Bool, timeout: Double) async throws -> URL {
-    if let server {
-        guard let url = URL(string: server) else {
-            throw ValidationError("Invalid server URL: \(server)")
-        }
-        return url
-    }
     if discover {
         print("Discovering Sendspin servers (\(timeout)s timeout)...")
-        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
-        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
-        let servers = try await SendspinClient.discoverServers(
-            timeout: .milliseconds(Int(timeout * 1000))
-        )
-        guard let first = servers.first else {
-            throw ValidationError("No servers found via mDNS discovery")
-        }
-        print("Discovered: \(first.name) at \(first.url)")
-        return first.url
     }
-    throw ValidationError("Provide --server <url> or --discover")
+    let url = try await SendspinClient.resolveServerURL(
+        server: server,
+        discover: discover,
+        timeout: .milliseconds(Int(timeout * 1000))
+    )
+    if discover { print("Discovered: \(url)") }
+    return url
 }
 
 // MARK: - Quality display
@@ -191,11 +181,11 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
         // Background task: monitor connection events and print status changes.
         // Runs concurrently with the polling loop below.
         //
-        // `client.events` is kept alive by SendspinClient across reconnects,
+        // `client.events()` returns a fresh stream for this monitor,
         // so we explicitly break on `.disconnected` rather than relying on
         // the stream finishing.
         let eventTask = Task { @MainActor in
-            eventLoop: for await event in client.events {
+            eventLoop: for await event in client.events() {
                 switch event {
                 case .serverConnected(let info):
                     state.serverName = info.name

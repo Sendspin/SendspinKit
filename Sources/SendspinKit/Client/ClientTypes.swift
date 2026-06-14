@@ -46,6 +46,30 @@ public enum DisconnectReason: Sendable, Equatable {
     case explicit(GoodbyeReason)
     /// Connection was lost (WebSocket dropped, network error)
     case connectionLost
+    /// Server was rejected (e.g. unsupported core protocol version in `server/hello`)
+    case incompatibleServer
+}
+
+/// Raw player audio bytes exactly as received from the server.
+public struct AudioChunk: Sendable, Equatable {
+    /// Raw payload bytes after the Sendspin binary header.
+    public let data: Data
+    /// Server timestamp in microseconds in the server's clock domain.
+    public let serverTimestamp: Int64
+}
+
+/// Artwork bytes received for one artwork stream channel.
+public struct ArtworkData: Sendable, Equatable {
+    /// Artwork channel index from the binary message type.
+    public let channel: Int
+    /// Raw artwork payload bytes after the Sendspin binary header.
+    public let data: Data
+}
+
+/// Visualizer bytes received from the visualizer stream.
+public struct VisualizerData: Sendable, Equatable {
+    /// Raw visualizer payload bytes after the Sendspin binary header.
+    public let data: Data
 }
 
 public enum ClientEvent: Sendable, Equatable {
@@ -53,7 +77,10 @@ public enum ClientEvent: Sendable, Equatable {
     case streamStarted(AudioFormatSpec)
     /// Format changed mid-stream (e.g. after a `stream/request-format` request)
     case streamFormatChanged(AudioFormatSpec)
-    case streamEnded
+    /// Server sent `stream/end` — one or more streams have ended and buffers
+    /// should be cleared for those roles. `roles` contains the ended roles, or
+    /// `nil` if all active streams ended (matching the wire format's semantics).
+    case streamEnded(roles: [String]?)
     /// Server sent `stream/clear` — buffers have been flushed without ending
     /// the stream. Typically sent during a seek operation. Consumers should
     /// reset any time-based UI (progress bars, waveform displays, etc.)
@@ -66,16 +93,6 @@ public enum ClientEvent: Sendable, Equatable {
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
     case artworkStreamStarted([StreamArtworkChannelConfig])
-    case artworkReceived(channel: Int, data: Data)
-    case visualizerData(Data)
-    /// Raw audio chunk bytes exactly as received from the server (before decoding).
-    /// For PCM streams, this is the raw PCM samples. For FLAC streams, these are
-    /// encoded FLAC frames. Only emitted when ``PlayerConfiguration/emitRawAudioEvents``
-    /// is `true`.
-    ///
-    /// `serverTimestamp` is microseconds in the server's clock domain (same as
-    /// ``PlaybackProgress/timestamp``).
-    case rawAudioChunk(data: Data, serverTimestamp: Int64)
     /// Server changed the static delay via `server/command`. The host app should
     /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
     case staticDelayChanged(milliseconds: Int)
@@ -214,11 +231,21 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     /// A command or message could not be sent over the transport.
     /// The associated string describes the underlying transport error.
     case sendFailed(String)
+    /// A role-specific API was called before that protocol role was active.
+    case roleNotActive(VersionedRole)
+    /// A facade-initiated send was attempted before `server/hello` completed the handshake.
+    case handshakeIncomplete
     /// A `stream/request-format` was attempted for a role whose stream is not
     /// currently active. Per spec the server answers a format request with a
     /// `stream/start` that renegotiates an existing stream, so there is nothing
     /// to renegotiate before the role's `stream/start` (or after its `stream/end`).
     case streamNotActive(StreamRole)
+    /// A URL string supplied to a connect/discovery convenience could not be parsed as an absolute URL.
+    case invalidServerURL(String)
+    /// Discovery was requested but no Sendspin server was found before the timeout.
+    case noDiscoveredServers
+    /// Neither an explicit server URL nor discovery was requested.
+    case serverURLRequired
 
     public var errorDescription: String? {
         switch self {
@@ -228,8 +255,18 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
             "Already connected or connecting to a Sendspin server"
         case let .sendFailed(reason):
             "Failed to send message: \(reason)"
+        case let .roleNotActive(role):
+            "The \(role.identifier) role is not active for this connection"
+        case .handshakeIncomplete:
+            "Handshake is not complete; wait for server/hello before sending commands"
         case let .streamNotActive(role):
             "Cannot request \(role.rawValue) format: no active \(role.rawValue) stream to renegotiate"
+        case let .invalidServerURL(server):
+            "Invalid Sendspin server URL: \(server)"
+        case .noDiscoveredServers:
+            "No Sendspin servers found via mDNS discovery"
+        case .serverURLRequired:
+            "Provide a Sendspin server URL or enable discovery"
         }
     }
 }

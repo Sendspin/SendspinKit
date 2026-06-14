@@ -81,6 +81,23 @@ struct MessageEncodingTests {
         #expect(json.contains("\"static_delay_ms\":0"))
     }
 
+    @Test
+    func playerStateObject_acceptsSetStaticDelayInSupportedCommands() throws {
+        let state = try PlayerStateObject(staticDelayMs: 0, supportedCommands: [.setStaticDelay])
+        #expect(state.supportedCommands == [.setStaticDelay])
+    }
+
+    @Test
+    func playerStateObject_rejectsVolumeMuteInSupportedCommands() {
+        // Spec §489: client/state supported_commands is a subset of {set_static_delay}.
+        #expect(throws: ConfigurationError.invalidStateCommands(["volume"])) {
+            try PlayerStateObject(supportedCommands: [.volume])
+        }
+        #expect(throws: ConfigurationError.invalidStateCommands(["mute", "volume"])) {
+            try PlayerStateObject(supportedCommands: [.volume, .mute])
+        }
+    }
+
     // MARK: - client/goodbye
 
     @Test
@@ -119,7 +136,31 @@ struct MessageEncodingTests {
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
 
-        #expect(message.payload?.reason == .anotherServer)
+        #expect(message.payload.reason == .anotherServer)
+    }
+
+    @Test
+    func clientGoodbye_rejectsMissingPayload() throws {
+        let json = """
+        {"type": "client/goodbye"}
+        """
+        let data = try #require(json.data(using: .utf8))
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
+        }
+    }
+
+    @Test
+    func clientGoodbye_rejectsMissingReason() throws {
+        let json = """
+        {"type": "client/goodbye", "payload": {}}
+        """
+        let data = try #require(json.data(using: .utf8))
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
+        }
     }
 
     // MARK: - stream/clear

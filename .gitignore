@@ -12,3 +12,4 @@ output.txt
 scripts/smoke-test.sh
 /test.*
 Examples/*/.build
+SENDSPIN_SPEC.md

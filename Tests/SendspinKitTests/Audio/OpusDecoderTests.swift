@@ -1,24 +1,25 @@
 // ABOUTME: Unit tests for Opus audio decoder
 // ABOUTME: Validates Opus frame decoding and int32 PCM output format
 
+import Foundation
 @testable import SendspinKit
-import XCTest
+import Testing
 
-final class OpusDecoderTests: XCTestCase {
-    func testOpusDecoderCreation() throws {
+struct OpusDecoderTests {
+    @Test
+    func opusDecoderCreation() throws {
         // Opus standard format: 48kHz stereo
-        let decoder = try AudioDecoderFactory.create(
+        _ = try AudioDecoderFactory.create(
             codec: .opus,
             sampleRate: 48_000,
             channels: 2,
             bitDepth: 16,
             header: nil
         )
-
-        XCTAssertNotNil(decoder)
     }
 
-    func testOpusDecodeProducesInt32Output() throws {
+    @Test
+    func opusDecodeProducesInt32Output() throws {
         let decoder = try OpusDecoder(sampleRate: 48_000, channels: 2, bitDepth: 16)
 
         // Create a minimal valid Opus packet (silence frame)
@@ -28,19 +29,19 @@ final class OpusDecoderTests: XCTestCase {
         let decoded = try decoder.decode(silencePacket)
 
         // Should output int32 samples (4 bytes per sample)
-        XCTAssertTrue(decoded.count % 4 == 0, "Output should be int32 samples")
-        XCTAssertGreaterThan(decoded.count, 0, "Should decode some samples")
+        #expect(decoded.count % 4 == 0, "Output should be int32 samples")
+        #expect(decoded.count > 0, "Should decode some samples")
     }
 
-    func testOpusDecoderSampleRates() throws {
+    @Test
+    func opusDecoderSampleRates() throws {
         // Test all standard Opus sample rates
         for sampleRate in [8_000, 12_000, 16_000, 24_000, 48_000] {
-            let decoder = try OpusDecoder(
+            _ = try OpusDecoder(
                 sampleRate: sampleRate,
                 channels: 2,
                 bitDepth: 16
             )
-            XCTAssertNotNil(decoder)
         }
     }
 }

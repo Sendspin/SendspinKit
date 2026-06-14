@@ -8,25 +8,13 @@ import SendspinKit
 // MARK: - Server URL resolution
 
 private func resolveServerURL(server: String?, discover: Bool, timeout: Double) async throws -> URL {
-    if let server {
-        guard let url = URL(string: server) else {
-            throw ValidationError("Invalid server URL: \(server)")
-        }
-        return url
-    }
-    if discover {
-        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
-        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
-        let servers = try await SendspinClient.discoverServers(
-            timeout: .milliseconds(Int(timeout * 1000))
-        )
-        guard let first = servers.first else {
-            throw ValidationError("No servers found via mDNS discovery")
-        }
-        print("Discovered: \(first.name) at \(first.url)")
-        return first.url
-    }
-    throw ValidationError("Provide --server <url> or --discover")
+    let url = try await SendspinClient.resolveServerURL(
+        server: server,
+        discover: discover,
+        timeout: .milliseconds(Int(timeout * 1000))
+    )
+    if discover { print("Discovered: \(url)") }
+    return url
 }
 
 // MARK: - Codec helpers
@@ -151,7 +139,7 @@ struct MultiCodecPlayer: AsyncParsableCommand {
         try await client.connect(to: url)
 
         // 6. Monitor events — this loop exits when .disconnected arrives
-        for await event in client.events {
+        for await event in client.events() {
             switch event {
             case let .serverConnected(info):
                 print("[connected] \(info.name) (v\(info.version))")
@@ -165,8 +153,8 @@ struct MultiCodecPlayer: AsyncParsableCommand {
                 // Mid-stream format switch — e.g. after requestPlayerFormat()
                 printFormatInfo(label: "format changed", format: format, preferred: formats)
 
-            case .streamEnded:
-                print("[stream ended]")
+            case let .streamEnded(roles):
+                print("[stream ended: \(roles?.joined(separator: ", ") ?? "all")]")
 
             case let .metadataReceived(metadata):
                 let artist = metadata.artist ?? "Unknown"
