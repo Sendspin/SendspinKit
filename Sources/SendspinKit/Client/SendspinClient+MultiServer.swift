@@ -93,13 +93,13 @@ extension SendspinClient {
         }
     }
 
-    /// Send `client/hello` on `transport` and read its message stream until the
-    /// first `server/hello`, which is returned. Touches only the candidate
+    /// Send `client/hello` on `transport` and require the server's first inbound
+    /// frame to be `server/hello`, which is returned. Touches only the candidate
     /// `transport` passed in (the facade stores no transport of its own), so it
     /// is safe to run against a competing connection while another is active.
     ///
-    /// - Throws: `HandshakeIncomplete` if the stream ends or `timeout` elapses
-    ///   before a `server/hello` arrives.
+    /// - Throws: `HandshakeIncomplete` if the stream ends, the first inbound frame
+    ///   is not `server/hello`, or `timeout` elapses before the first frame arrives.
     @MainActor
     private func performHandshake(
         on transport: any SendspinTransport,
@@ -109,13 +109,14 @@ extension SendspinClient {
 
         return try await withThrowingTaskGroup(of: HandshakeProbeResult.self) { group in
             group.addTask {
-                while let frame = await transport.nextFrame() {
-                    // server/hello is the first message per spec; ignore anything before it.
-                    guard case let .text(text) = frame,
-                          let hello = Self.decodeServerHello(text) else { continue }
-                    return .hello(hello)
+                guard let frame = await transport.nextFrame() else {
+                    return .ended
                 }
-                return .ended // stream ended without a server/hello
+                guard case let .text(text) = frame,
+                      let hello = Self.decodeServerHello(text) else {
+                    return .ended
+                }
+                return .hello(hello)
             }
             group.addTask {
                 do {

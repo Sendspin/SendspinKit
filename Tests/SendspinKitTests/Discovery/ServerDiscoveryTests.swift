@@ -76,6 +76,67 @@ struct ServerDiscoveryTests {
         #expect(count == 0)
     }
 
+    // MARK: - Sendspin defaults
+
+    @Test
+    func sendspinDefaults_pinSpecDiscoveryValues() {
+        #expect(SendspinDefaults.clientPort == 8_928)
+        #expect(SendspinDefaults.serverPort == 8_927)
+        #expect(SendspinDefaults.webSocketPath == "/sendspin")
+        #expect(SendspinDefaults.clientServiceType == "_sendspin._tcp")
+        #expect(SendspinDefaults.serverServiceType == "_sendspin-server._tcp")
+    }
+
+    // MARK: - Display names
+
+    @Test
+    func displayName_prefersTXTNameMetadata() {
+        let displayName = ServerDiscovery.displayName(
+            serviceName: "Sendspin Server",
+            metadata: ["name": "Living Room", "path": "/sendspin"]
+        )
+
+        #expect(displayName == "Living Room")
+    }
+
+    @Test
+    func displayName_fallsBackToServiceNameWhenTXTNameMissing() {
+        let displayName = ServerDiscovery.displayName(
+            serviceName: "Sendspin Server",
+            metadata: ["path": "/sendspin"]
+        )
+
+        #expect(displayName == "Sendspin Server")
+    }
+
+    @Test
+    func displayName_fallsBackToServiceNameWhenTXTNameEmpty() {
+        let displayName = ServerDiscovery.displayName(
+            serviceName: "Sendspin Server",
+            metadata: ["name": ""]
+        )
+
+        #expect(displayName == "Sendspin Server")
+    }
+
+    @Test
+    func discoveredServerIDUsesServiceNameWhenDisplayNameDiffers() throws {
+        let url = try #require(URL(string: "ws://example.local:8080/ws"))
+        let server = DiscoveredServer(
+            serviceName: "Sendspin Server",
+            name: "Living Room",
+            url: url,
+            hostname: "example.local",
+            port: 8_080,
+            metadata: ["name": "Living Room"]
+        )
+
+        #expect(server.id == "Sendspin Server")
+        #expect(server.serviceName == "Sendspin Server")
+        #expect(server.name == "Living Room")
+        #expect(server.metadata["name"] == "Living Room")
+    }
+
     // MARK: - Interface scope stripping
 
     @Test

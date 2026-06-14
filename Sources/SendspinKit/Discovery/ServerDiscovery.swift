@@ -259,6 +259,14 @@ public actor ServerDiscovery {
         return address
     }
 
+    /// Choose the user-facing display name from TXT metadata when supplied.
+    static func displayName(serviceName: String, metadata: [String: String]) -> String {
+        guard let txtName = metadata["name"], !txtName.isEmpty else {
+            return serviceName
+        }
+        return txtName
+    }
+
     private func extractServerInfo(from connection: NWConnection, result: NWBrowser.Result, name: String) {
         guard case .service = result.endpoint else { return }
 
@@ -302,7 +310,8 @@ public actor ServerDiscovery {
         }
 
         let server = DiscoveredServer(
-            name: name,
+            serviceName: name,
+            name: Self.displayName(serviceName: name, metadata: metadata),
             url: url,
             hostname: hostname,
             port: port,

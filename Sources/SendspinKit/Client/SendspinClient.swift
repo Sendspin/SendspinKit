@@ -12,12 +12,15 @@ public final class SendspinClient {
     // Configuration
     let clientId: String
     let name: String
-    let roles: Set<VersionedRole>
+    let roles: [VersionedRole]
+    let roleSet: Set<VersionedRole>
+    let deviceInfo: DeviceInfo?
     let playerConfig: PlayerConfiguration?
     let artworkConfig: ArtworkConfiguration?
     /// Optional storage hook for the spec's "last played server" bookkeeping.
     /// Saved on every `group/update` that reports playback started; read by the
-    /// multi-server arbitration tiebreak.
+    /// multi-server arbitration tiebreak. `nil` means no implicit storage: discovery
+    /// ties are resolved as if no last-played server has been remembered.
     let persistenceProvider: (any SendspinPersistenceProvider)?
     /// Resolved volume capabilities (the concrete `VolumeControl` lives in `AudioEngine`).
     let volumeCapabilities: VolumeCapabilities
@@ -116,21 +119,27 @@ public final class SendspinClient {
     public init(
         clientId: String,
         name: String,
-        roles: Set<VersionedRole>,
+        roles: some Sequence<VersionedRole>,
+        deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil
     ) throws(ConfigurationError) {
-        if roles.contains(.playerV1), playerConfig == nil {
+        let orderedRoles = Self.deduplicatingRoles(roles)
+        let roleSet = Set(orderedRoles)
+
+        if roleSet.contains(.playerV1), playerConfig == nil {
             throw .playerRoleRequiresConfiguration
         }
-        if roles.contains(.artworkV1), artworkConfig == nil {
+        if roleSet.contains(.artworkV1), artworkConfig == nil {
             throw .artworkRoleRequiresConfiguration
         }
 
         self.clientId = clientId
         self.name = name
-        self.roles = roles
+        self.roles = orderedRoles
+        self.roleSet = roleSet
+        self.deviceInfo = deviceInfo
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
         self.persistenceProvider = persistenceProvider
@@ -142,6 +151,15 @@ public final class SendspinClient {
         (audioChunks, audioChunksContinuation) = AsyncStream.makeStream()
         (artwork, artworkContinuation) = AsyncStream.makeStream()
         (visualizerData, visualizerDataContinuation) = AsyncStream.makeStream()
+    }
+
+    private static func deduplicatingRoles(_ roles: some Sequence<VersionedRole>) -> [VersionedRole] {
+        var seen: Set<VersionedRole> = []
+        var ordered: [VersionedRole] = []
+        for role in roles where seen.insert(role).inserted {
+            ordered.append(role)
+        }
+        return ordered
     }
 
     isolated deinit {
@@ -316,7 +334,7 @@ public final class SendspinClient {
 
         // Create AudioEngine for player role, or a no-op engine for non-player roles
         let audioEngine: AudioEngine
-        if roles.contains(.playerV1), let playerConfig {
+        if roleSet.contains(.playerV1), let playerConfig {
             audioEngine = AudioEngine(clock: clockSync, config: playerConfig)
         } else {
             // Non-player roles still need an engine (owns the audio streams and scheduler)
@@ -328,7 +346,7 @@ public final class SendspinClient {
 
         // A player always advertises set_static_delay (spec §); volume/mute depend on
         // the resolved VolumeMode capabilities. Non-player roles advertise nothing.
-        let advertisedCommands: Set<PlayerCommand> = roles.contains(.playerV1)
+        let advertisedCommands: Set<PlayerCommand> = roleSet.contains(.playerV1)
             ? Set(volumeCapabilities.playerCommands).union([.setStaticDelay])
             : []
 
@@ -348,13 +366,13 @@ public final class SendspinClient {
                     // write happen under the token lock, closing the snapshot/use
                     // window that a separate `isValid` read would leave open.
                     validity.performIfValid {
-                        self?.currentArtwork = artwork
+                        self?.currentArtwork = artwork.clearsArtwork ? nil : artwork
                     }
                 }
             },
             validity: validity,
             advertisedCommands: advertisedCommands,
-            roles: roles,
+            roles: roleSet,
             // Live facade state, not playerConfig defaults: a multi-server switch
             // (and any runtime setStaticDelay) must carry into the new session.
             initialStaticDelayMs: staticDelayMs,
@@ -598,7 +616,7 @@ public final class SendspinClient {
     ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setVolume(_ volume: Int) async throws {
-        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let conn = connection else { throw SendspinClientError.notConnected }
         try await conn.requireActiveRole(.playerV1)
 
@@ -624,7 +642,7 @@ public final class SendspinClient {
     ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setMute(_ muted: Bool) async throws {
-        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let conn = connection else { throw SendspinClientError.notConnected }
         try await conn.requireActiveRole(.playerV1)
 
@@ -647,7 +665,7 @@ public final class SendspinClient {
     ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setStaticDelay(_ delayMs: Int) async throws {
-        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let conn = connection else { throw SendspinClientError.notConnected }
         try await conn.requireActiveRole(.playerV1)
         let clamped = max(0, min(maxStaticDelayMs, delayMs))

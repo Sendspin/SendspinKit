@@ -143,9 +143,9 @@ extension SendspinConnection {
             let progress: PlaybackProgress? = switch metadata.progress {
             case let .value(prog):
                 PlaybackProgress(
-                    trackProgressMs: prog.trackProgress ?? prev?.progress?.trackProgressMs ?? 0,
-                    trackDurationMs: prog.trackDuration ?? prev?.progress?.trackDurationMs ?? 0,
-                    playbackSpeedX1000: prog.playbackSpeed ?? prev?.progress?.playbackSpeedX1000 ?? 1_000,
+                    trackProgressMs: prog.trackProgress,
+                    trackDurationMs: prog.trackDuration,
+                    playbackSpeedX1000: prog.playbackSpeed,
                     timestamp: metadata.timestamp ?? MonotonicClock.nowMicroseconds()
                 )
             case .null:
@@ -281,8 +281,12 @@ extension SendspinConnection {
             visualizerStreamActive = false
         }
 
-        // stream/end restores synchronized
-        clientOperationalState = .synchronized
+        // Per spec, entering external_source causes the server to end active streams.
+        // That cleanup must not be interpreted as leaving external_source; only the
+        // explicit exitExternalSource() path restores synchronized participation.
+        if clientOperationalState != .externalSource {
+            clientOperationalState = .synchronized
+        }
 
         controlSink.enqueue(.streamEnded(roles: endedRoles))
     }
@@ -368,7 +372,8 @@ extension SendspinConnection {
 
         guard let channel = message.type.artworkChannel else { return }
 
-        let artwork = ArtworkData(channel: channel, data: message.data)
+        let localDisplayTime = isClockSynced ? await clock.serverTimeToLocal(message.timestamp) : nil
+        let artwork = ArtworkData(channel: channel, data: message.data, localDisplayTime: localDisplayTime)
         artworkObserver?(artwork)
         validity.yieldIfValid(artwork, to: artworkSink)
     }
@@ -379,7 +384,13 @@ extension SendspinConnection {
             return
         }
 
-        let visualizerData = VisualizerData(data: message.data)
+        guard isClockSynced else {
+            Log.client.warning("Discarding visualizer binary: clock is not synced")
+            return
+        }
+
+        let localDisplayTime = await clock.serverTimeToLocal(message.timestamp)
+        let visualizerData = VisualizerData(data: message.data, localDisplayTime: localDisplayTime)
         validity.yieldIfValid(visualizerData, to: visualizerSink)
     }
 }

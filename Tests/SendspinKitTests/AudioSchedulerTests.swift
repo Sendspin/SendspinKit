@@ -90,6 +90,25 @@ struct AudioSchedulerTests {
     }
 
     @Test
+    func schedulerYieldsSlightlyLateChunksWithinPlaybackWindow() async {
+        let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
+        let scheduler = AudioScheduler(clockSync: clockSync)
+
+        // A chunk inside the scheduler's default 50ms jitter tolerance is played
+        // immediately instead of being dropped. The spec's late-drop rule is enforced
+        // for chunks beyond this tolerance (see schedulerDropsLateChunks).
+        let slightlyPastMicros = MonotonicClock.absoluteMicroseconds() - 25_000
+
+        await scheduler.schedule(pcm: Data([0xAA]), serverTimestamp: slightlyPastMicros)
+        await scheduler.checkQueue()
+
+        let stats = await scheduler.stats
+        #expect(stats.played == 1)
+        #expect(stats.dropped == 0)
+        #expect(stats.queueSize == 0)
+    }
+
+    @Test
     func schedulerKeepsAllFutureChunks() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)

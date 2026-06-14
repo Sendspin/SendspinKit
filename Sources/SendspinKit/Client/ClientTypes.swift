@@ -54,7 +54,13 @@ public enum DisconnectReason: Sendable, Equatable {
 public struct AudioChunk: Sendable, Equatable {
     /// Raw payload bytes after the Sendspin binary header.
     public let data: Data
-    /// Server timestamp in microseconds in the server's clock domain.
+    /// Raw server timestamp in microseconds in the server's clock domain.
+    ///
+    /// This is the timestamp exactly as sent on the wire. SendspinKit's internal
+    /// playback engine subtracts `static_delay_ms` and translates server time to
+    /// local time before scheduling. Consumers that use raw audio chunks for their
+    /// own playback scheduling must apply the same static-delay adjustment and
+    /// clock-domain conversion themselves.
     public let serverTimestamp: Int64
 }
 
@@ -63,13 +69,26 @@ public struct ArtworkData: Sendable, Equatable {
     /// Artwork channel index from the binary message type.
     public let channel: Int
     /// Raw artwork payload bytes after the Sendspin binary header.
+    ///
+    /// Per the Sendspin spec, an empty payload is an explicit clear signal for
+    /// ``channel``: the binary frame contains only the message type byte and
+    /// timestamp, with no image data.
     public let data: Data
+    /// Whether this payload clears the currently displayed artwork for ``channel``.
+    public var clearsArtwork: Bool {
+        data.isEmpty
+    }
+
+    /// Local absolute display time in microseconds, or `nil` when clock sync is not ready.
+    public let localDisplayTime: Int64?
 }
 
 /// Visualizer bytes received from the visualizer stream.
 public struct VisualizerData: Sendable, Equatable {
     /// Raw visualizer payload bytes after the Sendspin binary header.
     public let data: Data
+    /// Local absolute display time in microseconds.
+    public let localDisplayTime: Int64
 }
 
 public enum ClientEvent: Sendable, Equatable {

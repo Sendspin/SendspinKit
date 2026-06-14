@@ -198,6 +198,30 @@ struct AudioEngineTests {
         #expect(stats.received > 0)
     }
 
+    @Test("static delay shifts scheduled timestamps by milliseconds converted to microseconds")
+    func staticDelayAdjustsScheduledChunkTimestamp() async throws {
+        let clock = StubClock(offsetMicroseconds: 0)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+
+        await engine.start()
+
+        let delayMs = 200
+        let serverTimestamp = MonotonicClock.absoluteMicroseconds() + 60_000_000
+        engine.commands.enqueue(.setStaticDelay(delayMs))
+        engine.commands.enqueue(.chunk(Data(repeating: 0, count: 100), ts: serverTimestamp))
+
+        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 1 }
+        let queued = await scheduler.queuedChunks
+        await engine.shutdown()
+
+        #expect(received, "Expected the chunk to reach the scheduler")
+        let chunk = try #require(queued.first)
+        #expect(chunk.originalTimestamp == serverTimestamp - Int64(delayMs) * 1_000)
+        #expect(chunk.playTimeMicroseconds == serverTimestamp - Int64(delayMs) * 1_000)
+    }
+
     /// Seamless format change is engine-internal (no MainActor.run).
     /// Drives runSchedulerOutput's rebuild path end-to-end: chunks are anchored near
     /// "now" so the scheduler actually emits them, the generation bump routes the new

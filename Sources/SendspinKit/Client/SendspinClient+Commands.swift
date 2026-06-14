@@ -83,7 +83,7 @@ public extension SendspinClient {
         sampleRate: Int? = nil,
         bitDepth: Int? = nil
     ) async throws {
-        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.playerV1)
         let request = PlayerFormatRequest(
@@ -129,7 +129,7 @@ public extension SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async throws {
-        guard roles.contains(.artworkV1) else { throw SendspinClientError.roleNotActive(.artworkV1) }
+        guard roleSet.contains(.artworkV1) else { throw SendspinClientError.roleNotActive(.artworkV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.artworkV1)
         let request = try ArtworkFormatRequest(
@@ -153,7 +153,7 @@ extension SendspinClient {
     /// `sendCommand(.play, volume: 50)` which compiles but is nonsensical.
     @MainActor
     func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async throws {
-        guard roles.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
+        guard roleSet.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.controllerV1)
         let controller = ControllerCommand(command: command, volume: volume, mute: mute)

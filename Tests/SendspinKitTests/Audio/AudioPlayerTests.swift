@@ -69,6 +69,50 @@ struct AudioPlayerTests {
         await player.stop()
     }
 
+    // MARK: - PCM decoding
+
+    @Test
+    func pcmDecoder16BitPassesThroughLittleEndianSamples() throws {
+        let decoder = PCMDecoder(bitDepth: 16, channels: 1)
+        let input = Data([0x34, 0x12, 0xCD, 0xAB])
+
+        let decoded = try decoder.decode(input)
+
+        #expect(decoded == input, "16-bit PCM wire bytes are already little-endian signed samples")
+    }
+
+    @Test
+    func pcmDecoder24BitUnpacksLittleEndianSamplesIntoLeftJustifiedInt32() throws {
+        let decoder = PCMDecoder(bitDepth: 24, channels: 1)
+        let input = Data([
+            0x56, 0x34, 0x12, // 0x123456 -> 0x12345600
+            0xFF, 0xFF, 0x7F // max positive -> 0x7FFFFF00
+        ])
+
+        let decoded = try decoder.decode(input)
+
+        #expect(Array(decoded) == [
+            0x00, 0x56, 0x34, 0x12,
+            0x00, 0xFF, 0xFF, 0x7F
+        ])
+    }
+
+    @Test
+    func pcmDecoder24BitSignExtendsNegativeSamples() throws {
+        let decoder = PCMDecoder(bitDepth: 24, channels: 1)
+        let input = Data([
+            0x00, 0x00, 0x80, // min negative -> 0x80000000 after left shift
+            0xFF, 0xFF, 0xFF // -1 -> 0xFFFFFF00 after left shift
+        ])
+
+        let decoded = try decoder.decode(input)
+
+        #expect(Array(decoded) == [
+            0x00, 0x00, 0x00, 0x80,
+            0x00, 0xFF, 0xFF, 0xFF
+        ])
+    }
+
     // MARK: - Perceptual volume
 
     @Test

@@ -56,7 +56,7 @@ private func serverStateControllerJSON(_ controller: ServerControllerState) thro
 /// Create a SendspinClient configured for testing with both player and controller roles.
 @MainActor
 func makeTestClient(
-    roles: Set<VersionedRole> = [.playerV1, .controllerV1],
+    roles: [VersionedRole] = [.playerV1, .controllerV1],
     persistenceProvider: (any SendspinPersistenceProvider)? = nil
 ) throws -> SendspinClient {
     var playerConfig: PlayerConfiguration?
@@ -308,13 +308,20 @@ private func sentGoodbyeReasons(from mock: MockTransport) async -> [GoodbyeReaso
 ///
 /// Uses a plain decoder (no snake-case conversion) because the nested
 /// `PlayerStateObject` defines explicit snake_case `CodingKeys`.
-private func lastClientState(from mock: MockTransport, after offset: Int) async -> ClientStatePayload? {
+private func clientStates(from mock: MockTransport, after offset: Int) async -> [ClientStatePayload] {
     let messages = await mock.sentTextMessages
     return messages.dropFirst(offset)
         .filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
-        .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0) }
-        .last?
-        .payload
+        .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
+}
+
+private func lastClientState(from mock: MockTransport, after offset: Int) async -> ClientStatePayload? {
+    await clientStates(from: mock, after: offset).last
+}
+
+private func streamEndJSON(roles: [String]? = nil) throws -> String {
+    let message = StreamEndMessage(payload: StreamEndPayload(roles: roles))
+    return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
 }
 
 /// `stream/start` matching `makeTestClient`'s supported format (pcm 48k/2/16).
@@ -395,6 +402,32 @@ struct ClientIntegrationTests {
         #expect(
             await client.connection?.audioEngineForTesting.isParticipatingInPlaybackForTesting() == false,
             "failed exitExternalSource must leave the engine in external-source mode"
+        )
+
+        await client.disconnect()
+    }
+
+    @Test
+    func streamEndAfterExternalSourcePreservesExternalSourceState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await client.enterExternalSource()
+        #expect(client.clientOperationalState == .externalSource)
+
+        let countBeforeStreamEnd = await mock.sentTextMessages.count
+        try await mock.injectText(streamEndJSON())
+
+        let sawStreamEnded = await collectEvent(from: client) {
+            if case .streamEnded = $0 { true } else { false }
+        }
+        #expect(sawStreamEnded != nil, "stream/end should still surface while external_source is active")
+        #expect(client.clientOperationalState == .externalSource, "stream/end must not exit external_source")
+
+        let statesAfterStreamEnd = await clientStates(from: mock, after: countBeforeStreamEnd)
+        #expect(
+            !statesAfterStreamEnd.contains(where: { $0.state == .synchronized }),
+            "server-mandated stream/end cleanup must not send a synchronized client/state while external_source is active"
         )
 
         await client.disconnect()
@@ -875,6 +908,32 @@ struct ClientIntegrationTests {
     }
 
     @Test
+    func competingConnectionNonHelloFirstFrameIsRejectedWithoutGoodbye() async throws {
+        let client = try makeTestClient()
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
+        let mock2 = MockTransport()
+        async let accepted: Void = client.acceptConnection(mock2)
+
+        let now = client.getCurrentMicroseconds()
+        try await mock2.injectText(serverTimeJSON(
+            clientTransmitted: now,
+            serverReceived: now,
+            serverTransmitted: now
+        ))
+        try await mock2.injectText(serverHelloJSON(serverId: "server-2", connectionReason: .playback))
+        try await accepted
+
+        #expect(client.currentServerId == testServerId)
+        #expect(client.connectionState == .connected)
+        let oldDisconnected = await mock1.disconnectCalled
+        #expect(await mock2.disconnectCalled)
+        #expect(await sentGoodbyeReasons(from: mock2).isEmpty)
+        #expect(!oldDisconnected)
+
+        await client.disconnect()
+    }
+
+    @Test
     func competingDiscovery_bothDiscoveryLastPlayedIsNew_switches() async throws {
         let newServerId = "server-2"
         let provider = MockPersistenceProvider(stored: newServerId)
@@ -1061,7 +1120,7 @@ struct ClientIntegrationTests {
     @Test
     func competingSwitch_processesFramesBufferedAfterHello() async throws {
         let client = try makeTestClient()
-        _ = try await connectClient(client, connectionReason: .discovery)
+        let mock1 = try await connectClient(client, connectionReason: .discovery)
         let newServerId = "server-2"
 
         let mock2 = MockTransport()
@@ -1080,6 +1139,11 @@ struct ClientIntegrationTests {
         }
         #expect(sawPlaying, "Frame buffered after server/hello must be handled once the loop resumes")
         #expect(client.currentServerId == newServerId)
+        #expect(client.connectionState == .connected)
+        let newDisconnected = await mock2.disconnectCalled
+        #expect(await sentGoodbyeReasons(from: mock1) == [.anotherServer])
+        #expect(await mock1.disconnectCalled)
+        #expect(!newDisconnected)
 
         await client.disconnect()
     }
@@ -1114,6 +1178,22 @@ struct ClientIntegrationTests {
         let command = try await lastSentCommand(from: mock, after: countBefore)
         let sent = try #require(command, "Expected a ClientCommandMessage after setShuffle(true)")
         #expect(sent.payload.controller?.command == .shuffle)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func switchGroup_sendsSwitchCommand() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        let countBefore = await mock.sentTextMessages.count
+
+        try await client.switchGroup()
+
+        let command = try await lastSentCommand(from: mock, after: countBefore)
+        let sent = try #require(command, "Expected a ClientCommandMessage after switchGroup()")
+        #expect(sent.payload.controller?.command == .switch)
 
         await client.disconnect()
     }

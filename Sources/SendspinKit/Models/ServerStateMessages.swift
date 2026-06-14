@@ -214,21 +214,15 @@ extension ServerMetadataState: Encodable {
 /// Progress information within metadata
 struct MetadataProgress: Codable, Equatable {
     /// Current playback position in milliseconds since start of track
-    let trackProgress: Int?
+    let trackProgress: Int
     /// Total track length in milliseconds, 0 for unlimited/unknown duration
-    let trackDuration: Int?
+    let trackDuration: Int
     /// Playback speed multiplier × 1000 (e.g. 1000 = normal, 0 = paused)
-    let playbackSpeed: Int?
+    let playbackSpeed: Int
 
     enum CodingKeys: String, CodingKey {
         case trackProgress = "track_progress"
         case trackDuration = "track_duration"
         case playbackSpeed = "playback_speed"
-    }
-
-    init(trackProgress: Int? = nil, trackDuration: Int? = nil, playbackSpeed: Int? = nil) {
-        self.trackProgress = trackProgress
-        self.trackDuration = trackDuration
-        self.playbackSpeed = playbackSpeed
     }
 }

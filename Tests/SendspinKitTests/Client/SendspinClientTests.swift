@@ -5,6 +5,39 @@ import Testing
 @MainActor
 struct SendspinClientTests {
     @Test
+    func clientHelloPreservesSupportedRolePriorityOrder() throws {
+        let client = try SendspinClient(
+            clientId: "priority-test",
+            name: "Priority Test",
+            roles: [.metadataV1, .controllerV1, .metadataV1]
+        )
+
+        let payload = client.buildClientHelloPayload()
+
+        #expect(payload.supportedRoles == [.metadataV1, .controllerV1])
+    }
+
+    @Test
+    func clientHelloUsesConfiguredDeviceInfo() throws {
+        let deviceInfo = DeviceInfo(
+            productName: "Host Product",
+            manufacturer: "Host Manufacturer",
+            softwareVersion: "1.2.3",
+            macAddress: "aa:bb:cc:dd:ee:ff"
+        )
+        let client = try SendspinClient(
+            clientId: "device-info-test",
+            name: "Device Info Test",
+            roles: [.metadataV1],
+            deviceInfo: deviceInfo
+        )
+
+        let payload = client.buildClientHelloPayload()
+
+        #expect(payload.deviceInfo == deviceInfo)
+    }
+
+    @Test
     func initializeClientWithPlayerRole() throws {
         let config = try PlayerConfiguration(
             bufferCapacity: 1_024,

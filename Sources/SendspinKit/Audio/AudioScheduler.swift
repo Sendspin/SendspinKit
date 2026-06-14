@@ -199,7 +199,7 @@ actor AudioScheduler {
                 // Too early, wait
                 break
             } else if delayUs < -playbackWindowUs {
-                // Too late, drop
+                // Too late beyond scheduler jitter tolerance; drop to maintain sync.
                 readIndex += 1
                 counters.dropped += 1
                 counters.droppedLate += 1

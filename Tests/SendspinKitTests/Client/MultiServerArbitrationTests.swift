@@ -60,8 +60,10 @@ struct MultiServerArbitrationTests {
         ) == .keepExisting)
     }
 
+    /// A nil persistence provider loads no last-played value, so discovery ties
+    /// must not invent a winner from hidden storage.
     @Test
-    func bothDiscoveryNoLastPlayedKeeps() {
+    func bothDiscoveryNoPersistedLastPlayedKeepsExisting() {
         #expect(SendspinClient.arbitrate(
             newReason: .discovery,
             existingReason: .discovery,

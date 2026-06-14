@@ -65,6 +65,64 @@ struct MessageEncodingTests {
     }
 
     @Test
+    func serverHello_decodesMissingConnectionReasonAsPlayback() throws {
+        let json = """
+        {
+            "type": "server/hello",
+            "payload": {
+                "server_id": "test-server",
+                "name": "Test Server",
+                "version": 1,
+                "active_roles": ["controller@v1"]
+            }
+        }
+        """
+
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerHelloMessage.self, from: data)
+
+        #expect(message.payload.connectionReason == .playback)
+    }
+
+    @Test
+    func serverHello_preservesExplicitDiscoveryConnectionReason() throws {
+        let json = """
+        {
+            "type": "server/hello",
+            "payload": {
+                "server_id": "test-server",
+                "name": "Test Server",
+                "version": 1,
+                "active_roles": ["controller@v1"],
+                "connection_reason": "discovery"
+            }
+        }
+        """
+
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerHelloMessage.self, from: data)
+
+        #expect(message.payload.connectionReason == .discovery)
+    }
+
+    @Test
+    func deviceInfo_encodesMacAddress() throws {
+        let info = DeviceInfo(
+            productName: "Host Product",
+            manufacturer: "Host Manufacturer",
+            softwareVersion: "1.2.3",
+            macAddress: "aa:bb:cc:dd:ee:ff"
+        )
+
+        let data = try JSONEncoder().encode(info)
+        let json = try #require(String(data: data, encoding: .utf8))
+
+        #expect(json.contains("\"product_name\":\"Host Product\""))
+        #expect(json.contains("\"software_version\":\"1.2.3\""))
+        #expect(json.contains("\"mac_address\":\"aa:bb:cc:dd:ee:ff\""))
+    }
+
+    @Test
     func clientState_encodesWithClientStateAndPlayerStateObject() throws {
         let playerState = try PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
         let payload = ClientStatePayload(state: .synchronized, player: playerState)
@@ -282,6 +340,55 @@ struct MessageEncodingTests {
         #expect(metadata.year.merge(previous: 2_024) == 2_024)
         // Absent with no previous should remain nil
         #expect(metadata.track.merge(previous: nil) == nil)
+    }
+
+    @Test
+    func serverState_decodesCompleteMetadataProgress() throws {
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "metadata": {
+                    "timestamp": 12345678,
+                    "progress": {
+                        "track_progress": 12000,
+                        "track_duration": 180000,
+                        "playback_speed": 1000
+                    }
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+
+        let metadata = try #require(message.payload.metadata)
+        let progress = try #require(metadata.progress.merge(previous: nil))
+        #expect(progress.trackProgress == 12_000)
+        #expect(progress.trackDuration == 180_000)
+        #expect(progress.playbackSpeed == 1_000)
+    }
+
+    @Test
+    func serverState_rejectsIncompleteMetadataProgress() throws {
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "metadata": {
+                    "timestamp": 12345678,
+                    "progress": {
+                        "track_progress": 12000
+                    }
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        }
     }
 
     @Test

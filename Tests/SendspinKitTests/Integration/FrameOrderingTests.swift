@@ -16,12 +16,17 @@ private func audioChunkFrame(index: Int, baseTimestamp: Int64 = 1_000_000) -> Da
 }
 
 /// Build a binary `artwork` frame (type byte + big-endian timestamp + image data).
-private func artworkFrame(channel: Int, index: Int = 0, baseTimestamp: Int64 = 1_000_000) -> Data {
+private func artworkFrame(
+    channel: Int,
+    index: Int = 0,
+    baseTimestamp: Int64 = 1_000_000,
+    imageByteCount: Int = 100
+) -> Data {
     var frame = Data()
     frame.append(BinaryMessageType.artworkChannel0.rawValue + UInt8(channel))
     var timestamp = (baseTimestamp + Int64(index) * 25_000).bigEndian
     frame.append(Data(bytes: &timestamp, count: 8))
-    frame.append(Data(repeating: 0xFF, count: 100)) // Dummy image data
+    frame.append(Data(repeating: 0xFF, count: imageByteCount)) // Dummy image data; 0 bytes means clear artwork.
     return frame
 }
 
@@ -167,7 +172,48 @@ struct FrameOrderingTests {
         await client.disconnect()
 
         #expect(sawArtwork, "artwork stream should emit artwork bytes after artwork stream/start")
-        #expect(await client.currentArtwork == received.all.first)
+        let artwork = try #require(await received.all.first)
+        #expect(artwork.localDisplayTime == nil, "Pre-sync artwork should emit immediately with no display deadline")
+        #expect(client.currentArtwork == artwork)
+    }
+
+    @Test
+    func emptyArtworkPayloadClearsCurrentArtwork() async throws {
+        let client = try makePlayerClient()
+        let mock = try await connectClient(client)
+        let received = CollectedValues<ArtworkData>()
+        let collectTask = Task {
+            for await artwork in client.artwork {
+                await received.append(artwork)
+                if await received.count == 2 { break }
+            }
+        }
+
+        try await mock.injectText(streamStartWithArtworkJSON())
+        await mock.injectBinary(artworkFrame(channel: 0))
+
+        #expect(
+            await waitUntil(timeout: .seconds(1)) { await received.count == 1 },
+            "initial artwork payload should be emitted"
+        )
+        let initialArtwork = try #require(await received.all.first)
+        #expect(!initialArtwork.clearsArtwork)
+        #expect(client.currentArtwork == initialArtwork)
+
+        await mock.injectBinary(artworkFrame(channel: 0, index: 1, imageByteCount: 0))
+
+        #expect(
+            await waitUntil(timeout: .seconds(1)) { await received.count == 2 },
+            "empty artwork payload should be emitted as a clear signal"
+        )
+        let clearArtwork = try #require(await received.all.last)
+        collectTask.cancel()
+        await client.disconnect()
+
+        #expect(clearArtwork.channel == 0)
+        #expect(clearArtwork.data.isEmpty)
+        #expect(clearArtwork.clearsArtwork)
+        #expect(client.currentArtwork == nil)
     }
 
     @Test
@@ -268,17 +314,29 @@ struct FrameOrderingTests {
             await waitUntil(timeout: .seconds(1)) { await artwork.count == 1 },
             "Timed out waiting for the post-stream artwork payload"
         )
+        let preSyncArtwork = try #require(await artwork.all.first)
+        #expect(preSyncArtwork.localDisplayTime == nil, "Pre-sync artwork should emit immediately with no display deadline")
+
+        try await establishClockSync(client, via: mock)
+        await mock.injectBinary(artworkFrame(channel: 0, index: 1))
+        #expect(
+            await waitUntil(timeout: .seconds(1)) { await artwork.count == 2 },
+            "Timed out waiting for the post-sync artwork payload"
+        )
+        let postSyncArtwork = try #require(await artwork.all.last)
+        #expect(postSyncArtwork.localDisplayTime != nil, "Post-sync artwork should carry a local display deadline")
+
         collectTask.cancel()
         artworkTask.cancel()
 
         // The gate is the invariant, asserted by COUNT — not by cross-class ordering.
         // Binary artwork data takes the role data stream while `artworkStreamStarted`
         // takes the facade-drain path. What is deterministic: the pre-stream frame is
-        // dropped by the gate and the post-stream frame is accepted, so exactly ONE
-        // artwork payload is observed.
+        // dropped by the gate and the two post-stream frames are accepted, so exactly
+        // two artwork payloads are observed.
         #expect(
-            await artwork.count == 1,
-            "Exactly one artwork payload: the pre-stream frame is discarded, the post-stream frame accepted"
+            await artwork.count == 2,
+            "Exactly two artwork payloads: the pre-stream frame is discarded, post-stream frames are accepted"
         )
 
         let sawArtworkStart = allEvents.contains { if case .artworkStreamStarted = $0 { true } else { false } }
@@ -288,46 +346,44 @@ struct FrameOrderingTests {
     }
 
     @Test
-    func visualizerBinaryDiscardedBeforeStreamStart_thenAcceptedAfter() async throws {
-        // Pre-stream visualizer binary is discarded per spec (visualizerStreamActive gate).
-        // Subsequent stream/start + visualizer is accepted.
+    func visualizerBinaryRequiresActiveStreamAndClockSync() async throws {
+        // Visualizer is time-sensitive like audio: pre-stream frames are discarded
+        // by the role gate, and active-stream frames are still discarded until
+        // clock sync can translate their server timestamps to local display times.
         let client = try makePlayerClient()
         let mock = try await connectClient(client)
 
         let visualizerData = CollectedValues<VisualizerData>()
 
-        // Start collecting visualizer data in the background.
         let collectTask = Task {
             for await payload in client.visualizerData {
                 await visualizerData.append(payload)
             }
         }
 
-        // Inject visualizer frame BEFORE visualizer stream/start — should be discarded.
-        await mock.injectBinary(visualizerFrame())
+        // Pre-stream visualizer frame: discarded by visualizerStreamActive gate.
+        await mock.injectBinary(visualizerFrame(index: 0))
+        try await Task.sleep(for: .milliseconds(100))
 
-        // Wait a brief moment for the frame to be processed
-        try await Task.sleep(for: .milliseconds(150))
-
-        // Now send visualizer stream/start (no player, so no streamStarted event)
+        // Active stream but pre-sync: still discarded because visualizer frames need
+        // a reliable local display deadline.
         try await mock.injectText(streamStartWithVisualizerJSON())
+        await mock.injectBinary(visualizerFrame(index: 1))
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await visualizerData.count == 0, "Pre-sync visualizer payloads should be discarded")
 
-        // Now inject visualizer — this SHOULD produce a visualizerData
-        await mock.injectBinary(visualizerFrame())
+        // Once synced, visualizer payloads are emitted with translated local display time.
+        try await establishClockSync(client, via: mock)
+        await mock.injectBinary(visualizerFrame(index: 2))
 
         #expect(
             await waitUntil(timeout: .seconds(1)) { await visualizerData.count == 1 },
-            "Timed out waiting for the post-stream visualizer payload"
+            "Timed out waiting for the post-sync visualizer payload"
         )
         collectTask.cancel()
 
-        // Verify NO visualizer data appears before the visualizer stream/start is complete.
-        // Since there's no visualizerStreamStarted event (Decision 2) and no streamStarted event
-        // (because it's visualizer-only), we rely on the gate to block the pre-stream frame.
-        // The test injects exactly ONE pre-stream frame and ONE post-stream frame.
-        // With the gate working: only post-stream yields a visualizer payload → count == 1.
-        // Without the gate (regression): both yield → count == 2.
-        #expect(await visualizerData.count == 1, "Exactly one visualizer payload: pre-stream frame discarded, post-stream frame accepted")
+        let payload = try #require(await visualizerData.all.first)
+        #expect(payload.localDisplayTime > 0, "Synced visualizer payload should carry a local display deadline")
 
         await client.disconnect()
     }

@@ -39,12 +39,32 @@ struct ClientHelloPayload: Codable, Equatable {
     }
 }
 
-struct DeviceInfo: Codable, Equatable {
-    let productName: String?
-    let manufacturer: String?
-    let softwareVersion: String?
+public struct DeviceInfo: Codable, Equatable, Sendable {
+    public let productName: String?
+    public let manufacturer: String?
+    public let softwareVersion: String?
+    public let macAddress: String?
 
-    static var current: DeviceInfo {
+    enum CodingKeys: String, CodingKey {
+        case productName = "product_name"
+        case manufacturer
+        case softwareVersion = "software_version"
+        case macAddress = "mac_address"
+    }
+
+    public init(
+        productName: String? = nil,
+        manufacturer: String? = nil,
+        softwareVersion: String? = nil,
+        macAddress: String? = nil
+    ) {
+        self.productName = productName
+        self.manufacturer = manufacturer
+        self.softwareVersion = softwareVersion
+        self.macAddress = macAddress
+    }
+
+    public static var current: DeviceInfo {
         #if os(iOS) || os(tvOS)
             return DeviceInfo(
                 productName: UIDevice.current.model,
@@ -145,5 +165,28 @@ struct ServerHelloPayload: Codable, Equatable {
         case version
         case activeRoles = "active_roles"
         case connectionReason = "connection_reason"
+    }
+
+    init(
+        serverId: String,
+        name: String,
+        version: Int,
+        activeRoles: [VersionedRole],
+        connectionReason: ConnectionReason
+    ) {
+        self.serverId = serverId
+        self.name = name
+        self.version = version
+        self.activeRoles = activeRoles
+        self.connectionReason = connectionReason
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        serverId = try container.decode(String.self, forKey: .serverId)
+        name = try container.decode(String.self, forKey: .name)
+        version = try container.decode(Int.self, forKey: .version)
+        activeRoles = try container.decode([VersionedRole].self, forKey: .activeRoles)
+        connectionReason = try container.decodeIfPresent(ConnectionReason.self, forKey: .connectionReason) ?? .playback
     }
 }
