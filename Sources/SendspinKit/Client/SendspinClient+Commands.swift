@@ -26,6 +26,9 @@ public extension SendspinClient {
     @MainActor
     func enterExternalSource() async throws {
         try await transitionOperationalState(to: .externalSource)
+        // Signal engine to suppress underrun telemetry only after the server
+        // accepted the state transition; failed sends leave engine/facade aligned.
+        await connection?.setExternalSource(true)
     }
 
     /// Return to normal synchronized operation after ``enterExternalSource()``.
@@ -42,6 +45,9 @@ public extension SendspinClient {
     @MainActor
     func exitExternalSource() async throws {
         try await transitionOperationalState(to: .synchronized)
+        // Signal engine to resume underrun monitoring only after the server
+        // accepted the state transition; failed sends leave engine/facade aligned.
+        await connection?.setExternalSource(false)
     }
 }
 
@@ -77,17 +83,16 @@ public extension SendspinClient {
         sampleRate: Int? = nil,
         bitDepth: Int? = nil
     ) async throws {
-        guard playerStreamActive else { throw SendspinClientError.streamNotActive(.player) }
+        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard let connection else { throw SendspinClientError.notConnected }
+        try await connection.requireActiveRole(.playerV1)
         let request = PlayerFormatRequest(
             codec: codec,
             channels: channels,
             sampleRate: sampleRate,
             bitDepth: bitDepth
         )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(player: request)
-        )
-        try await sendWrapped(message)
+        try await connection.requestFormat(player: request)
     }
 
     /// Request a specific format from the `supportedFormats` list by exact match.
@@ -124,7 +129,9 @@ public extension SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async throws {
-        guard artworkStreamActive else { throw SendspinClientError.streamNotActive(.artwork) }
+        guard roles.contains(.artworkV1) else { throw SendspinClientError.roleNotActive(.artworkV1) }
+        guard let connection else { throw SendspinClientError.notConnected }
+        try await connection.requireActiveRole(.artworkV1)
         let request = try ArtworkFormatRequest(
             channel: channel,
             source: source,
@@ -132,10 +139,7 @@ public extension SendspinClient {
             mediaWidth: mediaWidth,
             mediaHeight: mediaHeight
         )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(artwork: request)
-        )
-        try await sendWrapped(message)
+        try await connection.requestFormat(artwork: request)
     }
 }
 
@@ -149,9 +153,12 @@ extension SendspinClient {
     /// `sendCommand(.play, volume: 50)` which compiles but is nonsensical.
     @MainActor
     func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async throws {
+        guard roles.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
+        guard let connection else { throw SendspinClientError.notConnected }
+        try await connection.requireActiveRole(.controllerV1)
         let controller = ControllerCommand(command: command, volume: volume, mute: mute)
         let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
-        try await sendWrapped(message)
+        try await connection.send(clientMessage: message)
     }
 }
 
@@ -198,19 +205,55 @@ public extension SendspinClient {
     /// Set the group volume (0–100, perceived loudness).
     ///
     /// This controls the volume for the entire group (all players), unlike
-    /// ``setVolume(_:)`` which controls this individual player's volume.
+    /// ``setVolume(_:)`` which controls this individual player's volume. The
+    /// observable ``currentControllerState`` is updated optimistically before the
+    /// command is sent so SwiftUI bindings feel immediate; if the send fails, the
+    /// previous controller state is restored and the error is rethrown.
     /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setGroupVolume(_ volume: Int) async throws {
-        try await sendCommand(.volume, volume: max(0, min(100, volume)))
+        let clamped = max(0, min(100, volume))
+        let previous = currentControllerState
+        if let previous {
+            updateControllerState(ControllerState(
+                supportedCommands: previous.supportedCommands,
+                volume: clamped,
+                muted: previous.muted,
+                repeatMode: previous.repeatMode,
+                shuffle: previous.shuffle
+            ))
+        }
+        do {
+            try await sendCommand(.volume, volume: clamped)
+        } catch {
+            updateControllerState(previous)
+            throw error
+        }
     }
 
     /// Set the group mute state.
     ///
     /// This controls mute for the entire group (all players), unlike
-    /// ``setMute(_:)`` which controls this individual player's mute.
+    /// ``setMute(_:)`` which controls this individual player's mute. The observable
+    /// ``currentControllerState`` is updated optimistically before the command is sent;
+    /// if the send fails, the previous controller state is restored and the error is rethrown.
     /// Requires the controller role. See ``play()`` for server support notes.
     @MainActor func setGroupMute(_ muted: Bool) async throws {
-        try await sendCommand(.mute, mute: muted)
+        let previous = currentControllerState
+        if let previous {
+            updateControllerState(ControllerState(
+                supportedCommands: previous.supportedCommands,
+                volume: previous.volume,
+                muted: muted,
+                repeatMode: previous.repeatMode,
+                shuffle: previous.shuffle
+            ))
+        }
+        do {
+            try await sendCommand(.mute, mute: muted)
+        } catch {
+            updateControllerState(previous)
+            throw error
+        }
     }
 
     /// Set repeat mode.

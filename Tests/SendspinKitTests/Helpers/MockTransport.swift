@@ -10,9 +10,7 @@ import Foundation
 /// Inspect client-sent messages via `sentTextMessages` and `sentBinaryMessages`.
 /// Simulate failures via `setShouldFailOnSend(_:)`.
 actor MockTransport: SendspinTransport {
-    nonisolated let frames: AsyncStream<TransportFrame>
-
-    private let frameContinuation: AsyncStream<TransportFrame>.Continuation
+    private let inbox = FrameInbox()
 
     /// JSON-encoded messages sent by the client, captured as raw Data.
     private(set) var sentTextMessages: [Data] = []
@@ -25,6 +23,9 @@ actor MockTransport: SendspinTransport {
 
     private(set) var isConnected = true
     private(set) var disconnectCalled = false
+    /// Number of times `disconnect()` was invoked. Lets tests prove teardown ran
+    /// exactly once across idempotent/concurrent shutdown paths (not just "did not hang").
+    private(set) var disconnectCallCount = 0
 
     /// When enabled, a `client/goodbye` send suspends until ``releaseGoodbyeGate()``.
     private var goodbyeGateEnabled = false
@@ -32,11 +33,11 @@ actor MockTransport: SendspinTransport {
 
     private let encoder = SendspinEncoding.makeEncoder()
 
-    init() {
-        (frames, frameContinuation) = AsyncStream.makeStream()
-    }
-
     // MARK: - SendspinTransport conformance
+
+    func nextFrame() async -> TransportFrame? {
+        await inbox.next()
+    }
 
     func send(_ message: some Codable & Sendable) async throws {
         if shouldFailOnSend {
@@ -65,6 +66,7 @@ actor MockTransport: SendspinTransport {
     func disconnect() async {
         isConnected = false
         disconnectCalled = true
+        disconnectCallCount += 1
         finishStreams()
     }
 
@@ -72,19 +74,19 @@ actor MockTransport: SendspinTransport {
 
     /// Inject a JSON text message as if the server sent it.
     func injectText(_ json: String) {
-        frameContinuation.yield(.text(json))
+        inbox.yield(.text(json))
     }
 
     /// Inject raw binary data as if the server sent it.
     func injectBinary(_ data: Data) {
-        frameContinuation.yield(.binary(data))
+        inbox.yield(.binary(data))
     }
 
     /// Finish the frame stream (simulates connection close without changing `isConnected`).
     /// `disconnect()` delegates here for the stream teardown portion.
-    /// Safe to call multiple times — `AsyncStream.Continuation.finish()` is idempotent.
+    /// Safe to call multiple times — `FrameInbox.finish()` is idempotent.
     func finishStreams() {
-        frameContinuation.finish()
+        inbox.finish()
     }
 
     /// Enable or disable simulated send failures.

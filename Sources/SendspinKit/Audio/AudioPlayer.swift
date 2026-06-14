@@ -610,6 +610,12 @@ actor AudioPlayer {
     }
 }
 
+// MARK: - AudioOutput conformance
+
+extension AudioPlayer: AudioOutput {
+    // All required methods are already defined above
+}
+
 /// AudioQueue callback (C function)
 private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, buffer in
     guard let userData else { return }

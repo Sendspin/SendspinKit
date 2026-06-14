@@ -52,7 +52,7 @@ struct PCMRingBufferTests {
         #expect(buf.availableToRead == 12)
 
         var trash = [UInt8](repeating: 0, count: 12)
-        trash.withUnsafeMutableBytes { ptr in
+        _ = trash.withUnsafeMutableBytes { ptr in
             buf.read(into: ptr.baseAddress!, count: 12)
         }
         #expect(buf.availableToRead == 0)
@@ -60,13 +60,13 @@ struct PCMRingBufferTests {
         // Now write position is at 12, read position at 12.
         // Writing 8 bytes should wrap: 4 at end, 4 at beginning
         let source: [UInt8] = [1, 2, 3, 4, 5, 6, 7, 8]
-        source.withUnsafeBytes { ptr in
+        _ = source.withUnsafeBytes { ptr in
             buf.write(from: ptr.baseAddress!, count: 8)
         }
         #expect(buf.availableToRead == 8)
 
         var dest = [UInt8](repeating: 0, count: 8)
-        dest.withUnsafeMutableBytes { ptr in
+        _ = dest.withUnsafeMutableBytes { ptr in
             buf.read(into: ptr.baseAddress!, count: 8)
         }
         #expect(dest == source)
@@ -90,7 +90,7 @@ struct PCMRingBufferTests {
         defer { buf.deallocate() }
 
         let data: [UInt8] = [10, 20, 30, 40, 50, 60]
-        data.withUnsafeBytes { ptr in
+        _ = data.withUnsafeBytes { ptr in
             buf.write(from: ptr.baseAddress!, count: 6)
         }
 
@@ -99,7 +99,7 @@ struct PCMRingBufferTests {
         #expect(buf.availableToRead == 2)
 
         var dest = [UInt8](repeating: 0, count: 2)
-        dest.withUnsafeMutableBytes { ptr in
+        _ = dest.withUnsafeMutableBytes { ptr in
             buf.read(into: ptr.baseAddress!, count: 2)
         }
         #expect(dest == [50, 60])
@@ -128,7 +128,7 @@ struct PCMRingBufferTests {
         #expect(written == 4)
 
         var dest = [UInt8](repeating: 0, count: 4)
-        dest.withUnsafeMutableBytes { ptr in
+        _ = dest.withUnsafeMutableBytes { ptr in
             buf.read(into: ptr.baseAddress!, count: 4)
         }
         #expect(dest == [10, 20, 30, 40])
@@ -144,12 +144,12 @@ struct PCMRingBufferTests {
             let value = UInt8(cycle & 0xFF)
             let source = [UInt8](repeating: value, count: 7)
 
-            source.withUnsafeBytes { ptr in
+            _ = source.withUnsafeBytes { ptr in
                 buf.write(from: ptr.baseAddress!, count: 7)
             }
 
             var dest = [UInt8](repeating: 0, count: 7)
-            dest.withUnsafeMutableBytes { ptr in
+            _ = dest.withUnsafeMutableBytes { ptr in
                 buf.read(into: ptr.baseAddress!, count: 7)
             }
             #expect(dest == source, "Mismatch at cycle \(cycle)")

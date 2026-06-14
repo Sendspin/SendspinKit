@@ -156,10 +156,4 @@ struct NWWebSocketTransportTests {
         // This test verifies the type exists and conforms to SendspinTransport
         let _: any SendspinTransport.Type = NWWebSocketTransport.self
     }
-
-    @Test
-    func webSocketTransport_conformsToSendspinTransport() {
-        // Verify the existing transport conforms to the protocol
-        let _: any SendspinTransport.Type = WebSocketTransport.self
-    }
 }

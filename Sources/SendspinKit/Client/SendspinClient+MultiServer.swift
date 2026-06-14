@@ -8,6 +8,12 @@ import Foundation
 /// arbitration to fall back to keeping the existing connection.
 private struct HandshakeIncomplete: Error {}
 
+private enum HandshakeProbeResult {
+    case hello(ServerHelloMessage)
+    case ended
+    case timedOut
+}
+
 extension SendspinClient {
     /// Outcome of multi-server arbitration when a second server connects.
     enum ArbitrationDecision: Equatable {
@@ -55,7 +61,13 @@ extension SendspinClient {
         do {
             hello = try await performHandshake(on: newTransport)
         } catch {
-            // The new server never completed its handshake — keep the existing one.
+            // The new server never completed its handshake — keep the existing one
+            // and drop the probe WITHOUT a goodbye. This is deliberate, not an
+            // oversight: the spec forbids sending any message (including
+            // client/goodbye) before the handshake completes, so a silent close is
+            // the only compliant exit. The timeout bound itself is ours — the spec
+            // is silent, and waiting unboundedly would let one stalled server wedge
+            // arbitration and hold a half-open socket forever.
             await newTransport.disconnect()
             return
         }
@@ -77,14 +89,14 @@ extension SendspinClient {
         case .switchToNew:
             await disconnect(reason: .anotherServer)
             updateConnectionState(.connecting)
-            try await setupConnection(with: newTransport, preReadHello: hello)
+            await setupConnection(with: newTransport, preReadHello: hello)
         }
     }
 
     /// Send `client/hello` on `transport` and read its message stream until the
-    /// first `server/hello`, which is returned. Reads only `transport`'s own
-    /// stream and never touches `self.transport`, so it is safe to run against a
-    /// competing connection while another is active.
+    /// first `server/hello`, which is returned. Touches only the candidate
+    /// `transport` passed in (the facade stores no transport of its own), so it
+    /// is safe to run against a competing connection while another is active.
     ///
     /// - Throws: `HandshakeIncomplete` if the stream ends or `timeout` elapses
     ///   before a `server/hello` arrives.
@@ -95,25 +107,43 @@ extension SendspinClient {
     ) async throws -> ServerHelloMessage {
         try await transport.send(ClientHelloMessage(payload: buildClientHelloPayload()))
 
-        return try await withThrowingTaskGroup(of: ServerHelloMessage?.self) { group in
+        return try await withThrowingTaskGroup(of: HandshakeProbeResult.self) { group in
             group.addTask {
-                for await frame in transport.frames {
+                while let frame = await transport.nextFrame() {
                     // server/hello is the first message per spec; ignore anything before it.
                     guard case let .text(text) = frame,
                           let hello = Self.decodeServerHello(text) else { continue }
-                    return hello
+                    return .hello(hello)
                 }
-                return nil // stream ended without a server/hello
+                return .ended // stream ended without a server/hello
             }
             group.addTask {
-                try await Task.sleep(for: timeout)
-                return nil // timed out
+                do {
+                    try await Task.sleep(for: timeout)
+                    return .timedOut
+                } catch {
+                    // A successful hello/EOF cancels the timeout child while the
+                    // group drains; cancellation is not itself a handshake failure.
+                    return .ended
+                }
             }
-            defer { group.cancelAll() }
-            if let hello = try await group.next() ?? nil {
+
+            let result = try await group.next() ?? .ended
+            if case .timedOut = result {
+                // The reader child may be parked in nextFrame(), which is intentionally
+                // unblocked by transport closure rather than by task cancellation. A
+                // timed-out candidate is rejected, so close it before draining children.
+                await transport.disconnect()
+            }
+            group.cancelAll()
+            while try await group.next() != nil {}
+
+            switch result {
+            case let .hello(hello):
                 return hello
+            case .ended, .timedOut:
+                throw HandshakeIncomplete()
             }
-            throw HandshakeIncomplete()
         }
     }
 

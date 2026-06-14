@@ -109,6 +109,80 @@ struct SessionStateResetTests {
         await client.disconnect()
     }
 
+    // MARK: Same-connection delta merge
+
+    @Test
+    func metadataDeltasMergeWithinConnection() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(serverStateMetadataJSON(
+            title: .value("Song A"),
+            album: .value("Album A")
+        ))
+        let gotInitial = await waitUntil {
+            await MainActor.run {
+                client.currentMetadata?.title == "Song A" && client.currentMetadata?.album == "Album A"
+            }
+        }
+        #expect(gotInitial)
+
+        try await mock.injectText(serverStateMetadataJSON(title: .value("Song B")))
+        let preservedAlbum = await waitUntil {
+            await MainActor.run {
+                client.currentMetadata?.title == "Song B" && client.currentMetadata?.album == "Album A"
+            }
+        }
+        #expect(preservedAlbum, "Absent metadata fields in a delta must keep previous values")
+
+        try await mock.injectText(serverStateMetadataJSON(album: .null))
+        let clearedAlbum = await waitUntil {
+            await MainActor.run {
+                client.currentMetadata?.title == "Song B" && client.currentMetadata?.album == nil
+            }
+        }
+        #expect(clearedAlbum, "Explicit null metadata fields in a delta must clear previous values")
+
+        await client.disconnect()
+    }
+
+    @Test
+    func groupUpdateDeltasMergeWithinConnection() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(groupUpdateJSON(groupId: "g1", groupName: "Kitchen", playbackState: .stopped))
+        let gotInitial = await waitUntil {
+            await MainActor.run {
+                client.currentGroup?.groupId == "g1" && client.currentGroup?.groupName == "Kitchen"
+                    && client.currentGroup?.playbackState == .stopped
+            }
+        }
+        #expect(gotInitial)
+
+        try await mock.injectText(groupUpdateJSON(playbackState: .playing))
+        let preservedGroup = await waitUntil {
+            await MainActor.run {
+                client.currentGroup?.groupId == "g1" && client.currentGroup?.groupName == "Kitchen"
+                    && client.currentGroup?.playbackState == .playing
+            }
+        }
+        #expect(preservedGroup, "Absent group/update fields in a delta must keep previous values")
+
+        await mock.injectText("""
+        {"type":"group/update","payload":{"group_name":null}}
+        """)
+        let clearedName = await waitUntil {
+            await MainActor.run {
+                client.currentGroup?.groupId == "g1" && client.currentGroup?.groupName == ""
+                    && client.currentGroup?.playbackState == .playing
+            }
+        }
+        #expect(clearedName, "Explicit null group/update fields in a delta must clear previous values")
+
+        await client.disconnect()
+    }
+
     // MARK: Deliberate exclusions
 
     @Test
@@ -144,14 +218,64 @@ struct SessionStateResetTests {
         let got = await waitUntil { await MainActor.run { client.currentMetadata?.title == "Now Playing" } }
         #expect(got)
 
-        // Re-hello on the same connection, with a distinct server id so we can tell
-        // the re-hello has been processed before asserting.
+        // Duplicate server/hello on the same established connection is ignored.
         try await mock.injectText(serverHelloJSON(serverId: "server-after-rehello"))
-        let processed = await waitUntil { await MainActor.run { client.currentServerId == "server-after-rehello" } }
-        #expect(processed, "Re-hello should be processed")
+        let processed = await waitUntil(timeout: .milliseconds(300)) {
+            await MainActor.run { client.currentServerId == "server-after-rehello" }
+        }
+        #expect(!processed, "Duplicate same-connection server/hello should be ignored")
 
-        #expect(client.currentMetadata?.title == "Now Playing", "Same-connection re-hello must not wipe accumulated metadata")
+        #expect(client.currentMetadata?.title == "Now Playing", "Ignored duplicate server/hello must not wipe accumulated metadata")
 
         await client.disconnect()
+    }
+
+    // MARK: Reconnect-while-draining
+
+    @Test
+    func reconnectWhileDrainingCompletesCleanly() async throws {
+        // When reconnecting while audio is still draining from a previous connection,
+        // the old connection must teardown without hanging, releasing its resources.
+        // This is the observable baseline for reconnect teardown.
+        let client = try makeTestClient()
+        let mockA = try await connectClient(client)
+
+        // Start playback on connection A to set up state
+        try await mockA.injectText(serverStateMetadataJSON(title: .value("Track A")))
+        let gotA = await waitUntil { await MainActor.run { client.currentMetadata?.title == "Track A" } }
+        #expect(gotA, "Metadata should be received on connection A")
+
+        // Capture connection A before the swap (for identity verification)
+        let connectionA = client.connection
+
+        // Now drive a reconnect to B while A is still potentially draining
+        // (we don't need real audio to test this; the concern is task cleanup)
+        let mockB = MockTransport()
+        async let accepted: Void = client.acceptConnection(mockB)
+        try await mockB.injectText(serverHelloJSON(serverId: "server-b", connectionReason: .playback))
+        try await accepted
+
+        // Connection B should be live and metadata should be reset (per spec, server/hello resets state)
+        #expect(client.connectionState == .connected, "Connection B must be live")
+        #expect(client.currentServerId == "server-b", "Must be connected to server B")
+
+        // Inject new metadata on B (this proves B is the active connection)
+        try await mockB.injectText(serverStateMetadataJSON(title: .value("Track B")))
+        let gotB = await waitUntil { await MainActor.run { client.currentMetadata?.title == "Track B" } }
+        #expect(gotB, "Track B metadata should be received on new connection")
+
+        // Verify A's resources have been released (same surface as ConnectionLostTeardownTests)
+        // After B takes over, the client's live connection should be B's, not A's.
+        // The connection object identity has changed from A to B (drop A / install B).
+        let connectionB = client.connection
+        #expect(connectionB !== connectionA, "Connection object identity should have changed from A to B")
+
+        // The current live resources belong to B. Disconnecting should release them cleanly.
+        await client.disconnect()
+        try await waitForState(client, expected: .disconnected, timeout: .seconds(3))
+        #expect(client.connectionState == .disconnected, "Client should disconnect cleanly")
+        // The connection owns the transport; releasing the connection releases it.
+        #expect(client.connection == nil, "Connection (and its transport) must be released after disconnect")
+        #expect(client.drainConnectionEventsTask == nil, "Drain task must be released after disconnect")
     }
 }

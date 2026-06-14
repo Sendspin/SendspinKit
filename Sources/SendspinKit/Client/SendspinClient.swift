@@ -19,13 +19,13 @@ public final class SendspinClient {
     /// Saved on every `group/update` that reports playback started; read by the
     /// multi-server arbitration tiebreak.
     let persistenceProvider: (any SendspinPersistenceProvider)?
-    /// Resolved volume capabilities and control implementation
+    /// Resolved volume capabilities (the concrete `VolumeControl` lives in `AudioEngine`).
     let volumeCapabilities: VolumeCapabilities
-    let volumeControl: VolumeControl
 
-    // Public-readable, privately-settable state. Extension files in the same module
-    // mutate these through internal setter methods below (e.g. `updateConnectionState`),
-    // keeping the mutation surface controlled and auditable.
+    // Public-readable, privately-settable state, mutated only through the named setters
+    // below — keeping the mutation surface controlled and auditable. After the Phase 5
+    // split those setters are `private` (only the facade's event-drain applies state);
+    // `updateConnectionState` stays `internal` for the multi-server arbitration path.
 
     /// Connection lifecycle state. Observe this (via `@Observable`) to update UI
     /// for connecting/connected/error/disconnected transitions.
@@ -36,15 +36,12 @@ public final class SendspinClient {
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
     var clientOperationalState: ClientOperationalState = .synchronized
-    var isAutoStarting = false
     var isClockSynced = false
-    /// Incremented on format changes so the scheduler output loop can detect the boundary.
-    var streamGeneration: UInt64 = 0
-    /// Deferred format + codec header for seamless mid-stream format transitions.
-    /// Set in handleStreamStart; consumed by runSchedulerOutput when the first
-    /// new-generation chunk arrives.
-    var pendingFormat: AudioFormatSpec?
-    var pendingCodecHeader: Data?
+    /// Format announced by the most recent player `stream/start`, tracked
+    /// synchronously for seamless-change classification. Distinct from the public
+    /// ``currentStreamFormat``, which the engine's report drain applies
+    /// asynchronously once audio actually renders.
+    var announcedPlayerFormat: AudioFormatSpec?
     /// Current player volume (0-100). Observable for UI binding (volume sliders).
     /// Updated by ``setVolume(_:)`` and by the server via `server/command`.
     public private(set) var currentVolume: Int = 100
@@ -54,23 +51,16 @@ public final class SendspinClient {
     /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
     /// updated when the server sends a `set_static_delay` command.
     public private(set) var staticDelayMs: Int
-    /// Gate `stream/request-format`: a format request renegotiates an existing
-    /// stream, so it's only valid between a role's `stream/start` and `stream/end`.
-    /// Tracks the server's stream *intent*, not local playability — it opens even
-    /// when the client couldn't begin playback (e.g. an unsupported codec), which
-    /// is precisely the state a client recovers from by requesting a format it
-    /// supports. The two roles are independent — `stream/end` can end one without
-    /// the other.
+    /// Observability mirrors of the connection's protocol-intent gates. These do
+    /// NOT gate anything: the authoritative gates live in `SendspinConnection`,
+    /// where `stream/request-format` sends are validated. The mirrors are
+    /// render-applied (player: from the engine's `.started` report; artwork:
+    /// from `.artworkStreamStarted`), so they can lag the connection's gates.
+    /// `stream/clear` leaves both untouched — the stream continues (per spec).
     var playerStreamActive = false
     var artworkStreamActive = false
     /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
     var shouldEmitRawAudio = false
-
-    /// Snapshot of the last `client/state` successfully sent to the current
-    /// server session, or `nil` before the initial send. Reset on every
-    /// `server/hello` so a (re)connected server receives a full baseline;
-    /// subsequent sends transmit only changed fields (spec delta semantics).
-    var lastSentClientState: SentClientState?
 
     /// Accumulated state (merged from server deltas per spec)
     /// Current track metadata, accumulated from `server/state` deltas.
@@ -87,36 +77,41 @@ public final class SendspinClient {
     var currentConnectionReason: ConnectionReason?
     var currentServerId: String?
 
-    // Dependencies
-    var transport: (any SendspinTransport)?
-    var clockSync: ClockSynchronizer?
-    var audioScheduler: AudioScheduler?
-    var audioPlayer: AudioPlayer?
+    /// Dependencies.
+    /// Note: the facade deliberately holds NO transport reference. The connection
+    /// is the transport's sole owner and single writer; all outbound protocol I/O
+    /// goes through `SendspinConnection` methods. (The only facade-level send is
+    /// `performHandshake`, which writes to a candidate transport during
+    /// multi-server arbitration, before a connection exists for it.)
+    /// The active connection, or nil if disconnected.
+    /// When a new connection replaces the old one, the old is shutdown.
+    var connection: SendspinConnection?
 
-    // Task management
-    var messageLoopTask: Task<Void, Never>?
-    var clockSyncTask: Task<Void, Never>?
-    var schedulerOutputTask: Task<Void, Never>?
-    var syncTelemetryTask: Task<Void, Never>?
-    /// Bumped on every ``setupConnection(with:preReadHello:)``. A message loop
-    /// captures the value live at its creation; on exit it tears the connection
-    /// down only if the value still matches, so a loop superseded by a fast
-    /// reconnect (e.g. a network-path change firing before its `.disconnected`
-    /// event drains) cannot clobber the connection that replaced it.
-    var connectionGeneration: UInt64 = 0
+    /// Validity token gating the current session's binary events. Stored here so
+    /// `retireSession()` can invalidate it synchronously — before old-connection
+    /// teardown is awaited — per the design's retire contract (both guards must
+    /// reject a dying connection's late events *during* teardown, not after).
+    private(set) var sessionValidity: SessionValidityToken?
 
-    /// The reason an in-flight ``disconnect(reason:)`` intends to report, recorded
-    /// before it suspends on the goodbye send. If a connection loss races that
-    /// suspended disconnect and settles first, it adopts this reason instead of
-    /// `.connectionLost`, so the local `.disconnected` event preserves the user's
-    /// intent — host apps branch on it (e.g. suppress auto-reconnect on
-    /// `.userRequest`/`.anotherServer`, but retry on `.connectionLost`). Consumed
-    /// by the settling teardown and cleared on each new connection.
-    var explicitDisconnectReason: GoodbyeReason?
+    /// Task draining control events from the connection and re-emitting them to the public events stream.
+    var drainConnectionEventsTask: Task<Void, Never>?
 
-    // Event stream
-    let eventsContinuation: AsyncStream<ClientEvent>.Continuation
-    public let events: AsyncStream<ClientEvent>
+    /// Event streams
+    private var eventSubscribers: [UUID: AsyncStream<ClientEvent>.Continuation] = [:]
+
+    let audioChunksContinuation: AsyncStream<AudioChunk>.Continuation
+    /// Raw player audio chunks, emitted only when ``PlayerConfiguration/emitRawAudioEvents`` is true.
+    public let audioChunks: AsyncStream<AudioChunk>
+
+    let artworkContinuation: AsyncStream<ArtworkData>.Continuation
+    /// Artwork bytes from the artwork data stream.
+    public let artwork: AsyncStream<ArtworkData>
+    /// Most recent artwork payload received from the artwork data stream.
+    public private(set) var currentArtwork: ArtworkData?
+
+    let visualizerDataContinuation: AsyncStream<VisualizerData>.Continuation
+    /// Visualizer bytes from the visualizer data stream.
+    public let visualizerData: AsyncStream<VisualizerData>
 
     public init(
         clientId: String,
@@ -141,37 +136,73 @@ public final class SendspinClient {
         self.persistenceProvider = persistenceProvider
         staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
 
-        // Resolve volume mode into concrete capabilities and control implementation
-        let resolved = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software)
-        volumeCapabilities = resolved.capabilities
-        volumeControl = resolved.control
+        // Resolve volume mode into concrete capabilities (the control is built by AudioEngine)
+        volumeCapabilities = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software).capabilities
 
-        (events, eventsContinuation) = AsyncStream.makeStream()
+        (audioChunks, audioChunksContinuation) = AsyncStream.makeStream()
+        (artwork, artworkContinuation) = AsyncStream.makeStream()
+        (visualizerData, visualizerDataContinuation) = AsyncStream.makeStream()
     }
 
-    deinit {
-        eventsContinuation.finish()
+    isolated deinit {
+        for continuation in eventSubscribers.values {
+            continuation.finish()
+        }
+        eventSubscribers.removeAll()
+        audioChunksContinuation.finish()
+        artworkContinuation.finish()
+        visualizerDataContinuation.finish()
+        // Safety net: dropping a connected client must not leak a live, playing
+        // connection graph. Capture the connection into a local — do NOT capture
+        // self. (`isolated deinit` runs on the MainActor, so reading the isolated
+        // stored property is legal.)
+        let conn = connection
+        Task { await conn?.shutdown() }
     }
 
-    // MARK: - Internal state setters
+    /// Create a fresh control-event stream for one caller.
+    ///
+    /// Each call returns an independent stream that receives future control events.
+    /// Binary role payloads are not emitted here; use ``audioChunks``, ``artwork``,
+    /// and ``visualizerData`` for data-plane bytes.
+    public func events() -> AsyncStream<ClientEvent> {
+        let id = UUID()
+        let (stream, continuation) = AsyncStream<ClientEvent>.makeStream()
+        eventSubscribers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.eventSubscribers.removeValue(forKey: id)
+            }
+        }
+        return stream
+    }
 
-    // Extension files (SendspinClient+MessageHandling.swift, SendspinClient+Commands.swift)
-    // use these methods to mutate `public private(set)` properties. This keeps all
-    // mutation in named methods rather than scattered direct assignments.
+    private func emitEvent(_ event: ClientEvent) {
+        for continuation in eventSubscribers.values {
+            continuation.yield(event)
+        }
+    }
+
+    // MARK: - State setters
+
+    // Named mutators for the `public private(set)` observable properties, keeping all
+    // mutation in one place. After the Phase 5 split only the facade's own event-drain
+    // applies state, so these are `private` — except `updateConnectionState`, which the
+    // multi-server arbitration path (`SendspinClient+MultiServer.swift`) also calls.
 
     func updateConnectionState(_ state: ConnectionState) {
         connectionState = state
     }
 
-    func updateStreamFormat(_ format: AudioFormatSpec?) {
+    private func updateStreamFormat(_ format: AudioFormatSpec?) {
         currentStreamFormat = format
     }
 
-    func updateMetadata(_ metadata: TrackMetadata?) {
+    private func updateMetadata(_ metadata: TrackMetadata?) {
         currentMetadata = metadata
     }
 
-    func updateGroup(_ group: GroupInfo?) {
+    private func updateGroup(_ group: GroupInfo?) {
         currentGroup = group
     }
 
@@ -179,64 +210,8 @@ public final class SendspinClient {
         currentControllerState = state
     }
 
-    func updateCodecHeader(_ header: Data?) {
+    private func updateCodecHeader(_ header: Data?) {
         currentCodecHeader = header
-    }
-
-    /// Continuously discover Sendspin servers on the local network.
-    ///
-    /// Returns a `ServerDiscovery` whose `servers` stream emits an updated list
-    /// whenever servers appear or disappear. The caller owns the lifecycle —
-    /// call `stopDiscovery()` when done.
-    ///
-    /// ```swift
-    /// let discovery = try await SendspinClient.discoverServers()
-    /// for await servers in discovery.servers {
-    ///     print("Found \(servers.count) server(s)")
-    /// }
-    /// // Later:
-    /// await discovery.stopDiscovery()
-    /// ```
-    public nonisolated static func discoverServers() async throws -> ServerDiscovery {
-        let discovery = ServerDiscovery()
-        try await discovery.startDiscovery()
-        return discovery
-    }
-
-    /// Discover Sendspin servers on the local network (one-shot with timeout).
-    ///
-    /// Convenience wrapper that browses for `timeout`, then returns whatever was found.
-    /// For continuous discovery (live-updating server list), use `discoverServers()`
-    /// which returns a `ServerDiscovery` with an async stream.
-    ///
-    /// - Parameter timeout: How long to search for servers (default: 3 seconds)
-    /// - Returns: Array of discovered servers
-    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
-        let discovery = try await discoverServers()
-
-        return await withTaskGroup(of: [DiscoveredServer].self) { group in
-            var latestServers: [DiscoveredServer] = []
-
-            group.addTask {
-                var collected: [DiscoveredServer] = []
-                for await discoveredServers in discovery.servers {
-                    collected = discoveredServers
-                }
-                return collected
-            }
-
-            group.addTask {
-                try? await Task.sleep(for: timeout)
-                await discovery.stopDiscovery()
-                return []
-            }
-
-            for await result in group where !result.isEmpty {
-                latestServers = result
-            }
-
-            return latestServers
-        }
     }
 
     // MARK: - Connection lifecycle
@@ -253,10 +228,18 @@ public final class SendspinClient {
 
         connectionState = .connecting
 
-        let transport = WebSocketTransport(url: url)
-        try await transport.connect()
+        let transport = NWWebSocketTransport(url: url)
+        do {
+            try await transport.connect()
+        } catch {
+            await transport.disconnect()
+            if connectionState == .connecting {
+                updateConnectionState(.disconnected)
+            }
+            throw error
+        }
 
-        try await setupConnection(with: transport)
+        await setupConnection(with: transport)
     }
 
     /// Accept an incoming server connection (server-initiated connection).
@@ -268,7 +251,7 @@ public final class SendspinClient {
     public func acceptConnection(_ transport: any SendspinTransport) async throws {
         if connectionState == .disconnected {
             connectionState = .connecting
-            try await setupConnection(with: transport)
+            await setupConnection(with: transport)
         } else {
             // Already connected — run handshake on new connection, then decide
             try await handleCompetingConnection(transport)
@@ -277,86 +260,143 @@ public final class SendspinClient {
 
     /// Common setup for both client-initiated and server-initiated connections.
     ///
+    /// Synchronously retire the current session: invalidate the binary-event
+    /// validity token, detach the connection (arming the identity guard), and
+    /// stop the control drain. Returns the retired connection so the caller can
+    /// await its teardown.
+    ///
+    /// Contains no suspension points — that is the contract. Late events from
+    /// the dying connection are already gated when this returns, regardless of
+    /// how long its teardown takes or when it lands on the connection actor.
+    /// Do not reorder a caller to install a replacement before calling this.
+    @MainActor
+    @discardableResult
+    func retireSession() -> SendspinConnection? {
+        drainConnectionEventsTask?.cancel()
+        drainConnectionEventsTask = nil
+        sessionValidity?.invalidate()
+        let retired = connection
+        connection = nil
+        return retired
+    }
+
     /// - Parameter preReadHello: When non-nil, the `client/hello` was already sent
     ///   and the `server/hello` already consumed during competing-connection
     ///   arbitration. In that case we process the hello directly instead of sending
     ///   another `client/hello`, and the message loop resumes the transport's stream
     ///   from the (buffered) frames that follow.
+    ///
+    /// This setup path is intentionally non-throwing: all genuine dial/handshake
+    /// failures are handled before a transport reaches this point, so callers do not
+    /// need duplicate rollback logic after they set `.connecting`.
     @MainActor
     func setupConnection(
         with transport: any SendspinTransport,
         preReadHello: ServerHelloMessage? = nil
-    ) async throws {
+    ) async {
         // A new connection is a new session: drop any server-reported state carried
         // over from a prior connection (notably one lost without an explicit
         // disconnect) before the first server/state can merge a delta onto it.
         // Placed here, not in handleServerHello — that also fires on a same-connection
         // re-hello, where the accumulated state is still valid.
         resetServerSessionState()
+        isClockSynced = false
 
-        // Establish this connection's identity before any `await` below. A stale
-        // handleConnectionLost(generation:) from a prior link that interleaves during
-        // those suspensions then sees the bumped generation and skips its teardown,
-        // instead of clobbering the connection now being set up.
-        connectionGeneration &+= 1
-        let generation = connectionGeneration
+        // Retire the old session synchronously (token + identity guards both
+        // reject its late events from this point), then await its teardown.
+        let oldConnection = retireSession()
+        if let oldConnection {
+            await oldConnection.shutdown()
+        }
 
-        // A fresh session never inherits a prior disconnect's reason: drop any intent
-        // a disconnect recorded but didn't settle (it bailed on a generation change).
-        explicitDisconnectReason = nil
-
+        // Build the SendspinConnection with configuration from this facade
+        let validity = SessionValidityToken()
+        sessionValidity = validity
         let clockSync = ClockSynchronizer()
-        let audioScheduler = AudioScheduler(clockSync: clockSync)
 
-        self.transport = transport
-        self.clockSync = clockSync
-        self.audioScheduler = audioScheduler
-
+        // Create AudioEngine for player role, or a no-op engine for non-player roles
+        let audioEngine: AudioEngine
         if roles.contains(.playerV1), let playerConfig {
-            // PCM ring buffer holds decompressed audio for the AudioQueue pipeline.
-            // Size it relative to the compressed buffer: compressed audio expands ~10-20x
-            // when decoded, but we only need ~2-3s of headroom. Use half the compressed
-            // capacity as a reasonable default (512KB for a typical 1MB buffer).
-            let pcmBufferCapacity = max(playerConfig.bufferCapacity / 2, 131_072) // min 128KB
-            let audioPlayer = AudioPlayer(
-                pcmBufferCapacity: pcmBufferCapacity,
-                volumeControl: volumeControl,
-                processCallback: playerConfig.processCallback
-            )
-
-            self.audioPlayer = audioPlayer
-
-            currentMuted = await audioPlayer.muted
-
-            // Set eagerly so raw audio events are emitted even for chunks that
-            // arrive before stream/start is processed (binary and text messages
-            // are consumed by parallel tasks, so binary chunks can race ahead).
-            shouldEmitRawAudio = playerConfig.emitRawAudioEvents
-        }
-
-        if let preReadHello {
-            // Competing-connection path: client/hello already sent and server/hello
-            // already read during arbitration. Process it before the loop starts so
-            // clock sync is running by the time subsequent frames are dispatched.
-            await handleServerHello(preReadHello)
+            audioEngine = AudioEngine(clock: clockSync, config: playerConfig)
         } else {
-            try await sendClientHello()
+            // Non-player roles still need an engine (owns the audio streams and scheduler)
+            // Create with a no-op audio output
+            let noOpOutput = NoOpAudioOutput()
+            let audioScheduler = AudioScheduler(clockSync: clockSync)
+            audioEngine = AudioEngine(output: noOpOutput, scheduler: audioScheduler, clock: clockSync)
         }
 
-        let frames = transport.frames
+        // A player always advertises set_static_delay (spec §); volume/mute depend on
+        // the resolved VolumeMode capabilities. Non-player roles advertise nothing.
+        let advertisedCommands: Set<PlayerCommand> = roles.contains(.playerV1)
+            ? Set(volumeCapabilities.playerCommands).union([.setStaticDelay])
+            : []
 
-        messageLoopTask = Task.detached { [weak self] in
-            await self?.runMessageLoop(frames: frames, generation: generation)
+        let newConnection = SendspinConnection(
+            transport: transport,
+            parsedHello: preReadHello,
+            clientHelloPayload: buildClientHelloPayload(),
+            audioSink: audioChunksContinuation,
+            artworkSink: artworkContinuation,
+            visualizerSink: visualizerDataContinuation,
+            emitRawAudio: playerConfig?.emitRawAudioEvents ?? false,
+            artworkObserver: { [weak self] artwork in
+                Task { @MainActor [weak self] in
+                    // Same session-validity contract as the public artwork
+                    // stream's yieldIfValid: a retired connection's in-flight
+                    // artwork must not mutate facade state. The token check and
+                    // write happen under the token lock, closing the snapshot/use
+                    // window that a separate `isValid` read would leave open.
+                    validity.performIfValid {
+                        self?.currentArtwork = artwork
+                    }
+                }
+            },
+            validity: validity,
+            advertisedCommands: advertisedCommands,
+            roles: roles,
+            // Live facade state, not playerConfig defaults: a multi-server switch
+            // (and any runtime setStaticDelay) must carry into the new session.
+            initialStaticDelayMs: staticDelayMs,
+            initialVolume: currentVolume,
+            initialMuted: currentMuted,
+            requiredLeadTimeMs: playerConfig?.requiredLeadTimeMs ?? defaultRequiredLeadTimeMs,
+            minBufferMs: playerConfig?.minBufferMs ?? defaultMinBufferMs,
+            clock: clockSync,
+            engine: audioEngine
+        )
+
+        connection = newConnection
+
+        // Spawn a task to start the connection and drain its control events.
+        // `self` is held weakly and upgraded per event: a parked drain must not
+        // be a self-retain cycle (client → task → closure → client), or dropping
+        // the last user reference can never reach deinit and its safety net.
+        drainConnectionEventsTask = Task { [weak self] in
+            await newConnection.start()
+            for await event in newConnection.events {
+                // The event left the control buffer regardless of what we do with it.
+                newConnection.controlSink.decrementDepth()
+
+                guard let self else { return }
+                // Identity guard: if connection was replaced, ignore this stale event.
+                guard newConnection === connection else { return }
+                applyConnectionEvent(event)
+            }
         }
 
-        // Clock sync starts after server/hello is received (in handleServerHello)
+        // Set should-emit-raw-audio flag
+        shouldEmitRawAudio = playerConfig?.emitRawAudioEvents ?? false
 
-        schedulerOutputTask = Task.detached { [weak self] in
-            await self?.runSchedulerOutput()
-        }
-
-        syncTelemetryTask = Task.detached { [weak self] in
-            await self?.runSyncCorrectionAndTelemetry()
+        // Promotion path: the `server/hello` was already consumed during competing-
+        // connection arbitration, so apply the connected-state projection synchronously
+        // here. Otherwise the caller would observe `.connecting` until the connection's
+        // async drain delivers `.serverConnected`. The connection still emits the public
+        // `.serverConnected` event via its message loop (single public emission).
+        if let preReadHello {
+            currentServerId = preReadHello.payload.serverId
+            currentConnectionReason = preReadHello.payload.connectionReason
+            updateConnectionState(.connected)
         }
     }
 
@@ -378,66 +418,151 @@ public final class SendspinClient {
     ///   server not to auto-reconnect.
     @MainActor
     public func disconnect(reason: GoodbyeReason = .restart) async {
-        // Idempotency guard: a second disconnect() while already disconnected
-        // would otherwise re-run teardown on nil state (harmless) and yield a
-        // ghost `.disconnected` event (not harmless — it spams event consumers).
-        guard connectionState != .disconnected else { return }
-
-        let generation = connectionGeneration
-
-        // Record intent before the goodbye await: if a connection loss races this
-        // suspended disconnect and settles first, it reports this reason, not
-        // `.connectionLost`.
-        explicitDisconnectReason = reason
-
-        // Send client/goodbye before tearing down (best-effort)
-        if let transport {
-            let goodbye = ClientGoodbyeMessage(
-                payload: GoodbyePayload(reason: reason)
-            )
-            try? await transport.send(goodbye)
+        guard let conn = connection else { return }
+        await conn.disconnect(reason: reason)
+        if connection === conn {
+            applyDisconnected(reason: .explicit(reason))
         }
-
-        // Shared guarded teardown: bails (emitting nothing) if a connection-loss
-        // teardown or a competing connection already settled this one while the
-        // goodbye was in flight — collapsing the race to a single `.disconnected`.
-        guard await teardownLiveConnection(generation: generation) else { return }
-
-        currentVolume = 100 // Reset to full volume; host app can restore persisted value after reconnect
-        currentMuted = false
-        resetServerSessionState()
-        currentConnectionReason = nil
-        currentServerId = nil
-        // Don't clear currentGroup — spec says group membership persists across reconnections
-
-        settleDisconnected()
     }
 
-    /// Settle `connectionState` to `.disconnected` and emit a single `.disconnected`
-    /// event. Shared by ``disconnect(reason:)`` and ``handleConnectionLost(generation:)``
-    /// so the emitted reason is resolved in one place: an explicit disconnect's intent
-    /// wins if one is in flight, otherwise it's a `.connectionLost`. Must be called with
-    /// no `await` between the teardown's final guard and here, so racing teardowns
-    /// cannot double-settle.
-    private func settleDisconnected() {
-        connectionState = .disconnected
-        let reason: DisconnectReason = explicitDisconnectReason.map(DisconnectReason.explicit) ?? .connectionLost
-        explicitDisconnectReason = nil
-        eventsContinuation.yield(.disconnected(reason: reason))
+    /// Apply one control event to facade state, then re-emit the render-applied
+    /// event to the public stream. Called per event by the drain
+    /// task, which holds `self` only for the duration of the call.
+    @MainActor
+    private func applyConnectionEvent(_ event: ConnectionEvent) {
+        switch event {
+        case let .serverConnected(info):
+            currentServerId = info.serverId
+            currentConnectionReason = info.connectionReason
+            updateConnectionState(.connected)
+            emitEvent(.serverConnected(info))
+
+        case let .metadataReceived(metadata):
+            updateMetadata(metadata)
+            emitEvent(.metadataReceived(metadata))
+
+        case let .controllerStateUpdated(state):
+            updateControllerState(state)
+            emitEvent(.controllerStateUpdated(state))
+
+        case let .groupUpdated(group):
+            updateGroup(group)
+            emitEvent(.groupUpdated(group))
+
+        case let .artworkStreamStarted(channels):
+            artworkStreamActive = true
+            emitEvent(.artworkStreamStarted(channels))
+
+        case let .streamStarted(format):
+            playerStreamActive = true
+            updateStreamFormat(format)
+            emitEvent(.streamStarted(format))
+
+        case let .streamFormatChanged(format):
+            updateStreamFormat(format)
+            emitEvent(.streamFormatChanged(format))
+
+        case let .streamEnded(roles):
+            if roles == nil || roles?.contains(StreamRole.player.rawValue) == true {
+                playerStreamActive = false
+                updateStreamFormat(nil)
+                updateCodecHeader(nil)
+                announcedPlayerFormat = nil
+            }
+            if roles == nil || roles?.contains(StreamRole.artwork.rawValue) == true {
+                artworkStreamActive = false
+            }
+            emitEvent(.streamEnded(roles: roles))
+
+        case let .streamCleared(roles):
+            // stream/clear clears buffers WITHOUT ending the stream (per spec):
+            // no format reset and no gate change — the stream stays active and
+            // chunks received after this message continue to play.
+            emitEvent(.streamCleared(roles: roles))
+
+        case let .staticDelayChanged(milliseconds):
+            staticDelayMs = milliseconds
+            emitEvent(.staticDelayChanged(milliseconds: milliseconds))
+
+        case let .operationalState(state):
+            clientOperationalState = state
+                // Operational state is applied but not re-emitted as a public event
+                // (it's an internal state projection)
+
+        case .clockSyncEstablished:
+            isClockSynced = true
+                // Internal state projection; not a public event.
+
+        case let .streamError(error):
+            // A stream-start error (unsupported codec / invalid format / audio-start
+            // failure) still opened the player stream gate: the client recovers by
+            // requesting a supported format, so requestPlayerFormat must be allowed.
+            playerStreamActive = true
+            // Project connection stream errors to observable connectionState errors.
+            updateConnectionState(.error(error))
+                // streamError is internal; don't emit to public stream
+
+        case let .playerVolumeChanged(volume):
+            currentVolume = volume
+                // Volume changes are internal state; don't emit (servers send via server/command, we apply locally)
+
+        case let .playerMutedChanged(muted):
+            currentMuted = muted
+                // Mute changes are internal state; don't emit
+
+        case let .lastPlayedServerChanged(serverId):
+            // Persist the spec's "last played server" bookkeeping (used by the
+            // multi-server arbitration tiebreak).
+            if let persistenceProvider {
+                Task { await persistenceProvider.saveLastPlayedServerId(serverId) }
+            }
+            emitEvent(.lastPlayedServerChanged(serverId: serverId))
+
+        case let .disconnected(reason):
+            applyDisconnected(reason: reason)
+        }
+    }
+
+    /// Apply terminal disconnection state exactly once from either the drain task
+    /// or the awaited public `disconnect()` postcondition path.
+    private func applyDisconnected(reason: DisconnectReason) {
+        guard connection != nil || connectionState != .disconnected else { return }
+        // Terminal event: retire the connection and apply reconnect logic.
+        // Volume/mute/staticDelay deliberately survive (device-user state,
+        // like the spec's static-delay persistence): the next session is
+        // seeded from facade state and re-applies them to its fresh engine.
+        updateConnectionState(.disconnected)
+        resetStreamState()
+        currentServerId = nil
+        currentConnectionReason = nil
+        // Don't clear currentGroup — spec preserves group membership across reconnects
+
+        // Synchronously invalidate and release the connection so any late
+        // events from the dead connection are dropped by both guards.
+        // (The token is already invalid via finishTeardown; this keeps the
+        // "retired implies invalid" invariant local and unconditional.)
+        // Not retireSession(): that would cancel the drain task this very
+        // loop may be running on — the stream is finishing on its own.
+        sessionValidity?.invalidate()
+        connection = nil
+
+        // Release the drain task; the connection released its own resources
+        // (transport, engine) during teardown.
+        drainConnectionEventsTask = nil
+
+        emitEvent(.disconnected(reason: reason))
     }
 
     /// Clear every marker of the currently-active stream(s). Shared by
     /// ``disconnect(reason:)`` and the connection-lost path so a dropped link
     /// leaves the same coherent "no active stream" state an explicit disconnect
-    /// would. Without this on connection loss, the `stream/request-format` gates
-    /// stay open against a dead transport, so a request would pass the gate and
-    /// then fail with the wrong error (`sendFailed`, not `streamNotActive`).
+    /// would. (Requests themselves fail with `streamNotActive` via the
+    /// `connection == nil` guard — these mirrors are observability state.)
     func resetStreamState() {
         updateStreamFormat(nil)
         updateCodecHeader(nil)
+        announcedPlayerFormat = nil
         shouldEmitRawAudio = false
-        pendingFormat = nil
-        pendingCodecHeader = nil
         playerStreamActive = false
         artworkStreamActive = false
     }
@@ -452,270 +577,6 @@ public final class SendspinClient {
     func resetServerSessionState() {
         updateMetadata(nil)
         updateControllerState(nil)
-    }
-
-    /// Cancel and release the four long-lived connection tasks. Shared by
-    /// ``disconnect(reason:)`` and the connection-lost path. The latter cannot
-    /// rely on a later `disconnect()` to do this: once connection loss sets
-    /// `.disconnected`, `disconnect()` hits its idempotency guard and returns
-    /// before reaching here, which is how the scheduler-output and telemetry
-    /// loops would otherwise leak (and double-run after a reconnect).
-    func cancelConnectionTasks() {
-        messageLoopTask?.cancel()
-        clockSyncTask?.cancel()
-        schedulerOutputTask?.cancel()
-        syncTelemetryTask?.cancel()
-        messageLoopTask = nil
-        clockSyncTask = nil
-        schedulerOutputTask = nil
-        syncTelemetryTask = nil
-    }
-
-    // MARK: - Outbound messages
-
-    /// Build the client/hello payload (used by both connect paths)
-    func buildClientHelloPayload() -> ClientHelloPayload {
-        var playerV1Support: PlayerSupport?
-        if roles.contains(.playerV1), let playerConfig {
-            playerV1Support = PlayerSupport(
-                supportedFormats: playerConfig.supportedFormats,
-                bufferCapacity: playerConfig.bufferCapacity,
-                supportedCommands: volumeCapabilities.playerCommands
-            )
-        }
-
-        var artworkV1Support: ArtworkSupport?
-        if roles.contains(.artworkV1), let artworkConfig {
-            artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
-        }
-
-        return ClientHelloPayload(
-            clientId: clientId,
-            name: name,
-            deviceInfo: DeviceInfo.current,
-            version: 1,
-            supportedRoles: Array(roles),
-            playerV1Support: playerV1Support,
-            artworkV1Support: artworkV1Support,
-            visualizerV1Support: roles.contains(.visualizerV1) ? VisualizerSupport() : nil
-        )
-    }
-
-    @MainActor
-    private func sendClientHello() async throws {
-        guard let transport else {
-            throw SendspinClientError.notConnected
-        }
-
-        let payload = buildClientHelloPayload()
-        try await transport.send(ClientHelloMessage(payload: payload))
-    }
-
-    // MARK: - Clock synchronization
-
-    /// Continuous clock sync task. Sends `client/time` messages on a
-    /// rapid-then-relaxed cadence: the first two samples go out 10 ms
-    /// apart so the Kalman filter establishes both offset (from sample 1)
-    /// and drift (from the `count==1 → count==2` finite-difference branch
-    /// on sample 2) within ~20 ms of the server/hello handshake. After
-    /// that, samples settle into a 1-second cadence for ongoing drift
-    /// correction.
-    ///
-    /// Matches the double-tap approach used in sendspin-rs
-    /// (`src/protocol/client.rs`). The tight initial burst shortens
-    /// time-to-`isClockSynced` from several hundred milliseconds (the
-    /// previous 5×100 ms + 200 ms-tail approach) to roughly one RTT, and
-    /// the 1 s steady-state cadence gives a tighter asymptotic
-    /// `estimatedError` than the previous 5 s interval did.
-    nonisolated func runClockSync() async {
-        guard let transport = await transport else { return }
-
-        var sampleCount: UInt32 = 0
-        while !Task.isCancelled {
-            let now = getCurrentMicroseconds()
-            let message = ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now))
-            do {
-                try await transport.send(message)
-                sampleCount = sampleCount &+ 1
-            } catch {
-                break // Connection lost
-            }
-
-            // First two samples 10 ms apart so the filter's count==1→2
-            // branch fires quickly (that branch initializes drift from the
-            // finite difference between the first two samples); then relax
-            // to a 1-second cadence.
-            let delay: Duration = sampleCount < 2
-                ? .milliseconds(10)
-                : .seconds(1)
-            try? await Task.sleep(for: delay)
-        }
-    }
-
-    // MARK: - Message loop
-
-    /// Dispatch incoming frames in wire order on a single task.
-    ///
-    /// Text and binary frames share one ordered stream so a control message can
-    /// never overtake the audio frames that preceded it (e.g. `stream/end` must
-    /// be handled only after the audio chunks the server sent before it). Audio
-    /// *output* is decoupled on ``runSchedulerOutput()``, so serial frame
-    /// dispatch here does not gate playback.
-    private nonisolated func runMessageLoop(frames: AsyncStream<TransportFrame>, generation: UInt64) async {
-        for await frame in frames {
-            switch frame {
-            case let .text(text):
-                await handleTextMessage(text)
-            case let .binary(data):
-                await handleBinaryMessage(data)
-            }
-        }
-
-        // The frame stream ended — connection was lost (not an explicit disconnect,
-        // which cancels this task before streams end naturally).
-        await handleConnectionLost(generation: generation)
-    }
-
-    /// Tear down a connection that dropped without an explicit ``disconnect(reason:)``.
-    ///
-    /// Mirrors `disconnect()`'s resource teardown — stop audio, finish the
-    /// scheduler, close and release the transport, cancel the connection tasks —
-    /// so a dropped link leaves no live AudioQueue, socket, or background loop.
-    /// It deliberately preserves the *observable* session state (metadata,
-    /// controller, group, volume, server identity) so a UI keeps showing the
-    /// last-known state through a transient drop; that state is reset at the next
-    /// connection by ``setupConnection(with:preReadHello:)``, not here.
-    ///
-    /// - Parameter generation: the connection generation this loop was started
-    ///   for. If a newer connection has since been established, this teardown is
-    ///   stale and must do nothing.
-    ///
-    /// Internal rather than private so the generation guard can be tested directly
-    /// (its failure mode — a stale teardown clobbering a live reconnect — is a race
-    /// that can't be reproduced deterministically through the public surface).
-    @MainActor
-    func handleConnectionLost(generation: UInt64) async {
-        guard await teardownLiveConnection(generation: generation) else { return }
-        settleDisconnected()
-    }
-
-    /// Idempotently tear down the live connection's resources — stop audio, finish
-    /// the scheduler, close and release the transport, cancel the background tasks —
-    /// guarding against a competing connection that replaced them while suspended.
-    ///
-    /// Returns `true` if this call performed the teardown; `false` if a newer
-    /// connection has taken over (generation bumped) or another teardown path
-    /// already settled this one. On `false` the caller must not settle
-    /// `connectionState` or emit an event.
-    ///
-    /// Shared by ``handleConnectionLost(generation:)`` and ``disconnect(reason:)`` so
-    /// concurrent teardowns (a user disconnect racing a dropped link) collapse to a
-    /// single settle and a single `.disconnected` event. The observable session
-    /// state (metadata, controller, group, volume, server identity) is intentionally
-    /// left for the caller to handle — connection-loss preserves it; explicit
-    /// disconnect resets it.
-    @MainActor
-    func teardownLiveConnection(generation: UInt64) async -> Bool {
-        guard generation == connectionGeneration, connectionState != .disconnected else { return false }
-
-        // Operate on captured locals, not `self.*`: these awaits suspend the
-        // MainActor, during which a competing connection can replace the live
-        // dependencies. Closing the locals tears down the resources this connection
-        // owned, never a replacement's. Teardown is idempotent, so re-running it on
-        // already-closed resources (a concurrent disconnect got here first) is safe.
-        let closingPlayer = audioPlayer
-        let closingScheduler = audioScheduler
-        let closingTransport = transport
-
-        await closingPlayer?.stop()
-        await closingScheduler?.finish()
-        await closingScheduler?.clear()
-        await closingTransport?.disconnect()
-
-        // Re-check before mutating shared state. There must be no `await` between
-        // here and the caller's `connectionState = .disconnected`, so two racing
-        // teardowns cannot both pass this guard and double-settle.
-        guard generation == connectionGeneration, connectionState != .disconnected else { return false }
-
-        transport = nil
-        clockSync = nil
-        audioScheduler = nil
-        audioPlayer = nil
-
-        cancelConnectionTasks()
-
-        clientOperationalState = .synchronized
-        isClockSynced = false
-        resetStreamState()
-        return true
-    }
-
-    // MARK: - Utilities
-
-    /// Send a message through the transport, wrapping any transport error in
-    /// ``SendspinClientError/sendFailed(_:)`` so consumers get a typed public error.
-    ///
-    /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
-    func sendWrapped(_ message: some Codable & Sendable) async throws {
-        guard let transport else { throw SendspinClientError.notConnected }
-        do {
-            try await transport.send(message)
-        } catch {
-            throw SendspinClientError.sendFailed(error.localizedDescription)
-        }
-    }
-
-    nonisolated func getCurrentMicroseconds() -> Int64 {
-        MonotonicClock.nowMicroseconds()
-    }
-
-    /// Estimate the current server time in microseconds.
-    ///
-    /// Uses the clock synchronization filter to convert the local monotonic clock
-    /// to the server's clock domain. Returns `nil` if clock sync has not completed
-    /// (no `server/time` responses received yet).
-    ///
-    /// Use this with ``PlaybackProgress/currentPositionMs(at:)`` to compute
-    /// the real-time interpolated playback position:
-    /// ```swift
-    /// if let serverTime = await client.currentServerTimeMicroseconds(),
-    ///    let progress = client.currentMetadata?.progress {
-    ///     let positionMs = progress.currentPositionMs(at: serverTime)
-    /// }
-    /// ```
-    @MainActor
-    public func currentServerTimeMicroseconds() async -> Int64? {
-        guard let clockSync else { return nil }
-        let localNow = MonotonicClock.absoluteMicroseconds()
-        let offset = await clockSync.currentOffset
-        guard offset != 0 else { return nil }
-        return localNow + offset
-    }
-
-    /// Snapshot of the current clock synchronization state.
-    ///
-    /// Returns `nil` if the client is not connected or clock sync has not
-    /// completed (no `server/time` responses accepted yet).
-    ///
-    /// Useful for diagnostics, telemetry dashboards, and debugging sync quality.
-    /// The returned values are a point-in-time snapshot — they may change on the
-    /// next `server/time` exchange.
-    @MainActor
-    public func currentClockSyncStats() async -> ClockSyncStats? {
-        guard let clockSync else { return nil }
-        // Single actor hop — all values are from the same point in time.
-        // `diagnosticSnapshot()` itself returns nil when the filter hasn't
-        // accepted any sample yet, which is our "no data" case.
-        guard let snap = await clockSync.diagnosticSnapshot() else { return nil }
-        return ClockSyncStats(
-            offset: snap.offset,
-            rtt: snap.rtt,
-            rawRtt: snap.rawRtt,
-            rawRttWasRejected: snap.rawRttWasRejected,
-            drift: snap.drift,
-            estimatedError: snap.estimatedError,
-            sampleCount: snap.sampleCount
-        )
     }
 
     /// Set playback volume (0–100, perceived loudness per spec).
@@ -733,17 +594,21 @@ public final class SendspinClient {
     ///
     /// - Parameter volume: Volume level (0–100). Values outside this range
     ///   are clamped.
-    /// - Throws: ``SendspinClientError/notConnected`` if the player role
-    ///   is not active (client not connected or player role not configured).
+    /// - Throws: ``SendspinClientError/notConnected`` if disconnected, or
+    ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setVolume(_ volume: Int) async throws {
-        guard let audioPlayer else { throw SendspinClientError.notConnected }
+        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard let conn = connection else { throw SendspinClientError.notConnected }
+        try await conn.requireActiveRole(.playerV1)
 
         let clamped = max(0, min(100, volume))
+        guard clamped != currentVolume else { return }
         currentVolume = clamped
-        await audioPlayer.setVolume(Float(clamped) / 100.0)
 
-        try? await sendClientState()
+        // Forward to the connection (the client/state and engine authority) best-effort;
+        // a failed send does not revert the optimistic local state.
+        try? await conn.setVolume(clamped)
     }
 
     /// Set mute state.
@@ -755,16 +620,20 @@ public final class SendspinClient {
     /// a missing player is a programmer error, while a transient send
     /// failure is recoverable (the next state update will catch up).
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if the player role
-    ///   is not active.
+    /// - Throws: ``SendspinClientError/notConnected`` if disconnected, or
+    ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setMute(_ muted: Bool) async throws {
-        guard let audioPlayer else { throw SendspinClientError.notConnected }
+        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard let conn = connection else { throw SendspinClientError.notConnected }
+        try await conn.requireActiveRole(.playerV1)
 
+        guard muted != currentMuted else { return }
         currentMuted = muted
-        await audioPlayer.setMute(muted)
 
-        try? await sendClientState()
+        // Forward to the connection (the client/state and engine authority) best-effort;
+        // a failed send does not revert the optimistic local state.
+        try? await conn.setMuted(muted)
     }
 
     /// Set static delay in milliseconds (0-5000).
@@ -774,15 +643,20 @@ public final class SendspinClient {
     /// new value. The server is notified best-effort — a failed `client/state`
     /// send does not prevent the local delay change from taking effect.
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// - Throws: ``SendspinClientError/notConnected`` if disconnected, or
+    ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
     public func setStaticDelay(_ delayMs: Int) async throws {
-        guard transport != nil else { throw SendspinClientError.notConnected }
-        let clamped = max(0, min(5_000, delayMs))
+        guard roles.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard let conn = connection else { throw SendspinClientError.notConnected }
+        try await conn.requireActiveRole(.playerV1)
+        let clamped = max(0, min(maxStaticDelayMs, delayMs))
         guard clamped != staticDelayMs else { return }
         staticDelayMs = clamped
-        eventsContinuation.yield(.staticDelayChanged(milliseconds: clamped))
-        try? await sendClientState()
+
+        // Forward to the connection (the client/state and engine authority) best-effort;
+        // a failed send does not revert the optimistic local state.
+        try? await conn.setStaticDelay(clamped)
     }
 
     // MARK: - Operational state transitions
@@ -795,11 +669,13 @@ public final class SendspinClient {
     ///
     /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
     func transitionOperationalState(to newState: ClientOperationalState) async throws {
-        guard transport != nil else { throw SendspinClientError.notConnected }
+        guard let conn = connection else { throw SendspinClientError.notConnected }
+        // Apply optimistically for the synchronous observable, then forward to the
+        // connection (the single writer of client/state). Roll back on send failure.
         let previous = clientOperationalState
         clientOperationalState = newState
         do {
-            try await sendClientState()
+            try await conn.setOperationalState(newState)
         } catch let error as SendspinClientError {
             clientOperationalState = previous
             throw error

@@ -1,6 +1,20 @@
 // ABOUTME: Configuration for player role capabilities
 // ABOUTME: Specifies buffer capacity, supported audio formats, and volume control mode
 
+/// Default required lead time in milliseconds for audio buffering.
+/// Accounts for AudioQueue setup latency and codec warmup (typically 50-100ms).
+/// This is sent to the server in client/state per spec §485.
+public let defaultRequiredLeadTimeMs: Int = 100
+
+/// Default minimum buffer size in milliseconds for smooth playback.
+/// Accounts for scheduler jitter and prebuffering (typically 200-500ms).
+/// This is sent to the server in client/state per spec §486.
+public let defaultMinBufferMs: Int = 500
+
+/// Maximum static delay in milliseconds. Server-provided and local `setStaticDelay`
+/// values are clamped to `0...maxStaticDelayMs` rather than trusted blindly.
+public let maxStaticDelayMs: Int = 5_000
+
 /// How the player handles volume and mute commands from the server.
 public enum VolumeMode: Sendable, Hashable {
     /// Software volume via AudioQueue gain (works everywhere).
@@ -52,7 +66,7 @@ public struct PlayerConfiguration: Sendable {
     /// See ``AudioProcessCallback`` for threading constraints and parameter details.
     public let processCallback: AudioProcessCallback?
 
-    /// When `true`, the client emits ``ClientEvent/rawAudioChunk(data:serverTimestamp:)``
+    /// When `true`, the client emits ``AudioChunk`` values on ``SendspinClient/audioChunks``
     /// for every audio binary message received from the server.
     ///
     /// The `data` payload contains the raw bytes exactly as received — PCM samples
@@ -62,19 +76,33 @@ public struct PlayerConfiguration: Sendable {
     /// Defaults to `false` to avoid unnecessary work in normal playback scenarios.
     public let emitRawAudioEvents: Bool
 
+    /// Required lead time in milliseconds (spec §485).
+    /// Accounts for AudioQueue setup and codec warmup latency.
+    /// Defaults to 100ms. Must be >= 0.
+    public let requiredLeadTimeMs: Int
+
+    /// Minimum buffer size in milliseconds (spec §486).
+    /// Accounts for scheduler jitter and prebuffering to avoid underruns.
+    /// Defaults to 500ms. Must be >= 0.
+    public let minBufferMs: Int
+
     public init(
         bufferCapacity: Int,
         supportedFormats: [AudioFormatSpec],
         initialStaticDelayMs: Int = 0,
         volumeMode: VolumeMode = .software,
         processCallback: AudioProcessCallback? = nil,
-        emitRawAudioEvents: Bool = false
+        emitRawAudioEvents: Bool = false,
+        requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
+        minBufferMs: Int = defaultMinBufferMs
     ) throws(ConfigurationError) {
         guard bufferCapacity > 0 else { throw .nonPositiveBufferCapacity }
         guard !supportedFormats.isEmpty else { throw .emptySupportedFormats }
-        guard initialStaticDelayMs >= 0, initialStaticDelayMs <= 5_000 else {
+        guard initialStaticDelayMs >= 0, initialStaticDelayMs <= maxStaticDelayMs else {
             throw .staticDelayOutOfRange(initialStaticDelayMs)
         }
+        guard requiredLeadTimeMs >= 0 else { throw .negativeRequiredLeadTime(requiredLeadTimeMs) }
+        guard minBufferMs >= 0 else { throw .negativeMinBuffer(minBufferMs) }
 
         self.bufferCapacity = bufferCapacity
         self.supportedFormats = supportedFormats
@@ -82,5 +110,7 @@ public struct PlayerConfiguration: Sendable {
         self.volumeMode = volumeMode
         self.processCallback = processCallback
         self.emitRawAudioEvents = emitRawAudioEvents
+        self.requiredLeadTimeMs = requiredLeadTimeMs
+        self.minBufferMs = minBufferMs
     }
 }

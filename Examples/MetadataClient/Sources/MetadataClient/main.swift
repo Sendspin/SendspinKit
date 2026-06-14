@@ -9,26 +9,16 @@ import SendspinKit
 // MARK: - URL resolution helper
 
 private func resolveServerURL(server: String?, discover: Bool, timeout: Double) async throws -> URL {
-    if let server {
-        guard let url = URL(string: server) else {
-            throw ValidationError("Invalid server URL: \(server)")
-        }
-        return url
-    }
     if discover {
         print("Discovering Sendspin servers (\(timeout)s timeout)...")
-        // Preserve fractional seconds — `.seconds(Int(timeout))` would truncate
-        // `--timeout 2.5` to 2.0. `.milliseconds` is whole-number friendly.
-        let servers = try await SendspinClient.discoverServers(
-            timeout: .milliseconds(Int(timeout * 1000))
-        )
-        guard let first = servers.first else {
-            throw ValidationError("No servers found via mDNS discovery")
-        }
-        print("Connecting to: \(first.name) at \(first.url)\n")
-        return first.url
     }
-    throw ValidationError("Provide --server <url> or --discover")
+    let url = try await SendspinClient.resolveServerURL(
+        server: server,
+        discover: discover,
+        timeout: .milliseconds(Int(timeout * 1000))
+    )
+    print("Connecting to: \(url)\n")
+    return url
 }
 
 // MARK: - Command
@@ -83,9 +73,9 @@ struct MetadataClient: AsyncParsableCommand {
         print("Connected. Waiting for events (Ctrl-C to quit).\n")
 
         // MARK: Event loop
-        // client.events is an AsyncStream<ClientEvent>. It ends when disconnect()
-        // is called (either by us in the SIGINT handler or by .disconnected below).
-        for await event in client.events {
+        // client.events() returns a fresh AsyncStream<ClientEvent> for this consumer.
+        // Break on .disconnected below; do not rely on stream termination.
+        for await event in client.events() {
             switch event {
 
             // MARK: serverConnected
@@ -156,19 +146,17 @@ struct MetadataClient: AsyncParsableCommand {
                 print("")
 
             // MARK: streamEnded
-            // Fired when the server stops the audio stream (e.g. playback stopped,
+            // Fired when the server stops one or more streams (e.g. playback stopped,
             // source exhausted). Metadata is not cleared — the last known track
             // stays in client.currentMetadata until a new track starts.
-            case .streamEnded:
-                print("--- Stream Ended ---\n")
+            case let .streamEnded(roles):
+                print("--- Stream Ended (\(roles?.joined(separator: ", ") ?? "all")) ---\n")
 
             // MARK: disconnected
             // Fired when the connection drops (network loss) or when disconnect()
             // is called explicitly (SIGINT handler above). We `return` so the
-            // function (and therefore the whole example) exits — the
-            // `client.events` stream is intentionally kept alive by
-            // SendspinClient across reconnects, so we can't rely on the stream
-            // finishing to break out of this `for await`.
+            // function (and therefore the whole example) exits instead of relying
+            // on stream termination to break out of this `for await`.
             case .disconnected(let reason):
                 switch reason {
                 case .connectionLost:
