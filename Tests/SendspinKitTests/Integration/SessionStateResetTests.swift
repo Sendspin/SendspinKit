@@ -1,6 +1,3 @@
-// ABOUTME: Verifies server-reported session state is reset at each new connection
-// ABOUTME: server/state deltas merge onto the previous value, so stale state must not bleed across a reconnect
-
 import Foundation
 @testable import SendspinKit
 import Testing

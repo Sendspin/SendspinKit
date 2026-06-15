@@ -1,6 +1,3 @@
-// ABOUTME: Tests for VersionedRole parsing, encoding, and wire format
-// ABOUTME: Validates role@version format handling for protocol negotiation
-
 import Foundation
 @testable import SendspinKit
 import Testing

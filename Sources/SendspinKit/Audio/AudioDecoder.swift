@@ -1,6 +1,3 @@
-// ABOUTME: Audio decoder for FLAC, Opus, and PCM codecs
-// ABOUTME: Converts compressed audio to PCM for playback, handles 24-bit unpacking
-
 @preconcurrency import AVFoundation
 import FLAC
 import Foundation

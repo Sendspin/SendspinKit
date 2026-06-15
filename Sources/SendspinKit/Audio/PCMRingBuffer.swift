@@ -1,6 +1,3 @@
-// ABOUTME: Lock-free-safe ring buffer for real-time audio thread PCM data
-// ABOUTME: O(1) read/write with no allocations after init — suitable for AudioQueue callbacks
-
 import Foundation
 
 /// A fixed-capacity circular buffer optimized for the audio render callback.

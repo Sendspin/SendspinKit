@@ -1,6 +1,3 @@
-// ABOUTME: Public diagnostics snapshot from the clock synchronization filter
-// ABOUTME: Exposed via SendspinClient.currentClockSyncStats() for telemetry and debugging
-
 import Foundation
 
 /// Qualitative bucket for clock sync quality, derived from ``ClockSyncStats/estimatedError``.

@@ -1,6 +1,3 @@
-// ABOUTME: Generic isolation-safe single-value box for cross-task test observation
-// ABOUTME: Replaces ad-hoc "actor with one mutable field + getter" helpers across the test target
-
 import Foundation
 
 /// A single mutable `Sendable` value isolated behind an actor.

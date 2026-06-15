@@ -1,6 +1,3 @@
-// ABOUTME: Generic ordered ingress sink with depth tracking and rate-limited watermark warnings
-// ABOUTME: Wraps an AsyncStream.Continuation with a guarded depth counter and armed flag for diagnostics
-
 import Foundation
 import os
 

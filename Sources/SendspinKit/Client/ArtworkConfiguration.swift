@@ -1,6 +1,3 @@
-// ABOUTME: Configuration for artwork role capabilities
-// ABOUTME: Specifies artwork channels the client can display (format, resolution, source)
-
 /// Configuration for the artwork role, provided when creating a ``SendspinClient``.
 ///
 /// Declares 1-4 artwork channels the client supports. Each channel can independently

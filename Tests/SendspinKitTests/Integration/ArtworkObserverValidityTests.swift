@@ -1,6 +1,3 @@
-// ABOUTME: Verifies a retired session's artwork binary cannot mutate the facade's currentArtwork
-// ABOUTME: The MainActor artwork observer must honor the session validity token like the public stream
-
 import Foundation
 @testable import SendspinKit
 import Testing

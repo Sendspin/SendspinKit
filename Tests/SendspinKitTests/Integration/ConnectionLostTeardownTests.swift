@@ -1,6 +1,3 @@
-// ABOUTME: Verifies a connection lost without an explicit disconnect tears down live resources
-// ABOUTME: while preserving observable session state, and that a superseded teardown is ignored
-
 import Foundation
 @testable import SendspinKit
 import Testing

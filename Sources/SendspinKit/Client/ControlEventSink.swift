@@ -1,6 +1,3 @@
-// ABOUTME: Control-plane specialization of WatermarkedSink carrying ConnectionEvents to the facade
-// ABOUTME: Small watermark — control traffic is sparse, so even a modest backlog means a stalled drain
-
 import Foundation
 
 /// Ordered, unbounded sink for `ConnectionEvent`s sent from the connection to the facade drain.

@@ -1,6 +1,3 @@
-// ABOUTME: Mock transport for integration testing SendspinClient
-// ABOUTME: Captures sent messages, injects server messages via continuations, simulates failures
-
 import Foundation
 @testable import SendspinKit
 

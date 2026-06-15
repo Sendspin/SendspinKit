@@ -1,6 +1,3 @@
-// ABOUTME: Timestamp-based audio chunk scheduler with sorted queue
-// ABOUTME: Converts server timestamps to local time and yields chunks when due
-
 import Foundation
 
 /// Statistics tracked by the scheduler

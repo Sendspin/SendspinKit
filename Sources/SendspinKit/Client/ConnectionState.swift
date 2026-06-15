@@ -1,6 +1,3 @@
-// ABOUTME: Represents the connection state of the Sendspin client
-// ABOUTME: Used to track connection lifecycle from disconnected to connected
-
 import Foundation
 
 /// Errors that occur during an active stream, putting the client into a degraded state.

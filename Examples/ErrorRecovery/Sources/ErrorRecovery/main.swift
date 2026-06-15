@@ -1,6 +1,3 @@
-// ABOUTME: Demonstrates robust reconnection with exponential backoff and error classification
-// ABOUTME: Shows how to handle transient vs permanent errors and retry safely
-
 import ArgumentParser
 import Dispatch
 import Foundation

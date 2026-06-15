@@ -1,6 +1,3 @@
-// ABOUTME: Clock synchronization diagnostics exposed by SendspinClient
-// ABOUTME: Provides current server-time estimates and clock filter snapshots
-
 import Foundation
 
 public extension SendspinClient {

@@ -1,6 +1,3 @@
-// ABOUTME: End-to-end integration tests for the audio pipeline
-// ABOUTME: Verifies: binary frame bytes → BinaryMessage → PCM decode → correct output
-
 import Foundation
 @testable import SendspinKit
 import Testing

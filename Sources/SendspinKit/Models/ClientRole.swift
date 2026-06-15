@@ -1,6 +1,3 @@
-// ABOUTME: Defines versioned roles for Sendspin protocol negotiation
-// ABOUTME: Roles use format "role@version" (e.g., "player@v1") for capability negotiation
-
 /// Versioned role identifier for Sendspin protocol.
 ///
 /// Format: `"role@version"` (e.g., `"player@v1"`, `"metadata@v1"`).

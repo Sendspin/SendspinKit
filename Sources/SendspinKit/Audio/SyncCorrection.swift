@@ -1,6 +1,3 @@
-// ABOUTME: Sync correction planner for drop/insert cadence
-// ABOUTME: Computes correction schedule from sync error and sample rate
-
 /// Correction schedule for drop/insert cadence
 struct CorrectionSchedule: Equatable {
     /// Insert one frame every N frames (0 = disabled)

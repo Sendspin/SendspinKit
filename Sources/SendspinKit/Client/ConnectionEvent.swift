@@ -1,6 +1,3 @@
-// ABOUTME: Control-plane events emitted by SendspinConnection to the facade
-// ABOUTME: Excludes binary data; connection projects state changes here
-
 import Foundation
 
 /// Control-plane lifecycle and state events emitted by `SendspinConnection`.

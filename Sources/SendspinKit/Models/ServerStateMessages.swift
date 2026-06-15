@@ -1,6 +1,3 @@
-// ABOUTME: Defines server-originated Sendspin state and metadata payloads
-// ABOUTME: Preserves absent-versus-null semantics for server/state deltas
-
 import Foundation
 
 // MARK: - Server State

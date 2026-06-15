@@ -1,6 +1,3 @@
-// ABOUTME: Public command methods for SendspinClient
-// ABOUTME: External source, format negotiation, artwork, and controller commands
-
 import Foundation
 
 // MARK: - External source

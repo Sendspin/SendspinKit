@@ -1,6 +1,3 @@
-// ABOUTME: Tests for the control-plane ControlEventSink specialization of WatermarkedSink
-// ABOUTME: Pins the small control watermark and its one-warning-per-excursion crossing
-
 import Foundation
 @testable import SendspinKit
 import Testing

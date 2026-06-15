@@ -1,5 +1,3 @@
-// ABOUTME: Connection-level tests via MockTransport (no @MainActor)
-// ABOUTME: Verifies connection lifecycle, routing, clock sync, teardown, and session-validity behavior
 // swiftlint:disable file_length
 
 import Foundation

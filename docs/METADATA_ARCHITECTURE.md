@@ -229,7 +229,7 @@ private func handleSessionUpdate(_ message: SessionUpdateMessage) async {
 Verify the application is consuming metadata events:
 
 ```swift
-for await event in client.events {
+for await event in client.events() {
     switch event {
     case .metadataReceived(let metadata):
         print("[APP] Got metadata: \(metadata.title)")

@@ -1,6 +1,3 @@
-// ABOUTME: Defines Sendspin clock synchronization message payloads
-// ABOUTME: Carries client and server timestamps used by ClockSyncProtocol
-
 import Foundation
 
 /// Client time message for clock sync

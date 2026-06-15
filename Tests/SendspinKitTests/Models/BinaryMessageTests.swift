@@ -1,6 +1,3 @@
-// ABOUTME: Tests for binary message decoding from WebSocket frames
-// ABOUTME: Validates type parsing, timestamp extraction, payload slicing, and rejection of invalid data
-
 import Foundation
 @testable import SendspinKit
 import Testing

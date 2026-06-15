@@ -1,6 +1,3 @@
-// ABOUTME: Represents a discovered Sendspin server from mDNS
-// ABOUTME: Contains server name, URL, and metadata from TXT records
-
 import Foundation
 
 /// A Sendspin server discovered via mDNS.

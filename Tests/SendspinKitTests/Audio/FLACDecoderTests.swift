@@ -1,6 +1,3 @@
-// ABOUTME: Unit tests for FLAC audio decoder
-// ABOUTME: Validates FLAC decoder creation across standard and hi-res formats
-
 import Foundation
 @testable import SendspinKit
 import Testing

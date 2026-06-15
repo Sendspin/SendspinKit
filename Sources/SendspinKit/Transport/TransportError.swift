@@ -1,5 +1,3 @@
-// ABOUTME: Errors that can occur during WebSocket transport
-
 import Foundation
 
 /// Errors that can occur during WebSocket transport.

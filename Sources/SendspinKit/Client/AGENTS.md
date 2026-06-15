@@ -11,7 +11,7 @@ for SwiftUI.
   state, and the public `events` stream. Owns nothing audio-related directly.
 - `SendspinConnection` (`actor`) — owns the transport, the ordered message loop, protocol-intent
   gates, clock sync, and the `AudioEngine`. **Holds no `SendspinClient` reference and imports nothing
-  `@MainActor`-isolated** (AC1.2 — proven at compile time). It is the single writer of session state.
+  `@MainActor`-isolated**. It is the single writer of session state.
 - `AudioEngine` (`actor`, in `../Audio/`) — owns decode/schedule/output/sync-telemetry and the
   seamless-format state machine. No `@MainActor` / `MainActor.run` anywhere.
 
@@ -37,7 +37,7 @@ for SwiftUI.
 - **Lifetime = owned objects, not generation counters.** The old `connectionGeneration` machinery was
   replaced by: a supervisor task (`runLoop`), run-once teardown, an identity guard, and
   `SessionValidityToken`. Reconnect builds a *new* connection+engine+token; `shutdown()` invalidates
-  the old token so its in-flight binary events are silently dropped (AC2.6).
+  the old token so its in-flight binary events are silently dropped.
 - **Lifecycle events are render-applied, async.** `.streamStarted`/`.streamFormatChanged` derive from
   engine `EngineReport`s (`.started`/`.formatApplied`), so they are NOT wire-ordered against
   `.rawAudioChunk`. "No audio before stream/start" is enforced by the `playerStreamActive` gate at

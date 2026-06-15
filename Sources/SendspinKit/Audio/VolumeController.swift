@@ -1,6 +1,3 @@
-// ABOUTME: Abstraction over software and hardware volume control
-// ABOUTME: Detects CoreAudio device capabilities and routes volume/mute commands accordingly
-
 import AudioToolbox
 import Foundation
 import os

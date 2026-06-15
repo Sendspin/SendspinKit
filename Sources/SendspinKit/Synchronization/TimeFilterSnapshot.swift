@@ -1,6 +1,3 @@
-// ABOUTME: Immutable snapshot of time filter state for audio-thread-safe time conversion
-// ABOUTME: Captures filter parameters so the audio callback can convert timestamps without actor hops
-
 /// An immutable snapshot of the clock synchronizer's state, suitable for reading
 /// from the real-time audio thread without any actor isolation or locks.
 ///

@@ -1,6 +1,3 @@
-// ABOUTME: Main orchestrator for Sendspin protocol client
-// ABOUTME: Manages WebSocket connection, message handling, clock sync, and audio playback
-
 import Foundation
 import Observation
 import os
@@ -25,10 +22,10 @@ public final class SendspinClient {
     /// Resolved volume capabilities (the concrete `VolumeControl` lives in `AudioEngine`).
     let volumeCapabilities: VolumeCapabilities
 
-    // Public-readable, privately-settable state, mutated only through the named setters
-    // below — keeping the mutation surface controlled and auditable. After the Phase 5
-    // split those setters are `private` (only the facade's event-drain applies state);
-    // `updateConnectionState` stays `internal` for the multi-server arbitration path.
+    // Public-readable, privately-settable state, mutated only through named setters.
+    // Keeping the mutation surface narrow makes the facade's event-drain path the
+    // auditable source of observable state changes. `updateConnectionState` stays
+    // internal for the multi-server arbitration path.
 
     /// Connection lifecycle state. Observe this (via `@Observable`) to update UI
     /// for connecting/connected/error/disconnected transitions.
@@ -203,10 +200,10 @@ public final class SendspinClient {
 
     // MARK: - State setters
 
-    // Named mutators for the `public private(set)` observable properties, keeping all
-    // mutation in one place. After the Phase 5 split only the facade's own event-drain
-    // applies state, so these are `private` — except `updateConnectionState`, which the
-    // multi-server arbitration path (`SendspinClient+MultiServer.swift`) also calls.
+    // Named mutators for `public private(set)` observable properties. Most are
+    // private so observable state changes flow through the facade's event-drain;
+    // `updateConnectionState` remains internal because multi-server arbitration
+    // also projects connection state.
 
     func updateConnectionState(_ state: ConnectionState) {
         connectionState = state

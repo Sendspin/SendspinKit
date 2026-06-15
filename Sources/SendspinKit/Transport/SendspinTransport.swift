@@ -1,6 +1,3 @@
-// ABOUTME: Protocol abstracting the WebSocket transport layer
-// ABOUTME: Enables both client-initiated and server-initiated connections
-
 import Foundation
 
 /// A single incoming WebSocket frame, tagged by payload kind.

@@ -1,6 +1,3 @@
-// ABOUTME: Core actor implementing the ordered message loop, gates, and supervisor
-// ABOUTME: No @MainActor reference anywhere — one-way dependency (facade → connection)
-
 import Foundation
 import os
 

@@ -1,6 +1,3 @@
-// ABOUTME: Tests for SendspinTransport.nextFrame() pull interface
-// ABOUTME: Verifies close-to-nil semantics, exactly-once frame handoff, and single-consumer behavior
-
 import Foundation
 @testable import SendspinKit
 import Testing

@@ -1,6 +1,3 @@
-// ABOUTME: Shared test helpers for encoding server messages
-// ABOUTME: Reused by integration tests to maintain consistent test server IDs and payloads
-
 import Foundation
 @testable import SendspinKit
 

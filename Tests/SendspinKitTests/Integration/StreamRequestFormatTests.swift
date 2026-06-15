@@ -1,6 +1,3 @@
-// ABOUTME: Verifies stream/request-format is emitted only while the role's stream is active
-// ABOUTME: A format request renegotiates an existing stream, so it is gated on stream/start..stream/end
-
 import Foundation
 @testable import SendspinKit
 import Testing

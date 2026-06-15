@@ -1,6 +1,3 @@
-// ABOUTME: Defines Sendspin hello messages and role support payloads
-// ABOUTME: Includes device metadata reported during client handshake
-
 import Foundation
 #if canImport(UIKit)
     import UIKit

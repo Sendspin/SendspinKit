@@ -1,6 +1,3 @@
-// ABOUTME: Defines Sendspin stream lifecycle and format request messages
-// ABOUTME: Covers stream start, end, clear, group update, and format negotiation
-
 import Foundation
 
 // MARK: - Stream Messages

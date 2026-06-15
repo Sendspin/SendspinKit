@@ -1,6 +1,3 @@
-// ABOUTME: Integration tests for binary message handling simulating real audio/artwork data
-// ABOUTME: Tests binary message creation, encoding, and decoding with realistic payloads
-
 import Foundation
 @testable import SendspinKit
 import Testing

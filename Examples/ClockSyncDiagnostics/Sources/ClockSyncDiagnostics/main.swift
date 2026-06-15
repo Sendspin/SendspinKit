@@ -1,6 +1,3 @@
-// ABOUTME: Real-time clock synchronization diagnostics dashboard
-// ABOUTME: Polls currentClockSyncStats() and renders an ANSI terminal dashboard
-
 import ArgumentParser
 import Dispatch
 import Foundation

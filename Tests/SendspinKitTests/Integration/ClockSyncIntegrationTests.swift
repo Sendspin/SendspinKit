@@ -1,6 +1,3 @@
-// ABOUTME: Integration tests for clock synchronization simulating real network conditions
-// ABOUTME: Tests multiple sync rounds with varying network jitter and clock drift
-
 import Foundation
 @testable import SendspinKit
 import Testing

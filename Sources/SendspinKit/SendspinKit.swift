@@ -1,6 +1,3 @@
-// ABOUTME: Top-level namespace and protocol constants for SendspinKit
-// ABOUTME: Defines spec-defined defaults for ports, paths, and service types
-
 import Foundation
 
 /// Marker protocol for all errors thrown by SendspinKit.

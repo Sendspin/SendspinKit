@@ -1,6 +1,3 @@
-// ABOUTME: Clock synchronization wrapping the 2D Kalman time filter
-// ABOUTME: Handles NTP four-timestamp protocol and absolute time conversion
-
 import Foundation
 
 /// Synchronizes local clock with server clock using a 2D Kalman filter.

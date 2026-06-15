@@ -1,6 +1,3 @@
-// ABOUTME: Data-plane command enum sent from client's message loop to AudioEngine
-// ABOUTME: Carries audio payloads, control directives, and format changes ordered through a single channel
-
 import Foundation
 
 /// Commands that flow from the message loop (MainActor) to the AudioEngine.

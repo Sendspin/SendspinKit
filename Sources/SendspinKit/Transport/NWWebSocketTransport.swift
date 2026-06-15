@@ -1,6 +1,3 @@
-// ABOUTME: WebSocket transport backed by Network.framework NWConnection
-// ABOUTME: Supports accepted inbound connections and outbound WebSocket dials
-
 import Foundation
 import Network
 import os

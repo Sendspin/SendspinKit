@@ -1,6 +1,3 @@
-// ABOUTME: Outbound protocol sends and client/state snapshot assembly for SendspinConnection
-// ABOUTME: Centralizes transport writes so the connection remains the single writer
-
 import Foundation
 
 extension SendspinConnection {

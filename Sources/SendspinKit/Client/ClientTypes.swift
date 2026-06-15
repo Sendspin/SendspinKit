@@ -1,6 +1,3 @@
-// ABOUTME: Public types emitted by SendspinClient via events and properties
-// ABOUTME: Includes playback state, metadata, controller state, and event definitions
-
 import Foundation
 
 /// Playback state of a Sendspin group.

@@ -1,6 +1,3 @@
-// ABOUTME: Core audio engine actor — owns decode, schedule, output, sync telemetry, and seamless format
-// ABOUTME: Off-MainActor processing of audio commands from ordered DataPlaneSink channel
-
 import Foundation
 import os
 

@@ -1,6 +1,3 @@
-// ABOUTME: Tests for ClientAdvertiser mDNS advertisement and WebSocket server
-// ABOUTME: Tests for multi-server decision logic and NWWebSocketTransport
-
 import Foundation
 import Network
 @testable import SendspinKit

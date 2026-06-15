@@ -1,6 +1,3 @@
-// ABOUTME: Defines the base protocol shared by all Sendspin JSON messages
-// ABOUTME: Concrete protocol message types live in adjacent model files
-
 import Foundation
 
 /// Base protocol for all Sendspin messages.

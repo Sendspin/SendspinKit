@@ -1,6 +1,3 @@
-// ABOUTME: Frame routing and protocol message handlers for SendspinConnection
-// ABOUTME: Owns protocol-intent gates and data-plane forwarding decisions
-
 import Foundation
 import os
 

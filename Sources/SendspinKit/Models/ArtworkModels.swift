@@ -1,6 +1,3 @@
-// ABOUTME: Wire-format data models for the artwork role in the Sendspin protocol
-// ABOUTME: Defines artwork sources, image formats, and channel configs used across artwork messages
-
 /// Artwork source type per Sendspin spec
 public enum ArtworkSource: String, Codable, Sendable, Hashable {
     /// Album artwork

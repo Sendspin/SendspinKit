@@ -1,6 +1,3 @@
-// ABOUTME: Multi-server arbitration for SendspinClient (handshake-first switching)
-// ABOUTME: Decides whether a competing server connection should displace the active one
-
 import Foundation
 
 /// Thrown internally when a competing connection's handshake does not complete

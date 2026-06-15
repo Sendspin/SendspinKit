@@ -1,6 +1,3 @@
-// ABOUTME: One-shot mDNS discovery example
-// ABOUTME: Scans the local network for Sendspin servers and prints what it finds
-
 import ArgumentParser
 import Foundation
 import SendspinKit

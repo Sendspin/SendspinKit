@@ -1,6 +1,3 @@
-// ABOUTME: Pure client/state delta computation for SendspinConnection
-// ABOUTME: Compares the last-sent snapshot to the current one and emits only changed fields
-
 import Foundation
 
 extension SendspinConnection {

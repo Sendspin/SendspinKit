@@ -1,5 +1,3 @@
-// ABOUTME: Integration tests for SendspinClient using MockTransport
-// ABOUTME: Tests message handling, error wrapping, state transitions, and wire format
 // swiftlint:disable file_length
 
 import Foundation

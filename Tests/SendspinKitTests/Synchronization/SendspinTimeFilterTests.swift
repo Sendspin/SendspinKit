@@ -1,6 +1,3 @@
-// ABOUTME: Tests for the 2D Kalman time filter
-// ABOUTME: Validates convergence, drift tracking, covariance behavior, and time conversions
-
 @testable import SendspinKit
 import Testing
 

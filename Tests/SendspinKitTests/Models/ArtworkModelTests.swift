@@ -1,6 +1,3 @@
-// ABOUTME: Tests for artwork role data models and message encoding
-// ABOUTME: Validates ArtworkChannel, ArtworkSupport, StreamStartArtwork, and stream/request-format
-
 import Foundation
 @testable import SendspinKit
 import Testing

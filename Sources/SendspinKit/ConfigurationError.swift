@@ -1,6 +1,3 @@
-// ABOUTME: Unified validation error for all public configuration types
-// ABOUTME: Thrown by throwing initializers instead of trapping with precondition
-
 import Foundation
 
 /// Validation errors for public configuration types.

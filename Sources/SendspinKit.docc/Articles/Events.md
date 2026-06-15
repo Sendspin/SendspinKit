@@ -27,7 +27,7 @@ The stream is consumed exactly once. Start iterating before connecting:
 
 ```swift
 Task {
-    for await event in client.events {
+    for await event in client.events() {
         handleEvent(event)
     }
 }

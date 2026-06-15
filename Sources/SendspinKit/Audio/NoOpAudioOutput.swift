@@ -1,6 +1,3 @@
-// ABOUTME: No-op audio output for non-player roles
-// ABOUTME: Allows AudioEngine to be created and used without a real AudioPlayer
-
 import Foundation
 
 /// No-op audio output that does nothing.

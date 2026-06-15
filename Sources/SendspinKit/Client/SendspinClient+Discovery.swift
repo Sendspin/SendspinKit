@@ -1,6 +1,3 @@
-// ABOUTME: Discovery convenience APIs for locating Sendspin servers
-// ABOUTME: Keeps mDNS browse helpers out of the core facade implementation
-
 import Foundation
 
 public extension SendspinClient {

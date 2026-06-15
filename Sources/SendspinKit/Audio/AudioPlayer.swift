@@ -1,6 +1,3 @@
-// ABOUTME: Manages AudioQueue-based audio playback with frame-level sync correction
-// ABOUTME: Applies drop/insert cadence from CorrectionPlanner to maintain clock sync
-
 import AudioToolbox
 import Foundation
 import os

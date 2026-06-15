@@ -1,6 +1,3 @@
-// ABOUTME: Bounded async event collection helpers for tests
-// ABOUTME: Prevents test hangs when expected connection events are not emitted
-
 import Foundation
 @testable import SendspinKit
 

@@ -1,6 +1,3 @@
-// ABOUTME: Single-consumer async frame queue bridging a synchronous nonisolated
-// ABOUTME: producer (e.g. an NWConnection receive callback) to an async consumer.
-
 import Foundation
 import os
 

@@ -1,6 +1,3 @@
-// ABOUTME: Tests for MonotonicClock — basic sanity checks for the process-wide clock source
-// ABOUTME: Verifies monotonicity, positivity, and epoch anchor relationship
-
 import Foundation
 @testable import SendspinKit
 import Testing

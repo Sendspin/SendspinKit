@@ -1,6 +1,3 @@
-// ABOUTME: Tests that the facade retires a session synchronously — validity token
-// ABOUTME: invalidated and connection detached before old-connection teardown is awaited.
-
 import Foundation
 @testable import SendspinKit
 import Testing

@@ -1,6 +1,3 @@
-// ABOUTME: Data-plane specialization of WatermarkedSink carrying DataPlaneCommands to the engine
-// ABOUTME: Preserves data-plane vocabulary (commands) and the 512-command watermark over the generic
-
 import Foundation
 
 /// Ordered, unbounded sink for `DataPlaneCommand`s sent from the message loop to the audio engine.

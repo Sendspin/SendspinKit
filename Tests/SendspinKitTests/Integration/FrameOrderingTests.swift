@@ -1,6 +1,3 @@
-// ABOUTME: Verifies incoming frames are dispatched in wire order
-// ABOUTME: Audio chunks and stream lifecycle messages must not reorder relative to each other
-
 import Foundation
 @testable import SendspinKit
 import Testing

@@ -1,6 +1,3 @@
-// ABOUTME: Pure decision logic for underrun-driven operational-state reporting
-// ABOUTME: Maps telemetry underrun counts to synchronized/error transitions with hysteresis
-
 /// Decides when buffer underruns should move the client between `synchronized`
 /// and `error` (per spec §Playback Synchronization).
 ///

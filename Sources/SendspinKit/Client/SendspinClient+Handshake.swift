@@ -1,6 +1,3 @@
-// ABOUTME: Handshake payload construction for SendspinClient connections
-// ABOUTME: Builds client/hello support objects from facade configuration
-
 import Foundation
 
 extension SendspinClient {

@@ -1,6 +1,3 @@
-// ABOUTME: 2D Kalman filter for clock synchronization — tracks offset and drift
-// ABOUTME: Port of the C++ reference at github.com/Sendspin-Protocol/time-filter
-
 import Foundation
 
 /// Two-dimensional Kalman filter tracking clock offset and drift rate.

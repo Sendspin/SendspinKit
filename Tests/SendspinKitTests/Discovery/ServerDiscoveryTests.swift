@@ -1,6 +1,3 @@
-// ABOUTME: Tests for ServerDiscovery lifecycle and state management
-// ABOUTME: Verifies termination semantics, idempotent stop, and TerminatedError behavior
-
 import Foundation
 @testable import SendspinKit
 import Testing

@@ -1,6 +1,3 @@
-// ABOUTME: Configuration for player role capabilities
-// ABOUTME: Specifies buffer capacity, supported audio formats, and volume control mode
-
 /// Default required lead time in milliseconds for audio buffering.
 /// Accounts for AudioQueue setup latency and codec warmup (typically 50-100ms).
 /// This is sent to the server in client/state per spec §485.

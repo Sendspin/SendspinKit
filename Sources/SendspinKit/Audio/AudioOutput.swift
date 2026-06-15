@@ -1,6 +1,3 @@
-// ABOUTME: Protocol abstracting audio output for testability
-// ABOUTME: Allows AudioEngine to work with mock or real AudioPlayer
-
 import Foundation
 
 /// Protocol for audio output, abstracting the methods that AudioEngine calls on AudioPlayer.

@@ -1,6 +1,3 @@
-// ABOUTME: Tests for AudioFormatSpec wire format and validation
-// ABOUTME: Validates CodingKeys, decode validation, and effectiveOutputBitDepth logic
-
 import Foundation
 @testable import SendspinKit
 import Testing

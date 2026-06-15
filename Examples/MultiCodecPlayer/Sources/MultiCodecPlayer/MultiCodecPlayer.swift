@@ -1,6 +1,3 @@
-// ABOUTME: Demonstrates codec format negotiation with SendspinKit
-// ABOUTME: Specifies preferred formats; server picks best match from the list
-
 import ArgumentParser
 import Foundation
 import SendspinKit

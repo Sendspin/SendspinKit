@@ -1,6 +1,3 @@
-// ABOUTME: Deterministic unit tests for SendCompletion's three-way race semantics
-// ABOUTME: Covers NW completion / timeout / cancellation interleavings without needing a live NWConnection
-
 import Foundation
 @testable import SendspinKit
 import Testing

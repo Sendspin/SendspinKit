@@ -1,6 +1,3 @@
-// ABOUTME: Display-only metadata client — no audio playback
-// ABOUTME: Connects to a Sendspin server and prints every metadata/group/stream event
-
 import ArgumentParser
 import Dispatch
 import Foundation

@@ -1,6 +1,3 @@
-// ABOUTME: Unit tests for AudioEngine in isolation
-// ABOUTME: Tests seamless format changes, command processing, and shutdown ordering
-
 import Foundation
 @testable import SendspinKit
 import Testing

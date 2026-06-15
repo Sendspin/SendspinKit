@@ -1,6 +1,3 @@
-// ABOUTME: Integration tests for full message encoding/decoding round trips
-// ABOUTME: Tests that messages can be encoded to JSON, decoded back, and maintain data integrity
-
 import Foundation
 @testable import SendspinKit
 import Testing

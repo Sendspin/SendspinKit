@@ -1,6 +1,3 @@
-// ABOUTME: Specifies an audio format with codec, sample rate, channels, and bit depth
-// ABOUTME: Used to negotiate audio format between client and server in client/hello
-
 /// Specification for an audio format per Sendspin spec.
 ///
 /// Used in the `player@v1_support.supported_formats` array of `client/hello`

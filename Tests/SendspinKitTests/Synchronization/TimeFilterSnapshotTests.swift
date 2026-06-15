@@ -1,6 +1,3 @@
-// ABOUTME: Tests for TimeFilterSnapshot — the audio-thread-safe time conversion snapshot
-// ABOUTME: Validates conversions, round-trip consistency, and parity with SendspinTimeFilter
-
 @testable import SendspinKit
 import Testing
 

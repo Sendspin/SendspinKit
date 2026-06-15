@@ -1,6 +1,3 @@
-// ABOUTME: Unit tests for Opus audio decoder
-// ABOUTME: Validates Opus frame decoding and int32 PCM output format
-
 import Foundation
 @testable import SendspinKit
 import Testing

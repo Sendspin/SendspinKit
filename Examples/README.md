@@ -51,5 +51,5 @@ Use `--help` on any example for its full option list.
 ## Requirements
 
 - macOS 14.0+
-- Swift 6.0+
+- Swift 6.2+
 - A running [Sendspin-compatible server](https://github.com/Sendspin/spec) on the local network

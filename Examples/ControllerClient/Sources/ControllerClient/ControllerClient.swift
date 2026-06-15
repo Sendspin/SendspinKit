@@ -1,6 +1,3 @@
-// ABOUTME: Interactive terminal controller for Sendspin playback
-// ABOUTME: Reads single keypresses in raw mode — no Enter required
-
 import ArgumentParser
 import Darwin
 import Foundation

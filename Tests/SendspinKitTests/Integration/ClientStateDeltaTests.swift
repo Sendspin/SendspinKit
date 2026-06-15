@@ -1,6 +1,3 @@
-// ABOUTME: Tests that client/state is sent as deltas after the initial full payload
-// ABOUTME: Covers issue #19 — only changed fields go on the wire; the server merges them
-
 import Foundation
 @testable import SendspinKit
 import Testing

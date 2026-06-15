@@ -1,6 +1,3 @@
-// ABOUTME: Main entry point for CLI player
-// ABOUTME: Handles command-line arguments and launches the player
-
 import Dispatch
 import Foundation
 import SendspinKit

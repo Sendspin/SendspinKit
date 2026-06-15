@@ -1,6 +1,3 @@
-// ABOUTME: Atomic validity guard for binary events from retired connections
-// ABOUTME: Ensures stale binary events from replaced connections are dropped
-
 import Foundation
 import os
 

@@ -1,6 +1,3 @@
-// ABOUTME: Unit tests for the pure multi-server arbitration decision function
-// ABOUTME: Exercises the full spec decision table without any I/O
-
 @testable import SendspinKit
 import Testing
 

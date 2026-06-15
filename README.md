@@ -16,7 +16,7 @@ A Swift client library for the [Sendspin Protocol](https://github.com/Sendspin/s
 ## Requirements
 
 - iOS 17.0+ / macOS 14.0+ / tvOS 17.0+ / watchOS 10.0+
-- Swift 6.0+
+- Swift 6.2+
 
 ## Installation
 
@@ -54,7 +54,7 @@ if let server = servers.first {
 }
 
 // React to events
-for await event in client.events {
+for await event in client.events() {
     switch event {
     case .streamStarted(let format):
         print("Playing \(format.codec) at \(format.sampleRate)Hz")

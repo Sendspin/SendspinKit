@@ -1,6 +1,3 @@
-// ABOUTME: Tests for FrameInbox, the single-consumer async frame queue.
-// ABOUTME: Verifies FIFO order, parked-consumer resume, finish-driven release, and post-finish drop.
-
 import Foundation
 @testable import SendspinKit
 import Testing

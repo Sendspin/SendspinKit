@@ -1,6 +1,3 @@
-// ABOUTME: Tests for CorrectionPlanner and CorrectionSchedule
-// ABOUTME: Translated from sendspin-rs/tests/sync_correction.rs and src/audio/sync_correction.rs
-
 @testable import SendspinKit
 import Testing
 

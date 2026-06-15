@@ -1,6 +1,3 @@
-// ABOUTME: Example CLI player demonstrating SendspinKit usage
-// ABOUTME: Connects to a Sendspin server and plays synchronized audio
-
 import Foundation
 import SendspinKit
 

@@ -1,6 +1,3 @@
-// ABOUTME: Tests for PCMRingBuffer — the real-time audio thread ring buffer
-// ABOUTME: Validates wrap-around, partial writes, skip, reset, and capacity behavior
-
 import Foundation
 @testable import SendspinKit
 import Testing

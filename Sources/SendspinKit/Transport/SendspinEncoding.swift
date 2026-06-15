@@ -1,6 +1,3 @@
-// ABOUTME: JSON encoding utilities for the Sendspin wire format
-// ABOUTME: Provides a configured encoder factory and the wire-type dispatch tag reader
-
 import Foundation
 
 /// Sendspin wire format encoding utilities.

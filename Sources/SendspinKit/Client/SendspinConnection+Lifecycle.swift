@@ -1,6 +1,3 @@
-// ABOUTME: Lifecycle, supervisor, and child loop implementation for SendspinConnection
-// ABOUTME: Keeps connection startup/teardown orchestration separate from message handling
-
 import Foundation
 import os
 

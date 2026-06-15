@@ -1,6 +1,3 @@
-// ABOUTME: Handles decoding of binary messages from WebSocket (audio chunks, artwork, visualizer data)
-// ABOUTME: Format: [type: uint8][timestamp: int64 big-endian][data: bytes...]
-
 import Foundation
 import os
 

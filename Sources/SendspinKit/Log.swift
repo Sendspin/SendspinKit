@@ -1,6 +1,3 @@
-// ABOUTME: Centralized os.Logger instances for SendspinKit subsystems
-// ABOUTME: Provides structured logging with subsystem/category filtering via Console.app
-
 import os
 
 /// Centralized loggers for SendspinKit subsystems.

@@ -1,6 +1,3 @@
-// ABOUTME: Process-wide monotonic clock immune to NTP slew adjustments
-// ABOUTME: Provides consistent microsecond timestamps for time sync and audio scheduling
-
 import Darwin
 
 /// A process-wide monotonic clock using `CLOCK_MONOTONIC_RAW` on Darwin.

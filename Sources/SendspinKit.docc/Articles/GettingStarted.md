@@ -80,7 +80,7 @@ for await connection in advertiser.connections {
 ``SendspinClient`` exposes an ``AsyncStream`` of ``ClientEvent`` values covering the full lifecycle:
 
 ```swift
-for await event in client.events {
+for await event in client.events() {
     switch event {
     case .serverConnected(let info):
         print("Connected to \(info.name)")

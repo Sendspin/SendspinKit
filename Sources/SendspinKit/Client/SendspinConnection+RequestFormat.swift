@@ -1,6 +1,3 @@
-// ABOUTME: Facade-initiated stream/request-format sends, validated by the connection's gates
-// ABOUTME: The protocol-intent gates here are the single authority — the facade booleans gate nothing
-
 import Foundation
 
 extension SendspinConnection {

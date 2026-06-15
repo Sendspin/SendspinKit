@@ -1,6 +1,3 @@
-// ABOUTME: Async test deadline helpers for operations that may ignore cancellation
-// ABOUTME: Avoids task-group timeouts for parked continuations released by explicit teardown
-
 import Foundation
 
 /// Error thrown when a deadline helper times out before observing an operation's result.

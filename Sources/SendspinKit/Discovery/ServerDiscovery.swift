@@ -1,6 +1,3 @@
-// ABOUTME: mDNS/Bonjour discovery for finding Sendspin servers on the local network
-// ABOUTME: Uses Network framework NWBrowser to discover _sendspin-server._tcp services
-
 import Foundation
 import Network
 import os

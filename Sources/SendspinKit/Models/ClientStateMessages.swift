@@ -1,6 +1,3 @@
-// ABOUTME: Defines client-originated Sendspin state message payloads
-// ABOUTME: Validates player state ranges before encoding client/state
-
 import Foundation
 
 // MARK: - State Messages

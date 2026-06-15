@@ -1,6 +1,3 @@
-// ABOUTME: Defines Sendspin client and server command message payloads
-// ABOUTME: Models controller commands and player command objects
-
 import Foundation
 
 // MARK: - Command Messages

@@ -1,6 +1,3 @@
-// ABOUTME: Persistence hook for the spec's multi-server "last played server" bookkeeping
-// ABOUTME: Lets the host store and restore the server_id used for arbitration tiebreaks
-
 import Foundation
 
 /// Storage hook for the spec's "last played server" bookkeeping.

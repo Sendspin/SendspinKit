@@ -1,6 +1,3 @@
-// ABOUTME: Defines Sendspin graceful disconnect message payloads
-// ABOUTME: Carries goodbye reasons used during shutdown and server switching
-
 import Foundation
 
 // MARK: - Goodbye Messages

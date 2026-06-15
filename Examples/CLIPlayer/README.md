@@ -102,7 +102,7 @@ The example demonstrates:
 
 ```swift
 // Discover servers on network
-let servers = await SendspinClient.discoverServers()
+let servers = try await SendspinClient.discoverServers(timeout: .seconds(3))
 // Returns: [DiscoveredServer(name: "Music Assistant", url: ws://..., ...)]
 
 // Create player configuration
@@ -123,7 +123,7 @@ let client = SendspinClient(
 try await client.connect(to: servers[0].url)
 
 // Monitor events
-for await event in client.events {
+for await event in client.events() {
     switch event {
     case .serverConnected(let info): ...
     case .streamStarted(let format): ...
@@ -139,7 +139,7 @@ await client.setMute(true)
 ## Requirements
 
 - macOS 14.0 or later
-- Swift 6.0 or later
+- Swift 6.2 or later
 - A running Sendspin Protocol server
 
 ## Notes
