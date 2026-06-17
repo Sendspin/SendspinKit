@@ -97,8 +97,11 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
 /// Configuration for a single artwork channel as received in stream/start.
 ///
 /// Uses `width`/`height` (not `media_width`/`media_height`) per spec.
-/// This is a server-provided type — we trust the server's values and
-/// perform no validation beyond what `Decodable` provides.
+/// This is a server-provided type: the library never reads `width`/`height`
+/// internally, so they are forwarded to the consumer verbatim with no validation
+/// beyond `Decodable`. Treat them as untrusted informational metadata — a
+/// non-conforming server could report non-positive values, and the consumer is
+/// responsible for sanity-checking before relying on them.
 public struct StreamArtworkChannelConfig: Codable, Sendable, Hashable {
     /// Artwork source type
     public let source: ArtworkSource

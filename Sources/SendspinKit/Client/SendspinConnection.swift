@@ -26,6 +26,12 @@ actor SendspinConnection {
     let artworkObserver: (@Sendable (ArtworkData) -> Void)?
     let validity: SessionValidityToken
 
+    /// Reusable decoder for inbound control frames, stored to avoid a per-message
+    /// allocation. Safe as actor-isolated state: `route(text:)` is the sole,
+    /// serialized user. Plain config — message types map snake_case via explicit
+    /// `CodingKeys`, so no key-decoding strategy is needed.
+    let inboundDecoder = JSONDecoder()
+
     /// Outbound control-plane sink. Depth-tracked: the facade drain calls
     /// `decrementDepth()` per consumed event (immutable Sendable, cross-actor safe).
     nonisolated let controlSink = ControlEventSink()

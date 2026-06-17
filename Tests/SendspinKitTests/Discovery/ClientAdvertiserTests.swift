@@ -68,6 +68,17 @@ struct ClientAdvertiserTests {
         let isTerminated = await advertiser.isTerminated
         #expect(!isTerminated, "A new advertiser should not be terminated")
     }
+
+    @Test
+    func startThrowsForNonAbsolutePath() async {
+        // The advertised path is our own config; a non-absolute value would
+        // malform the URL servers build, so start() fails loud rather than
+        // publishing an unusable advertisement.
+        let advertiser = ClientAdvertiser(name: "Test", port: 18_934, path: "sendspin")
+        await #expect(throws: ConfigurationError.invalidWebSocketPath("sendspin")) {
+            try await advertiser.start()
+        }
+    }
 }
 
 struct MultiServerDecisionTests {

@@ -22,19 +22,20 @@ class PCMDecoder: AudioDecoder {
     }
 
     func decode(_ data: Data) throws -> Data {
+        // Empty payload is a no-op for every PCM width — bail before any per-format
+        // work. The 24-bit path in particular must not reach withUnsafeBytes, whose
+        // baseAddress may be nil for empty Data. Stating the empty→empty invariant
+        // once here keeps it uniform: 16/32-bit are passthrough (inherently
+        // empty-safe), and 24-bit is the only transforming path that could trip on it.
+        guard !data.isEmpty else { return Data() }
+
         switch bitDepth {
-        case 16:
-            // 16-bit PCM - pass through (already correct format)
+        case 16, 32:
+            // Pass through — already in an AudioQueue-ready layout.
             return data
-
         case 24:
-            // 24-bit PCM - unpack 3-byte samples to 4-byte Int32
+            // Unpack 3-byte samples to 4-byte Int32.
             return try decode24Bit(data)
-
-        case 32:
-            // 32-bit PCM - pass through
-            return data
-
         default:
             throw AudioDecoderError.unsupportedBitDepth(bitDepth)
         }
@@ -53,12 +54,15 @@ class PCMDecoder: AudioDecoder {
         }
 
         let sampleCount = data.count / bytesPerSample
-
         outputBuffer.removeAll(keepingCapacity: true)
         outputBuffer.reserveCapacity(sampleCount)
 
         return data.withUnsafeBytes { src in
-            let base = src.baseAddress!.assumingMemoryBound(to: UInt8.self)
+            // `decode(_:)` guarantees non-empty input, but baseAddress is documented
+            // as possibly-nil for a zero-count buffer; guard rather than force-unwrap.
+            guard let base = src.baseAddress?.assumingMemoryBound(to: UInt8.self) else {
+                return Data()
+            }
 
             for i in 0 ..< sampleCount {
                 let off = i * bytesPerSample
@@ -237,6 +241,11 @@ class FLACDecoder: AudioDecoder {
 
         guard initStatus == FLAC__STREAM_DECODER_INIT_STATUS_OK else {
             FLAC__stream_decoder_delete(flacDecoder)
+            // Clear the stored pointer before throwing. `deinit` still runs when a
+            // throwing initializer fails after all stored properties are set, and
+            // would otherwise finish/delete this already-deleted decoder — a double
+            // free / use-after-free.
+            decoder = nil
             throw AudioDecoderError.formatCreationFailed("FLAC decoder init failed: \(initStatus)")
         }
 
@@ -276,8 +285,16 @@ class FLACDecoder: AudioDecoder {
                 throw AudioDecoderError.conversionFailed("FLAC frame processing failed: state=\(state)")
             }
 
-            // Check if we've hit end of stream or processed all available data
+            // The read callback hit end-of-stream: libFLAC drained the buffered
+            // bytes in the middle of a frame. END_OF_STREAM is terminal — until
+            // the decoder is flushed it ignores the read callback entirely (per
+            // the libFLAC docs), so without this flush every later decode() would
+            // return empty: permanent silence. A compliant server sends one whole
+            // frame per binary message and never reaches here; flushing lets us
+            // recover if a server fragments a frame, by dropping the straddling
+            // frame and resyncing on the next frame sync.
             if state == FLAC__STREAM_DECODER_END_OF_STREAM {
+                FLAC__stream_decoder_flush(decoder)
                 break
             }
 

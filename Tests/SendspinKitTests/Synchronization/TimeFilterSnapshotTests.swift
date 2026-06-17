@@ -232,4 +232,46 @@ struct TimeFilterSnapshotTests {
             )
         }
     }
+
+    // MARK: - Crash-safety on a diverged snapshot
+
+    /// A snapshot carrying a non-finite state, as a diverged filter could produce.
+    /// The conversions must fall back to an uncorrected value, never trap in the
+    /// `Int64(_:)` conversion — these run on the audio thread, so a trap would
+    /// crash the host app.
+    static let nonFiniteSnapshot = TimeFilterSnapshot(
+        offset: .nan,
+        drift: .nan,
+        lastUpdate: 500_000,
+        useDrift: true,
+        clientProcessStartAbsolute: 1_000_000
+    )
+
+    @Test
+    func serverTimeToLocal_fallsBackInsteadOfTrappingOnNonFiniteState() {
+        // Fallback is the uncorrected server time plus the anchor (offset dropped).
+        let result = Self.nonFiniteSnapshot.serverTimeToLocal(510_000)
+        #expect(result == 1_510_000)
+    }
+
+    @Test
+    func localTimeToServer_fallsBackInsteadOfTrappingOnNonFiniteState() {
+        // Fallback is the anchor-removed client-relative time (offset dropped).
+        let result = Self.nonFiniteSnapshot.localTimeToServer(1_505_000)
+        #expect(result == 505_000)
+    }
+
+    @Test
+    func serverTimeToLocal_fallsBackWhenDriftZerosTheDenominator() {
+        // drift = -1.0 makes (1.0 + drift) == 0; the division produces a non-finite
+        // result that must not reach the Int64 conversion.
+        let snapshot = TimeFilterSnapshot(
+            offset: 5_000.0,
+            drift: -1.0,
+            lastUpdate: 500_000,
+            useDrift: true,
+            clientProcessStartAbsolute: 1_000_000
+        )
+        #expect(snapshot.serverTimeToLocal(510_000) == 1_510_000)
+    }
 }

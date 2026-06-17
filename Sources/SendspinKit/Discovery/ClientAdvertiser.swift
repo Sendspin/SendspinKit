@@ -73,6 +73,10 @@ public actor ClientAdvertiser {
     public func start() throws {
         guard listener == nil else { return }
         guard connectionsContinuation != nil else { throw TerminatedError() }
+        // Servers concatenate this path onto the dial URL; a non-absolute value
+        // would malform it (or be parsed as authority). This is our own config,
+        // so fail loud rather than silently sanitize.
+        guard path.hasPrefix("/") else { throw ConfigurationError.invalidWebSocketPath(path) }
 
         // Configure WebSocket protocol options on top of TCP.
         let wsOptions = NWProtocolWebSocket.Options()

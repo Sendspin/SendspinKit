@@ -247,10 +247,16 @@ actor AudioPlayer {
         )
 
         let computedFrameSize = format.channels * bytesPerSample
-        assert(
-            computedFrameSize <= maxFrameBytes,
-            "Frame size \(computedFrameSize) exceeds lastFrameStorage capacity \(maxFrameBytes)"
-        )
+        guard computedFrameSize <= maxFrameBytes else {
+            // Release builds strip `assert`, yet the render callback later memcpys
+            // into the fixed-size `lastFrameStorage` trusting this bound. Enforce it
+            // unconditionally and tear down the queue we just built.
+            AudioQueueDispose(queue, true)
+            audioQueue = nil
+            currentFormat = nil
+            decoder = nil
+            throw AudioPlayerError.frameSizeExceedsCapacity(computed: computedFrameSize, maximum: maxFrameBytes)
+        }
 
         lockedState.withLock { state in
             state.frameSize = computedFrameSize
@@ -287,9 +293,18 @@ actor AudioPlayer {
         let bufferSize: UInt32 = 16_384
         for _ in 0 ..< 3 {
             var buffer: AudioQueueBufferRef?
-            if AudioQueueAllocateBuffer(queue, bufferSize, &buffer) == noErr, let buffer {
-                fillBuffer(queue: queue, buffer: buffer)
+            let allocStatus = AudioQueueAllocateBuffer(queue, bufferSize, &buffer)
+            guard allocStatus == noErr, let buffer else {
+                // A queue primed with fewer buffers than expected starts but
+                // produces silence with no error surfaced. Tear down the
+                // partially-built queue and fail loudly, like the start path below.
+                AudioQueueDispose(queue, true)
+                audioQueue = nil
+                currentFormat = nil
+                decoder = nil
+                throw AudioPlayerError.queueAllocationFailed(allocStatus)
             }
+            fillBuffer(queue: queue, buffer: buffer)
         }
 
         let startStatus = AudioQueueStart(queue, nil)
@@ -623,6 +638,7 @@ private let audioQueueCallback: AudioQueueOutputCallback = { userData, queue, bu
 enum AudioPlayerError: Error, LocalizedError {
     case queueAllocationFailed(OSStatus)
     case queueStartFailed(OSStatus)
+    case frameSizeExceedsCapacity(computed: Int, maximum: Int)
     case notStarted
 
     var errorDescription: String? {
@@ -631,6 +647,8 @@ enum AudioPlayerError: Error, LocalizedError {
             "AudioQueue allocation failed (OSStatus \(status))"
         case let .queueStartFailed(status):
             "AudioQueue start failed (OSStatus \(status))"
+        case let .frameSizeExceedsCapacity(computed, maximum):
+            "Audio frame size \(computed) bytes exceeds capacity \(maximum) bytes"
         case .notStarted:
             "Audio player not started"
         }

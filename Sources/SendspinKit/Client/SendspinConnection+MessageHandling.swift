@@ -15,7 +15,7 @@ extension SendspinConnection {
 
         Log.client.debug("RX \(msgType)")
 
-        let decoder = JSONDecoder()
+        let decoder = inboundDecoder
         do {
             switch msgType {
             case "server/hello":
@@ -230,10 +230,20 @@ extension SendspinConnection {
             return
         }
 
-        // Parse codec header
+        // Parse codec header. A present-but-malformed (non-base64) header is a
+        // corrupt stream/start, not an absent header: surface it as a format error
+        // rather than starting headerless (which, for FLAC, fails every decode
+        // silently and produces permanent silence with no error reported).
         var codecHeader: Data?
         if let headerBase64 = playerInfo.codecHeader {
-            codecHeader = Data(base64Encoded: headerBase64)
+            guard let decoded = Data(base64Encoded: headerBase64) else {
+                clientOperationalState = .error
+                controlSink.enqueue(.streamError(.invalidFormat("codec_header is not valid base64")))
+                controlSink.enqueue(.operationalState(.error))
+                try? await sendClientStateIfChanged()
+                return
+            }
+            codecHeader = decoded
         }
 
         // Seamless change detection on format OR codec header: a gapless track
@@ -300,9 +310,12 @@ extension SendspinConnection {
         switch playerCmd.command {
         case .volume:
             if let volume = playerCmd.volume {
-                currentVolume = volume
-                await audioEngine.setGain(Float(volume) / 100.0)
-                controlSink.enqueue(.playerVolumeChanged(volume))
+                // Clamp to the spec's 0–100 range rather than trusting the server,
+                // matching set_static_delay below and the local setVolume API.
+                let clamped = max(0, min(100, volume))
+                currentVolume = clamped
+                await audioEngine.setGain(Float(clamped) / 100.0)
+                controlSink.enqueue(.playerVolumeChanged(clamped))
                 try? await sendClientStateIfChanged()
             }
 

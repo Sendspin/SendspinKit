@@ -113,6 +113,18 @@ struct AudioPlayerTests {
         ])
     }
 
+    @Test
+    func pcmDecoderReturnsEmptyForEmptyInputAtEveryWidth() throws {
+        // The empty→empty invariant is uniform across PCM widths. The 24-bit case is
+        // load-bearing: without the front-door guard it would trap in withUnsafeBytes
+        // (baseAddress is nil for empty Data).
+        for bitDepth in [16, 24, 32] {
+            let decoder = PCMDecoder(bitDepth: bitDepth, channels: 1)
+            let decoded = try decoder.decode(Data())
+            #expect(decoded.isEmpty, "bitDepth \(bitDepth): empty input must decode to empty output")
+        }
+    }
+
     // MARK: - Perceptual volume
 
     @Test

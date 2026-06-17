@@ -50,6 +50,11 @@ public enum ConfigurationError: SendspinError, Hashable {
     /// Carries the offending wire command strings.
     case invalidStateCommands([String])
 
+    // MARK: - ClientAdvertiser
+
+    /// The advertised WebSocket path must be absolute (begin with "/").
+    case invalidWebSocketPath(String)
+
     // MARK: - SendspinClient
 
     /// Player role was requested but no ``PlayerConfiguration`` was provided.
@@ -91,6 +96,8 @@ extension ConfigurationError: LocalizedError {
             "Volume must be 0–100, got \(v)"
         case let .invalidStateCommands(v):
             "client/state supported_commands may only contain set_static_delay, got \(v)"
+        case let .invalidWebSocketPath(v):
+            "WebSocket path must be absolute (begin with \"/\"), got \"\(v)\""
         case .playerRoleRequiresConfiguration:
             "Player role requires a PlayerConfiguration"
         case .artworkRoleRequiresConfiguration:

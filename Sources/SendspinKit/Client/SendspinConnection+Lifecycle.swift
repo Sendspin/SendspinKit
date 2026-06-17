@@ -40,7 +40,6 @@ extension SendspinConnection {
             // Stamp arrival time immediately after nextFrame() returns.
             let clientReceived = MonotonicClock.nowMicroseconds()
 
-            // Route based on frame type
             switch frame {
             case let .text(json):
                 await route(text: json, clientReceived: clientReceived)

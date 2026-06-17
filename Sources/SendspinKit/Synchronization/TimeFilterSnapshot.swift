@@ -6,9 +6,9 @@
 /// precision. A non-nil snapshot is always valid — the type system enforces this.
 ///
 /// Cheap to copy (5 scalars) and can be stored under any lock the audio thread
-/// already holds. `Sendable` conformance is compiler-synthesized (all stored
-/// properties are `Sendable` value types) — this is the essential contract of
-/// the type, as it exists to cross actor boundaries safely.
+/// already holds. Its `Sendable` conformance is synthesized (all stored
+/// properties are `Sendable` value types) — crossing actor boundaries safely is
+/// the essential contract of the type, since it exists to be read off-actor.
 struct TimeFilterSnapshot: Equatable {
     /// Kalman filter offset estimate (μs): server_time ≈ client_time + offset
     let offset: Double
@@ -29,7 +29,12 @@ struct TimeFilterSnapshot: Equatable {
         let effectiveDrift = useDrift ? drift : 0.0
         let numerator = Double(serverTime) - offset + effectiveDrift * Double(lastUpdate)
         let denominator = 1.0 + effectiveDrift
-        let clientRelative = Int64((numerator / denominator).rounded())
+        // Crash-safety (runs on the audio thread): a non-finite/out-of-range result
+        // would trap in the Int64 conversion. Fall back to the uncorrected timestamp
+        // rather than crash.
+        guard let clientRelative = Int64(exactly: (numerator / denominator).rounded()) else {
+            return clientProcessStartAbsolute + serverTime
+        }
         return clientProcessStartAbsolute + clientRelative
     }
 
@@ -41,6 +46,9 @@ struct TimeFilterSnapshot: Equatable {
         let clientRelative = localTime - clientProcessStartAbsolute
         let effectiveDrift = useDrift ? drift : 0.0
         let currentOffset = offset + effectiveDrift * Double(clientRelative - lastUpdate)
-        return clientRelative + Int64(currentOffset.rounded())
+        // Crash-safety: fall back to the uncorrected client-relative time rather than
+        // trap in the Int64 conversion if the snapshot carries a diverged offset/drift.
+        guard let roundedOffset = Int64(exactly: currentOffset.rounded()) else { return clientRelative }
+        return clientRelative + roundedOffset
     }
 }

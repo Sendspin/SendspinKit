@@ -256,6 +256,21 @@ public actor ServerDiscovery {
         return address
     }
 
+    /// Resolve a server-advertised TXT `path` into a usable WebSocket path.
+    ///
+    /// Only an absolute path (begins with "/") is accepted; any other value
+    /// (including `nil`) falls back to the spec default. This tolerates a
+    /// misconfigured server and, importantly, prevents a non-absolute value from
+    /// being parsed as URL authority — e.g. a path of `"@evil.host/"` would
+    /// otherwise turn `ws://host:port@evil.host/` into a dial to a *different*
+    /// host. A leading "/" terminates the authority, closing that vector.
+    static func resolvedWebSocketPath(_ advertised: String?) -> String {
+        guard let advertised, advertised.hasPrefix("/") else {
+            return SendspinDefaults.webSocketPath
+        }
+        return advertised
+    }
+
     /// Choose the user-facing display name from TXT metadata when supplied.
     static func displayName(serviceName: String, metadata: [String: String]) -> String {
         guard let txtName = metadata["name"], !txtName.isEmpty else {
@@ -290,14 +305,14 @@ public actor ServerDiscovery {
             port = portValue.rawValue
         }
 
-        // Extract TXT record metadata
         var metadata: [String: String] = [:]
         var path = SendspinDefaults.webSocketPath
 
         if case let .bonjour(txtRecord) = result.metadata {
             metadata = txtRecord.dictionary
-            if let customPath = metadata["path"] {
-                path = customPath
+            path = Self.resolvedWebSocketPath(metadata["path"])
+            if let advertised = metadata["path"], advertised != path {
+                Log.discovery.notice("Ignoring non-absolute TXT path; using default WebSocket path")
             }
         }
 

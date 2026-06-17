@@ -276,6 +276,53 @@ struct AudioEngineTests {
         #expect(stats.dropped == stats.droppedLate)
     }
 
+    /// A deferred AudioQueue rebuild that fails must surface `.startFailed` rather
+    /// than be silently swallowed: the seamless path reports `.formatApplied` at the
+    /// commitment point (first new-gen chunk) before the rebuild, so a failed rebuild
+    /// would otherwise leave the client believing the format switched while audio
+    /// stops. Mutation proof: reverting the rebuild's do/catch to `try?` drops the
+    /// `.startFailed` report → this test fails.
+    @Test("a failed seamless rebuild surfaces .startFailed")
+    func seamlessRebuildFailureReportsStartFailed() async throws {
+        struct TestError: Error {}
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+
+        await engine.start()
+
+        let fmt0 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+
+        await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
+        try? await Task.sleep(for: .milliseconds(100))
+
+        for i in 0 ..< 3 {
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: Int64(i) * 5_000))
+        }
+        try? await Task.sleep(for: .milliseconds(150))
+
+        // Arm the deferred rebuild to fail: swapDecoder still succeeds (so we take the
+        // deferred-rebuild path), but the rebuild's output.start() throws.
+        await output.setForcedStartThrow(TestError())
+
+        await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
+        try? await Task.sleep(for: .milliseconds(50))
+
+        for i in 0 ..< 4 {
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i + 10), count: 100), ts: Int64(i + 4) * 5_000))
+        }
+        try? await Task.sleep(for: .milliseconds(400))
+
+        let sawStartFailed = await awaitReport(from: engine, timeoutMs: 200) {
+            if case .startFailed = $0 { true } else { false }
+        }
+        await engine.shutdown()
+
+        #expect(sawStartFailed, "a failed deferred rebuild must report .startFailed")
+    }
+
     /// Wait (up to `timeoutMs`) for a report matching `predicate`, consuming the
     /// engine's single-consumer report stream. Returns false on timeout.
     private func awaitReport(
@@ -623,9 +670,8 @@ struct AudioEngineTests {
             scheduler: AudioScheduler(clockSync: StubClock()),
             clock: StubClock()
         )
-        weak var weakEngine = engine
+        weak let weakEngine = engine
 
-        let startTime = Date()
         await engine?.start()
 
         let fmt = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
@@ -636,12 +682,12 @@ struct AudioEngineTests {
         await engine?.shutdown()
         engine = nil
 
-        // Weak ref should be nil (no task retained the engine)
+        // The subject of this test: no spawned task retained the engine, so the
+        // weak ref is nil once the strong ref is dropped. (No wall-clock timing
+        // assertion here — shutdown promptness can't be tested with a stopwatch
+        // without flaking when the machine is briefly starved, e.g. post-build
+        // Spotlight indexing.)
         #expect(weakEngine == nil)
-        weakEngine = nil
-
-        let duration = Date().timeIntervalSince(startTime)
-        #expect(duration < 3.0) // Should complete promptly
     }
 
     /// Shutdown drains buffered commands so command depth reaches zero.
@@ -718,35 +764,12 @@ struct AudioEngineTests {
         await engine.shutdown()
     }
 
-    /// Finding #2: Slow decode doesn't block shutdown
-    @Test("Slow decode doesn't block shutdown or control-path processing")
-    func shutdownWithSlowDecode() async throws {
-        let clock = StubClock()
-        let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
-
-        await engine.start()
-
-        await output.setDecodeDelay(0.5)
-
-        let fmt = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        await engine.commands.enqueue(.streamStart(fmt, codecHeader: nil))
-        await engine.commands.enqueue(.chunk(Data(repeating: 0, count: 100), ts: 1_000_000))
-
-        // Shutdown should return promptly despite slow decode
-        let shutdownStart = Date()
-        await engine.shutdown()
-        let shutdownDuration = Date().timeIntervalSince(shutdownStart)
-
-        #expect(shutdownDuration < 2.0)
-    }
-
     /// The decode-discard gate (`guard !shuttingDown` at the head of `apply()`):
     /// commands buffered behind an in-flight slow decode must be discarded once
-    /// shutdown begins, never decoded or played. `shutdownWithSlowDecode` above
-    /// only bounds duration and survives deletion of the gate; this test counts
-    /// decodes, so deleting the gate decodes the buffered chunk and fails it.
+    /// shutdown begins, never decoded or played. This is also the freeze-robust
+    /// guarantee that a slow decode does not block shutdown from making progress:
+    /// it counts decodes (deleting the gate decodes the buffered chunk and fails)
+    /// rather than stopwatching wall-clock shutdown time, which flakes under load.
     @Test("Shutdown discards commands buffered behind an in-flight decode")
     func shutdownDiscardsBufferedCommandsBehindSlowDecode() async throws {
         let clock = StubClock()

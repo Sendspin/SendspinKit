@@ -46,9 +46,10 @@ struct StreamStartArtwork: Codable, Equatable {
     let channels: [StreamArtworkChannelConfig]
 }
 
+/// Empty `stream/start` visualizer block. The visualizer role is not yet
+/// implemented; this exists so a server `stream/start` carrying a visualizer
+/// block decodes (and re-encodes) without error rather than failing the message.
 struct StreamStartVisualizer: Codable, Equatable {
-    // IMPLEMENTATION_NOTE: Implement when visualizer role is added
-
     init() {}
 
     // Explicit Codable implementation for empty struct

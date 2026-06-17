@@ -158,6 +158,29 @@ struct ServerDiscoveryTests {
         #expect(ServerDiscovery.stripInterfaceScope("") == "")
     }
 
+    // MARK: - Resolved WebSocket path (TXT record)
+
+    @Test
+    func resolvedWebSocketPath_acceptsAbsolutePaths() {
+        #expect(ServerDiscovery.resolvedWebSocketPath("/sendspin") == "/sendspin")
+        #expect(ServerDiscovery.resolvedWebSocketPath("/custom/ws") == "/custom/ws")
+    }
+
+    @Test
+    func resolvedWebSocketPath_fallsBackForNilOrEmpty() {
+        #expect(ServerDiscovery.resolvedWebSocketPath(nil) == SendspinDefaults.webSocketPath)
+        #expect(ServerDiscovery.resolvedWebSocketPath("") == SendspinDefaults.webSocketPath)
+    }
+
+    @Test
+    func resolvedWebSocketPath_rejectsNonAbsolutePaths() {
+        // Missing leading slash: malformed when concatenated onto host:port.
+        #expect(ServerDiscovery.resolvedWebSocketPath("sendspin") == SendspinDefaults.webSocketPath)
+        // Authority-injection attempt: "@host/" would otherwise redirect the dial
+        // to a different host. Rejecting non-absolute paths closes that vector.
+        #expect(ServerDiscovery.resolvedWebSocketPath("@evil.host/") == SendspinDefaults.webSocketPath)
+    }
+
     // MARK: - TerminatedError
 
     @Test

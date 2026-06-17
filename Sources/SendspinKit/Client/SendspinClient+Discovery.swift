@@ -69,28 +69,23 @@ public extension SendspinClient {
     nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
         let discovery = try await discoverServers()
 
-        return await withTaskGroup(of: [DiscoveredServer].self) { group in
-            var latestServers: [DiscoveredServer] = []
-
-            group.addTask {
-                var collected: [DiscoveredServer] = []
-                for await discoveredServers in discovery.servers {
-                    collected = discoveredServers
-                }
-                return collected
-            }
-
+        return await withTaskGroup(of: Void.self) { group in
+            // Stop browsing after the timeout, which finishes the `servers` stream
+            // and ends the drain loop below. On caller cancellation the group
+            // propagates to this child (sleep cancels → stopDiscovery fires).
             group.addTask {
                 try? await Task.sleep(for: timeout)
                 await discovery.stopDiscovery()
-                return []
             }
 
-            for await result in group where !result.isEmpty {
-                latestServers = result
+            // The stream yields a fresh full list on every change; keep the latest.
+            var latest: [DiscoveredServer] = []
+            for await servers in discovery.servers {
+                latest = servers
             }
 
-            return latestServers
+            group.cancelAll()
+            return latest
         }
     }
 }

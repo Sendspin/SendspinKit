@@ -57,7 +57,6 @@ final class WatermarkedSink<Element: Sendable>: Sendable {
         // non-reentrant unfair lock. Mirrors `FrameInbox`, which resumes its
         // continuation outside the critical section.
         let warning: String? = lock.withLock { state in
-            // If finished, don't accept more elements
             guard !state.finished else { return nil }
 
             // Yield the element and inspect the result while holding the lock.

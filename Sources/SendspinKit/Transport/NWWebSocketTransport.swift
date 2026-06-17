@@ -247,6 +247,17 @@ actor NWWebSocketTransport: SendspinTransport {
                 return
             }
 
+            // End-of-stream: no content, no protocol metadata, and no error.
+            // NWConnection can deliver this when the peer ends the read side without
+            // a WebSocket close frame (and the connection may stay `.ready`, so the
+            // state handler won't fire). A real frame always carries protocol
+            // metadata, so this never misfires on legitimate data/control frames.
+            // Re-arming here would spin and leave parked nextFrame() callers hung.
+            if content == nil, context == nil {
+                Task { await self.handleReceiveEnd() }
+                return
+            }
+
             // Extract WebSocket metadata to determine frame type
             if let metadata = context?.protocolMetadata(definition: NWProtocolWebSocket.definition)
                 as? NWProtocolWebSocket.Metadata {
@@ -301,8 +312,9 @@ actor NWWebSocketTransport: SendspinTransport {
             // .waiting means NW will retry indefinitely until conditions change
             // (refused, unreachable, no route). A pending dial must not hang on
             // that — fail it promptly; retry policy belongs to the caller.
-            // Without a pending dial (post-ready .waiting), leave the connection
-            // to NWConnection's own recovery, matching previous behavior.
+            // Without a pending dial (post-ready .waiting), leave recovery to
+            // NWConnection: a transient waiting state after ready is recoverable
+            // and must not tear down an established session.
             guard connectionContinuation != nil else { break }
             Log.transport.error("Dial failed, connection stuck waiting: \(error)")
             let continuation = connectionContinuation
@@ -325,6 +337,14 @@ actor NWWebSocketTransport: SendspinTransport {
         if !closeReceived {
             Log.transport.error("Receive error: \(error)")
         }
+        finishStreams()
+    }
+
+    /// Called when the receive loop sees end-of-stream (a completion with no
+    /// content, no metadata, and no error). Unlike `handleReceiveError`, there is
+    /// no error to log — this is an orderly read-side EOF. Finishing unblocks any
+    /// parked `nextFrame()` callers; the loop is not re-armed.
+    private func handleReceiveEnd() {
         finishStreams()
     }
 

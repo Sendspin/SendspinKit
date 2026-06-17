@@ -413,4 +413,26 @@ struct SendspinTimeFilterTests {
         let errorAfterFifty = try #require(filter.estimatedError)
         #expect(errorAfterFifty < errorAfterOne)
     }
+
+    // MARK: - Crash-safety on a diverged filter
+
+    @Test
+    func timeConversionsFallBackInsteadOfTrappingWhenFilterDiverges() {
+        // `maxErrorScale: 0` makes the measurement variance zero, which drives the
+        // Kalman gain to NaN within a few samples. This is a degenerate config the
+        // library never ships (the synchronizer always uses defaults) — used here
+        // only to force the diverged state the conversion guards defend against.
+        var filter = SendspinTimeFilter(maxErrorScale: 0)
+        for i in 0 ..< 5 {
+            filter.update(timeAdded: Int64((i + 1) * 100_000), measurement: 1_000.0 + Double(i) * 10.0, maxError: 25.0)
+        }
+
+        // Precondition for this test's validity: the filter actually diverged.
+        #expect(!filter.offset.isFinite || !filter.drift.isFinite)
+
+        // The conversions must return the uncorrected timestamp, never trap in the
+        // Int64 conversion (which would crash the host app).
+        #expect(filter.computeServerTime(1_000_000) == 1_000_000)
+        #expect(filter.computeClientTime(2_000_000) == 2_000_000)
+    }
 }

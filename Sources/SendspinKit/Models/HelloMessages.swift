@@ -120,9 +120,10 @@ struct ArtworkSupport: Codable, Equatable {
     let channels: [ArtworkChannel]
 }
 
+/// Empty `supported.visualizer` block. The visualizer role is not yet
+/// implemented; this exists so a server payload advertising visualizer support
+/// decodes (and re-encodes) without error rather than failing the whole message.
 struct VisualizerSupport: Codable, Equatable {
-    // IMPLEMENTATION_NOTE: Implement when visualizer role is added
-
     init() {}
 
     // Explicit Codable implementation for empty struct

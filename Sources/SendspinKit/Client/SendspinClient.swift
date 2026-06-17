@@ -341,7 +341,7 @@ public final class SendspinClient {
             audioEngine = AudioEngine(output: noOpOutput, scheduler: audioScheduler, clock: clockSync)
         }
 
-        // A player always advertises set_static_delay (spec §); volume/mute depend on
+        // A player always advertises set_static_delay; volume/mute depend on
         // the resolved VolumeMode capabilities. Non-player roles advertise nothing.
         let advertisedCommands: Set<PlayerCommand> = roleSet.contains(.playerV1)
             ? Set(volumeCapabilities.playerCommands).union([.setStaticDelay])

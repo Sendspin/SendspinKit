@@ -224,7 +224,11 @@ struct SendspinTimeFilter {
     func computeServerTime(_ clientTime: Int64) -> Int64 {
         let effectiveDrift = useDrift ? drift : 0.0
         let currentOffset = offset + effectiveDrift * Double(clientTime - lastUpdate)
-        return clientTime + Int64(currentOffset.rounded())
+        // Crash-safety: `Int64(_:)` traps on a non-finite or out-of-range Double, so a
+        // diverged filter would crash the host app here. Fall back to the uncorrected
+        // timestamp instead. Unreachable with the shipped config; defends future changes.
+        guard let roundedOffset = Int64(exactly: currentOffset.rounded()) else { return clientTime }
+        return clientTime + roundedOffset
     }
 
     /// Convert a server timestamp to the corresponding client timestamp.
@@ -235,7 +239,11 @@ struct SendspinTimeFilter {
         let effectiveDrift = useDrift ? drift : 0.0
         let numerator = Double(serverTime) - offset + effectiveDrift * Double(lastUpdate)
         let denominator = 1.0 + effectiveDrift
-        return Int64((numerator / denominator).rounded())
+        // Crash-safety: a non-finite/out-of-range result (diverged filter, or a
+        // near-zero denominator) would trap in the Int64 conversion. Fall back to the
+        // uncorrected timestamp rather than crash the host app.
+        guard let clientTime = Int64(exactly: (numerator / denominator).rounded()) else { return serverTime }
+        return clientTime
     }
 
     // MARK: - Diagnostics

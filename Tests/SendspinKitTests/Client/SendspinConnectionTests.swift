@@ -682,6 +682,40 @@ struct SendspinConnectionTests {
         await connection.shutdown()
     }
 
+    @Test("server/command volume is clamped to the spec's 0...100 range")
+    func serverCommandVolumeIsClamped() async throws {
+        // The server is not trusted to stay in range. Each case is (volume sent by
+        // the server, value the client must apply after clamping). The in-range 50
+        // case is the control proving the clamp does not distort valid values.
+        let cases = [(sent: 150, expected: 100), (sent: -5, expected: 0), (sent: 50, expected: 50)]
+        for testCase in cases {
+            let transport = MockTransport()
+            let clock = StubClock()
+            let (connection, _, _, _) = makeConnectionWithSpyEngine(clock, transport, advertisedCommands: [.volume])
+
+            await connection.start()
+            try await transport.injectText(serverHelloJSON())
+            try await transport.injectText(
+                serverCommandJSON(PlayerCommandObject(command: .volume, volume: testCase.sent))
+            )
+
+            let event = await collectConnectionEvent(from: connection) {
+                if case .playerVolumeChanged = $0 { true } else { false }
+            }
+            guard case let .playerVolumeChanged(applied)? = event else {
+                Issue.record("server/command volume \(testCase.sent): expected a .playerVolumeChanged event")
+                await connection.shutdown()
+                continue
+            }
+            #expect(
+                applied == testCase.expected,
+                "server volume \(testCase.sent) must clamp to \(testCase.expected), got \(applied)"
+            )
+
+            await connection.shutdown()
+        }
+    }
+
     @Test("VolumeMode.none advertises no volume or mute commands")
     func volumeModeNoneAdvertisesNoCommands() {
         // VolumeCapabilities for .none mode should advertise no volume/mute
@@ -804,6 +838,25 @@ struct SendspinConnectionTests {
 
         #expect(sawError, "Should emit streamError(.invalidFormat)")
         #expect(sawOperationalError, "Should emit operationalState(.error)")
+    }
+
+    @Test("stream/start with a malformed (non-base64) codec_header emits .invalidFormat error")
+    func streamStartMalformedCodecHeaderError() async throws {
+        let transport = MockTransport()
+        let connection = try makeConnectionWithTransport(transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+
+        // A present-but-undecodable codec_header is corrupt, not absent: it must
+        // surface as a format error rather than silently starting headerless
+        // (which, for FLAC, fails every decode in silence — see decode flush path).
+        try await transport.injectText(streamStartJSON(codecHeader: "%%%not-valid-base64%%%"))
+
+        let errorEvent = await collectConnectionEvent(from: connection) {
+            if case .streamError(.invalidFormat) = $0 { true } else { false }
+        }
+
+        #expect(errorEvent != nil, "Should emit streamError(.invalidFormat) for a non-base64 codec_header")
     }
 
     // MARK: - Engine start-failure mapping
@@ -1362,7 +1415,8 @@ private func makeConnectionWithSpyEngine(
     _ clock: any ClockSyncProtocol,
     _ transport: MockTransport,
     initialVolume: Int = 100,
-    initialMuted: Bool = false
+    initialMuted: Bool = false,
+    advertisedCommands: Set<PlayerCommand> = [.setStaticDelay]
 ) -> (
     connection: SendspinConnection,
     output: SpyAudioOutput,
@@ -1378,7 +1432,7 @@ private func makeConnectionWithSpyEngine(
         parsedHello: nil,
         clientHelloPayload: testClientHelloPayload(),
         validity: SessionValidityToken(),
-        advertisedCommands: [.setStaticDelay],
+        advertisedCommands: advertisedCommands,
         roles: [.playerV1],
         initialVolume: initialVolume,
         initialMuted: initialMuted,

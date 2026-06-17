@@ -336,9 +336,8 @@ actor AudioEngine {
         reportContinuation.yield(report)
     }
 
-    // MARK: - Scheduler output loop (Task 4)
+    // MARK: - Scheduler output loop
 
-    /// Rehomed from SendspinClient+AudioLoops.
     /// Consumes scheduled chunks, detects generation changes, and applies seamless format changes.
     private func runSchedulerOutput() async {
         // Seeded at the engine's initial generation (0); the field tracks the latest
@@ -390,7 +389,20 @@ actor AudioEngine {
 
                 // Rebuild AudioQueue
                 Log.audio.info("Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)")
-                try? await output.start(format: format, codecHeader: pendingCodecHeader)
+                do {
+                    try await output.start(format: format, codecHeader: pendingCodecHeader)
+                } catch {
+                    // A failed deferred rebuild would otherwise be silent — the
+                    // .formatApplied above already reported the change, so the client
+                    // would believe the format switched while audio stops. Surface it
+                    // so the client enters error/recovery, matching applyStreamStart
+                    // and applyFormatChange. Skip feeding a queue that failed to start.
+                    Log.audio.error("Seamless rebuild failed: \(error.localizedDescription)")
+                    yield(.startFailed(reason: error.localizedDescription))
+                    pendingFormat = nil
+                    pendingCodecHeader = nil
+                    continue
+                }
 
                 // Feed pre-buffered chunks
                 for buffered in preBuffer {
@@ -407,7 +419,6 @@ actor AudioEngine {
         }
     }
 
-    /// Rehomed from SendspinClient+AudioLoops.
     /// Polls reanchor requests and emits operational-state reports via the UnderrunMonitor.
     private func runSyncCorrectionAndTelemetry() async {
         var lastTelemetryStats = SchedulerStats()
