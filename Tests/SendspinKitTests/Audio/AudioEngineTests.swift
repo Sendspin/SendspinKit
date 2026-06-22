@@ -469,6 +469,40 @@ struct AudioEngineTests {
         #expect(emitted)
     }
 
+    /// Startup underrun-grace boundary: the deterministic burst of prime/fill
+    /// underruns after a fresh AudioQueue start must be absorbed for the WHOLE
+    /// window, including the expiry tick. If the expiry tick observed instead of
+    /// absorbing, a prime underrun landing at the boundary would trip a spurious
+    /// mute ~window-length into playback — an audible mid-stream dropout.
+    @Test("Underrun grace absorbs through the expiry tick (gap-free), then monitors")
+    func underrunGraceAbsorbsThroughExpiry() {
+        let now = ContinuousClock.now
+        let future = now.advanced(by: .seconds(1))
+        let past = now.advanced(by: .seconds(-1))
+
+        // No window armed → monitor immediately (fall through to observe()).
+        let noWindow = AudioEngine.underrunGraceTick(deadline: nil, now: now)
+        #expect(!noWindow.absorb)
+        #expect(noWindow.deadline == nil)
+
+        // Inside the window → absorb, deadline preserved for subsequent ticks.
+        let inside = AudioEngine.underrunGraceTick(deadline: future, now: now)
+        #expect(inside.absorb)
+        #expect(inside.deadline == future)
+
+        // AT expiry → STILL absorb (the gap fix) and clear the deadline so the NEXT
+        // tick monitors from a settled baseline. A regression that observed on the
+        // expiry tick would make `absorb` false here and reintroduce the mute.
+        let atExpiry = AudioEngine.underrunGraceTick(deadline: now, now: now)
+        #expect(atExpiry.absorb)
+        #expect(atExpiry.deadline == nil)
+
+        // Past expiry (e.g. a long telemetry gap) → absorb once more, deadline cleared.
+        let afterExpiry = AudioEngine.underrunGraceTick(deadline: past, now: now)
+        #expect(afterExpiry.absorb)
+        #expect(afterExpiry.deadline == nil)
+    }
+
     /// DEFECT 1 (the fix): while external source is active, the engine must re-baseline
     /// and emit NOTHING — a starved device isn't our error, and any report would clobber
     /// the client's externalSource state. Mutation proof: deleting the `else { resetBaseline }`

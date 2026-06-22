@@ -57,6 +57,41 @@ actor AudioEngine {
     /// When false (external source is active), underrun telemetry is suppressed.
     private var participatingInPlayback = true
 
+    /// Suppress underrun→`error` reporting until this instant after a fresh
+    /// AudioQueue start. Priming an empty ring buffer plus the initial buffer
+    /// fill produce a deterministic burst of underruns (observed: ~6 spread over
+    /// ~2s on a healthy stream) that are a startup artifact, not a sync failure —
+    /// without this window the client flaps `synchronized`↔`error` on every
+    /// `stream/start`, and (worse than no window) a mute landing mid-playback is an
+    /// audible dropout. The window must comfortably outlast the prime burst; 3s
+    /// gives margin over the observed ~2s. Real sync failures keep accruing
+    /// underruns and are caught once the window closes.
+    private var underrunGraceDeadline: ContinuousClock.Instant?
+    private static let underrunGraceWindow: Duration = .milliseconds(3_000)
+
+    /// Re-arm the startup underrun grace window. Called after every successful
+    /// `output.start(...)` (full stream start and the format-change fallback).
+    private func armUnderrunGrace() {
+        underrunGraceDeadline = ContinuousClock.now.advanced(by: Self.underrunGraceWindow)
+    }
+
+    /// Decide the startup underrun-grace action for one telemetry tick. Pure so the
+    /// gap-free boundary behavior is unit-testable without wall-clock waits.
+    ///
+    /// While the window is open the caller must ABSORB (rebaseline the underrun
+    /// monitor and skip observation). The expiry tick — `now >= deadline` — STILL
+    /// absorbs (closing the gap where a prime underrun landing at the boundary would
+    /// otherwise leak into the first real `observe()` and trip a spurious mute) and
+    /// clears the deadline, so the first tick AFTER the window monitors from a fully
+    /// settled baseline.
+    static func underrunGraceTick(
+        deadline: ContinuousClock.Instant?,
+        now: ContinuousClock.Instant
+    ) -> (absorb: Bool, deadline: ContinuousClock.Instant?) {
+        guard let deadline else { return (absorb: false, deadline: nil) }
+        return (absorb: true, deadline: now >= deadline ? nil : deadline)
+    }
+
     // MARK: - Initialization
 
     /// Designated internal initializer for testing with injected output and clock.
@@ -268,6 +303,7 @@ actor AudioEngine {
     private func applyStreamStart(format: AudioFormatSpec, codecHeader: Data?) async {
         do {
             try await output.start(format: format, codecHeader: codecHeader)
+            armUnderrunGrace()
             await audioScheduler.startScheduling()
             yield(.started(format))
         } catch {
@@ -305,6 +341,7 @@ actor AudioEngine {
             pendingCodecHeader = nil
             do {
                 try await output.start(format: format, codecHeader: codecHeader)
+                armUnderrunGrace()
                 yield(.formatApplied(format))
             } catch {
                 yield(.startFailed(reason: error.localizedDescription))
@@ -438,17 +475,46 @@ actor AudioEngine {
 
             // Observe underruns and emit state transitions, unless external source is active
             if participatingInPlayback {
+                // Startup grace: while a freshly-started AudioQueue is still
+                // establishing its buffer, absorb the prime/fill underruns into the
+                // baseline rather than reporting them as a sync `error`.
+                //
+                // Rebaseline on EVERY grace tick INCLUDING the tick on which the
+                // window expires, then `continue`. Rebaselining only while
+                // `now < deadline` and falling through to `observe()` on the expiry
+                // tick leaves a gap: a prime underrun landing between the last
+                // in-grace tick and expiry leaks into the first real `observe()` and
+                // trips a spurious mute ~window-length into playback (an audible
+                // mid-stream dropout). Absorbing through expiry closes that gap, so
+                // real monitoring begins the first tick AFTER the window from a fully
+                // settled baseline.
+                let grace = Self.underrunGraceTick(deadline: underrunGraceDeadline, now: .now)
+                underrunGraceDeadline = grace.deadline
+                if grace.absorb {
+                    underrunMonitor.resetBaseline(underrunCount: tSnap.underrunCount)
+                    continue
+                }
+
                 let transition = underrunMonitor.observe(underrunCount: tSnap.underrunCount)
                 switch transition {
                 case .none:
                     break
                 case .toError:
+                    // Operational, app-owner-facing: sustained underruns past the
+                    // monitor threshold force a protective mute. Logged at .notice so
+                    // it surfaces in a user-collected diagnostic without debug logging.
+                    Log.audio.notice(
+                        "Audio sync lost: sustained buffer underruns — muting output (underruns=\(tSnap.underrunCount, privacy: .public))"
+                    )
                     operationalState = .error
                     // Spec: mute the output while unable to maintain sync.
                     errorMuted = true
                     await applyEffectiveMute()
                     yield(.operationalState(.error))
                 case .toSynchronized:
+                    Log.audio.notice(
+                        "Audio sync restored: buffer underruns cleared — unmuting output (underruns=\(tSnap.underrunCount, privacy: .public))"
+                    )
                     operationalState = .synchronized
                     errorMuted = false
                     await applyEffectiveMute()
@@ -492,6 +558,12 @@ actor AudioEngine {
                     + " sync=\(syncErrorUs)us"
                     + " correcting=\(correcting)"
                     + " drop=\(dropN) insert=\(insertN)"
+                    // Buffer-health counters (cumulative): `underrun` is the ring
+                    // running dry on read (output silence — audible dropouts);
+                    // `pcmDrop` is bytes lost to ring overflow on write (the producer
+                    // outrunning playback). A climbing `underrun` is the signal an app
+                    // owner needs to diagnose stutter/pauses.
+                    + " underrun=\(tSnap.underrunCount) pcmDrop=\(tSnap.pcmBytesDropped)"
                 Log.audio.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats
