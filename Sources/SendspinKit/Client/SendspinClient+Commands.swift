@@ -149,11 +149,23 @@ extension SendspinClient {
     /// correct public API — they prevent invalid parameter combinations like
     /// `sendCommand(.play, volume: 50)` which compiles but is nonsensical.
     @MainActor
-    func sendCommand(_ command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) async throws {
+    func sendCommand(
+        _ command: ControllerCommandType,
+        volume: Int? = nil,
+        mute: Bool? = nil,
+        positionMs: Int? = nil,
+        offsetMs: Int? = nil
+    ) async throws {
         guard roleSet.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.controllerV1)
-        let controller = ControllerCommand(command: command, volume: volume, mute: mute)
+        let controller = ControllerCommand(
+            command: command,
+            volume: volume,
+            mute: mute,
+            positionMs: positionMs,
+            offsetMs: offsetMs
+        )
         let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
         try await connection.send(clientMessage: message)
     }
@@ -216,7 +228,8 @@ public extension SendspinClient {
                 volume: clamped,
                 muted: previous.muted,
                 repeatMode: previous.repeatMode,
-                shuffle: previous.shuffle
+                shuffle: previous.shuffle,
+                seekMaxMs: previous.seekMaxMs
             ))
         }
         do {
@@ -242,7 +255,8 @@ public extension SendspinClient {
                 volume: previous.volume,
                 muted: muted,
                 repeatMode: previous.repeatMode,
-                shuffle: previous.shuffle
+                shuffle: previous.shuffle,
+                seekMaxMs: previous.seekMaxMs
             ))
         }
         do {
@@ -251,6 +265,27 @@ public extension SendspinClient {
             updateControllerState(previous)
             throw error
         }
+    }
+
+    /// Seek to an absolute playback position.
+    ///
+    /// - Parameter positionMs: Target playback position in milliseconds. Values below zero are clamped
+    ///   to zero; if the server reported ``ControllerState/seekMaxMs``, values above it are clamped
+    ///   before sending. Servers still validate the command and may ignore unsupported targets per spec.
+    /// Requires the controller role. See ``play()`` for server support notes.
+    @MainActor func seek(to positionMs: Int) async throws {
+        let clamped = min(max(positionMs, 0), currentControllerState?.seekMaxMs ?? Int.max)
+        try await sendCommand(.seek, positionMs: clamped)
+    }
+
+    /// Seek relative to the current playback position.
+    ///
+    /// - Parameter offsetMs: Signed offset in milliseconds. Positive values seek forward;
+    ///   negative values seek backward. The server clamps/applies the resulting position on a
+    ///   best-effort basis per spec.
+    /// Requires the controller role. See ``play()`` for server support notes.
+    @MainActor func seekRelative(by offsetMs: Int) async throws {
+        try await sendCommand(.seekRelative, offsetMs: offsetMs)
     }
 
     /// Set repeat mode.

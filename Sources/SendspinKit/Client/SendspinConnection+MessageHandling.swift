@@ -174,7 +174,8 @@ extension SendspinConnection {
                 volume: controller.volume ?? prev?.volume ?? 0,
                 muted: controller.muted ?? prev?.muted ?? false,
                 repeatMode: controller.repeat ?? prev?.repeatMode,
-                shuffle: controller.shuffle ?? prev?.shuffle
+                shuffle: controller.shuffle ?? prev?.shuffle,
+                seekMaxMs: controller.seekMaxMsDelta.merge(previous: prev?.seekMaxMs)
             )
             currentControllerState = controllerState
             controlSink.enqueue(.controllerStateUpdated(controllerState))

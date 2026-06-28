@@ -255,19 +255,17 @@ private func collectEvent(
 
 /// Decode the last `client/command` sent after `offset`.
 ///
-/// The mock encodes with `.convertToSnakeCase` (via `SendspinEncoding`),
-/// so we must decode with `.convertFromSnakeCase` to round-trip correctly.
+/// Decodes with the model's explicit coding keys. Command payload fields such as
+/// `position_ms` and `offset_ms` are intentionally snake_case on the wire.
 ///
 /// Dispatches on `SendspinEncoding.messageType` — the same wire-tag read the client
 /// uses to route inbound frames — so background `client/time` traffic (which decodes
 /// "successfully" as an empty command) can't be mistaken for the real command.
 private func lastSentCommand(from mock: MockTransport, after offset: Int) async throws -> ClientCommandMessage? {
-    let decoder = JSONDecoder()
-    decoder.keyDecodingStrategy = .convertFromSnakeCase
     let messages = await mock.sentTextMessages
     return messages.dropFirst(offset)
         .filter { SendspinEncoding.messageType(of: $0) == ClientCommandMessage.typeString }
-        .compactMap { try? decoder.decode(ClientCommandMessage.self, from: $0) }
+        .compactMap { try? JSONDecoder().decode(ClientCommandMessage.self, from: $0) }
         .last
 }
 
@@ -1172,6 +1170,70 @@ struct ClientIntegrationTests {
     // MARK: setRepeatMode and setShuffle wire format
 
     @Test
+    func seek_sendsAbsolutePositionAndClampsToServerMaximum() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.seek], volume: 50, muted: false, seekMaxMs: 312_000
+        )))
+        #expect(await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == 312_000 } })
+
+        let countBefore = await mock.sentTextMessages.count
+
+        try await client.seek(to: 400_000)
+
+        let command = try await lastSentCommand(from: mock, after: countBefore)
+        let sent = try #require(command, "Expected a ClientCommandMessage after seek(to:)")
+        #expect(sent.payload.controller?.command == .seek)
+        #expect(sent.payload.controller?.positionMs == 312_000)
+        #expect(sent.payload.controller?.offsetMs == nil)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func seek_stopsClampingAfterServerClearsSeekRange() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.seek], volume: 50, muted: false, seekMaxMs: 312_000
+        )))
+        #expect(await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == 312_000 } })
+
+        await mock.injectText(#"{"type":"server/state","payload":{"controller":{"seek_max_ms":null}}}"#)
+        #expect(await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == nil } })
+        let countBefore = await mock.sentTextMessages.count
+
+        try await client.seek(to: 400_000)
+
+        let command = try await lastSentCommand(from: mock, after: countBefore)
+        let sent = try #require(command, "Expected a ClientCommandMessage after seek(to:)")
+        #expect(sent.payload.controller?.command == .seek)
+        #expect(sent.payload.controller?.positionMs == 400_000)
+        #expect(sent.payload.controller?.offsetMs == nil)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func seekRelative_sendsSignedOffset() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        let countBefore = await mock.sentTextMessages.count
+
+        try await client.seekRelative(by: -15_000)
+
+        let command = try await lastSentCommand(from: mock, after: countBefore)
+        let sent = try #require(command, "Expected a ClientCommandMessage after seekRelative(by:)")
+        #expect(sent.payload.controller?.command == .seekRelative)
+        #expect(sent.payload.controller?.offsetMs == -15_000)
+        #expect(sent.payload.controller?.positionMs == nil)
+
+        await client.disconnect()
+    }
+
+    @Test
     func setRepeatMode_oneSendsCorrectCommand() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
@@ -1383,6 +1445,49 @@ struct ClientIntegrationTests {
     }
 
     // MARK: underrun-driven operational state reporting is guarded
+
+    // MARK: seekMaxMs delta updates
+
+    @Test
+    func seekMaxMs_deltaMergesOnSubsequentServerState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        // Initial server/state with seek_max_ms.
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.seek],
+            volume: 50,
+            muted: false,
+            repeat: .off,
+            shuffle: false,
+            seekMaxMs: 180_000
+        )))
+        #expect(
+            await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == 180_000 } },
+            "seekMaxMs must be set on initial server/state"
+        )
+
+        // Delta update: different seek range, volume absent (must be preserved).
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.seek],
+            volume: nil, // absent — delta only changes seek
+            muted: nil,
+            repeat: nil,
+            shuffle: nil,
+            seekMaxMs: 300_000
+        )))
+
+        #expect(
+            await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == 300_000 } },
+            "seekMaxMs must merge to the new value from the delta"
+        )
+        #expect(
+            await waitUntil { await MainActor.run { client.currentControllerState?.volume == 50 } },
+            "previously set fields must be preserved on a seekMaxMs-only delta"
+        )
+
+        await client.disconnect()
+    }
 
     @Test
     func applyUnderrunTransition_toErrorFromSynchronizedReportsError() async throws {

@@ -25,7 +25,7 @@ struct ServerStatePayload: Codable, Equatable {
 
 /// Controller state within server/state — tells the client what commands are available
 /// and the current group volume/mute state.
-struct ServerControllerState: Codable, Equatable {
+struct ServerControllerState: Equatable {
     /// Which commands the server supports for this group
     let supportedCommands: [ControllerCommandType]?
     /// Group volume (0-100, average of all player volumes)
@@ -36,6 +36,13 @@ struct ServerControllerState: Codable, Equatable {
     let `repeat`: RepeatMode?
     /// Group shuffle state
     let shuffle: Bool?
+    /// Delta value for the maximum absolute seek target in milliseconds.
+    /// Absent means preserve prior controller state; null means clear a prior bounded range.
+    let seekMaxMsDelta: Nullable<Int>
+    /// Maximum absolute seek target in milliseconds when this delta carries a concrete value.
+    var seekMaxMs: Int? {
+        if case let .value(value) = seekMaxMsDelta { value } else { nil }
+    }
 
     enum CodingKeys: String, CodingKey {
         case supportedCommands = "supported_commands"
@@ -43,6 +50,7 @@ struct ServerControllerState: Codable, Equatable {
         case muted
         case `repeat`
         case shuffle
+        case seekMaxMs = "seek_max_ms"
     }
 
     init(
@@ -50,13 +58,42 @@ struct ServerControllerState: Codable, Equatable {
         volume: Int? = nil,
         muted: Bool? = nil,
         repeat: RepeatMode? = nil,
-        shuffle: Bool? = nil
+        shuffle: Bool? = nil,
+        seekMaxMs: Int? = nil,
+        seekMaxMsDelta: Nullable<Int>? = nil
     ) {
         self.supportedCommands = supportedCommands
         self.volume = volume
         self.muted = muted
         self.repeat = `repeat`
         self.shuffle = shuffle
+        self.seekMaxMsDelta = seekMaxMsDelta ?? seekMaxMs.map(Nullable.value) ?? .absent
+    }
+}
+
+extension ServerControllerState: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        supportedCommands = try container.decodeIfPresent([ControllerCommandType].self, forKey: .supportedCommands)
+        volume = try container.decodeIfPresent(Int.self, forKey: .volume)
+        muted = try container.decodeIfPresent(Bool.self, forKey: .muted)
+        `repeat` = try container.decodeIfPresent(RepeatMode.self, forKey: .repeat)
+        shuffle = try container.decodeIfPresent(Bool.self, forKey: .shuffle)
+        seekMaxMsDelta = container.contains(.seekMaxMs)
+            ? try container.decode(Nullable<Int>.self, forKey: .seekMaxMs)
+            : .absent
+    }
+}
+
+extension ServerControllerState: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(supportedCommands, forKey: .supportedCommands)
+        try container.encodeIfPresent(volume, forKey: .volume)
+        try container.encodeIfPresent(muted, forKey: .muted)
+        try container.encodeIfPresent(`repeat`, forKey: .repeat)
+        try container.encodeIfPresent(shuffle, forKey: .shuffle)
+        if !seekMaxMsDelta.isAbsent { try container.encode(seekMaxMsDelta, forKey: .seekMaxMs) }
     }
 }
 

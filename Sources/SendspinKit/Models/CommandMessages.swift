@@ -22,11 +22,31 @@ struct ControllerCommand: Codable, Equatable {
     let volume: Int?
     /// Group mute state, only when command is `.mute`
     let mute: Bool?
+    /// Absolute playback position in milliseconds, only when command is `.seek`.
+    let positionMs: Int?
+    /// Signed position offset in milliseconds, only when command is `.seekRelative`.
+    let offsetMs: Int?
 
-    init(command: ControllerCommandType, volume: Int? = nil, mute: Bool? = nil) {
+    enum CodingKeys: String, CodingKey {
+        case command
+        case volume
+        case mute
+        case positionMs = "position_ms"
+        case offsetMs = "offset_ms"
+    }
+
+    init(
+        command: ControllerCommandType,
+        volume: Int? = nil,
+        mute: Bool? = nil,
+        positionMs: Int? = nil,
+        offsetMs: Int? = nil
+    ) {
         self.command = command
         self.volume = volume
         self.mute = mute
+        self.positionMs = positionMs
+        self.offsetMs = offsetMs
     }
 }
 

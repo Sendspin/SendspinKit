@@ -413,4 +413,83 @@ struct MessageEncodingTests {
         #expect(controller.repeat == .all)
         #expect(controller.shuffle == true)
     }
+
+    @Test
+    func serverState_decodesControllerSeekCommands() throws {
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "controller": {
+                    "supported_commands": [
+                        "play", "volume", "pause", "unshuffle", "repeat_one",
+                        "seek_relative", "repeat_off", "previous", "stop", "switch",
+                        "seek", "next", "shuffle", "repeat_all", "mute"
+                    ],
+                    "volume": 100,
+                    "muted": false,
+                    "repeat": "off",
+                    "shuffle": false,
+                    "seek_max_ms": 312000
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+
+        let controller = try #require(message.payload.controller)
+        #expect(controller.supportedCommands?.contains(.play) == true)
+        #expect(controller.supportedCommands?.contains(.pause) == true)
+        #expect(controller.supportedCommands?.contains(.previous) == true)
+        #expect(controller.supportedCommands?.contains(.next) == true)
+        #expect(controller.supportedCommands?.contains(.seekRelative) == true)
+        #expect(controller.supportedCommands?.contains(.seek) == true)
+        #expect(controller.seekMaxMs == 312_000)
+    }
+
+    @Test
+    func serverState_decodesControllerClearedSeekRange() throws {
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "controller": {
+                    "seek_max_ms": null
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+
+        let controller = try #require(message.payload.controller)
+        #expect(controller.seekMaxMsDelta == .null)
+        #expect(controller.seekMaxMs == nil)
+    }
+
+    @Test
+    func clientCommand_encodesSeekParameters() throws {
+        let encoder = JSONEncoder()
+
+        let seekMessage = ClientCommandMessage(payload: ClientCommandPayload(controller: ControllerCommand(
+            command: .seek,
+            positionMs: 123_456
+        )))
+        let seekData = try encoder.encode(seekMessage)
+        let seekJson = try #require(String(data: seekData, encoding: .utf8))
+        #expect(seekJson.contains("\"command\":\"seek\""))
+        #expect(seekJson.contains("\"position_ms\":123456"))
+        #expect(!seekJson.contains("offset_ms"))
+
+        let relativeMessage = ClientCommandMessage(payload: ClientCommandPayload(controller: ControllerCommand(
+            command: .seekRelative,
+            offsetMs: -15_000
+        )))
+        let relativeData = try encoder.encode(relativeMessage)
+        let relativeJson = try #require(String(data: relativeData, encoding: .utf8))
+        #expect(relativeJson.contains("\"command\":\"seek_relative\""))
+        #expect(relativeJson.contains("\"offset_ms\":-15000"))
+        #expect(!relativeJson.contains("position_ms"))
+    }
 }

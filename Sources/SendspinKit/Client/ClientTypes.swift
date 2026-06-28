@@ -34,6 +34,8 @@ public enum ControllerCommandType: String, Codable, Sendable, Hashable {
     case repeatOne = "repeat_one"
     case repeatAll = "repeat_all"
     case shuffle, unshuffle
+    case seek
+    case seekRelative = "seek_relative"
     case `switch`
 }
 
@@ -225,6 +227,25 @@ public struct ControllerState: Sendable, Hashable {
     public let repeatMode: RepeatMode?
     /// Group shuffle state, `nil` if the server has not reported one.
     public let shuffle: Bool?
+    /// Maximum absolute seek target in milliseconds for the current media.
+    /// `nil` if the server has not reported a bounded seek range.
+    public let seekMaxMs: Int?
+
+    public init(
+        supportedCommands: Set<ControllerCommandType>,
+        volume: Int,
+        muted: Bool,
+        repeatMode: RepeatMode?,
+        shuffle: Bool?,
+        seekMaxMs: Int? = nil
+    ) {
+        self.supportedCommands = supportedCommands
+        self.volume = volume
+        self.muted = muted
+        self.repeatMode = repeatMode
+        self.shuffle = shuffle
+        self.seekMaxMs = seekMaxMs
+    }
 }
 
 /// A role that carries its own independently-negotiated stream and can be the
