@@ -33,6 +33,14 @@ public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer
 /// Constrains the fixed-size `lastFrameStorage` allocation.
 private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 
+/// Byte size of each prepared AudioQueue buffer.
+/// Shared with startup latency estimation so priming and correction use the same model.
+let audioQueueBufferByteSize: UInt32 = 16_384
+
+/// Approximate number of AudioQueue buffers audible/in flight.
+/// The sync-error formula treats one buffer as playing and one as queued.
+let audioQueueEstimatedInFlightBuffers = 2
+
 /// All mutable state accessed from both the actor and the audio thread.
 ///
 /// Wrapped in `OSAllocatedUnfairLock<LockedState>` so access is structurally
@@ -125,6 +133,8 @@ actor AudioPlayer {
     private nonisolated(unsafe) var audioQueueForDeinit: AudioQueueRef?
     private var decoder: AudioDecoder?
     private var currentFormat: AudioFormatSpec?
+    private var pendingStartBuffers: [AudioQueueBufferRef] = []
+    private var preparedStartCursorAnchor: Int64?
 
     private var _isPlaying: Bool = false
 
@@ -182,7 +192,11 @@ actor AudioPlayer {
         lockedState.withLock { $0.deallocateResources() }
     }
 
-    /// Start playback with specified format
+    /// Prepare playback with specified format without starting the AudioQueue.
+    ///
+    /// The engine uses this for stream startup so decoded PCM can be written to the
+    /// ring before the AudioQueue consumes its first primed buffers. Direct users can
+    /// still call ``start(format:codecHeader:)``, which prepares and starts in one step.
     ///
     /// **Unmanaged safety:** `passUnretained(self)` is used to pass `self` as the
     /// AudioQueue callback client data. This is safe because:
@@ -191,9 +205,7 @@ actor AudioPlayer {
     /// - `stop()` disposes the queue during normal operation
     /// - `deinit` disposes the queue directly (can't call actor-isolated `stop()`)
     /// Do not insert throwing calls between `AudioQueueNewOutput` and `audioQueue = queue`.
-    func start(format: AudioFormatSpec, codecHeader: Data?) throws {
-        if _isPlaying, currentFormat == format { return }
-
+    func prepare(format: AudioFormatSpec, codecHeader: Data?) throws {
         stop()
 
         decoder = try AudioDecoderFactory.create(
@@ -279,32 +291,51 @@ actor AudioPlayer {
             state.reanchorRequested = false
             state.pendingReanchorServerTime = 0
             // Suppress sync correction for ~1 second after rebuild.
-            // The transient sync error from the AudioQueue rebuild settles
-            // naturally; correcting during this period causes audible artifacts.
             state.correctionGraceFrames = Int64(format.sampleRate)
         }
 
-        // Allocate and prime buffers.
-        // 16384 bytes = ~4096 frames @ 48kHz stereo 16-bit = ~85ms per callback.
-        // 3 buffers primed = ~256ms pipeline latency. Sync correction runs inside
-        // each callback, so we get ~85ms feedback loops — sufficient for ±1-3ms
-        // steady-state accuracy. Smaller buffers cause instability due to the
-        // correction schedule updating too frequently relative to its effect.
-        let bufferSize: UInt32 = 16_384
+        // Buffers are allocated here but intentionally not enqueued yet. Enqueuing
+        // calls `fillBuffer`, and startup must first put decoded PCM into the ring;
+        // otherwise the primed AudioQueue buffers are silence and the sync corrector
+        // has to audibly insert its way out of the initial empty-ring offset.
+        pendingStartBuffers.removeAll(keepingCapacity: true)
+        preparedStartCursorAnchor = nil
         for _ in 0 ..< 3 {
             var buffer: AudioQueueBufferRef?
-            let allocStatus = AudioQueueAllocateBuffer(queue, bufferSize, &buffer)
+            let allocStatus = AudioQueueAllocateBuffer(queue, audioQueueBufferByteSize, &buffer)
             guard allocStatus == noErr, let buffer else {
-                // A queue primed with fewer buffers than expected starts but
-                // produces silence with no error surfaced. Tear down the
-                // partially-built queue and fail loudly, like the start path below.
                 AudioQueueDispose(queue, true)
                 audioQueue = nil
                 currentFormat = nil
                 decoder = nil
+                pendingStartBuffers.removeAll()
                 throw AudioPlayerError.queueAllocationFailed(allocStatus)
             }
+            pendingStartBuffers.append(buffer)
+        }
+    }
+
+    /// Start a prepared queue after decoded PCM has been written to the ring.
+    func startPrepared() throws {
+        guard let queue = audioQueue, let format = currentFormat else {
+            throw AudioPlayerError.notStarted
+        }
+        if _isPlaying { return }
+
+        for buffer in pendingStartBuffers {
             fillBuffer(queue: queue, buffer: buffer)
+        }
+        pendingStartBuffers.removeAll(keepingCapacity: true)
+        if let preparedStartCursorAnchor {
+            lockedState.withLock { state in
+                // `startPrepared()` pre-fills AudioQueue buffers synchronously before
+                // any samples are audible. Reset the cursor to the first primed sample;
+                // the startup correction-grace handoff rebaselines any transient
+                // callback/bookkeeping bias when correction is enabled.
+                state.cursorMicroseconds = preparedStartCursorAnchor
+                state.cursorRemainder = 0
+            }
+            self.preparedStartCursorAnchor = nil
         }
 
         let startStatus = AudioQueueStart(queue, nil)
@@ -314,12 +345,19 @@ actor AudioPlayer {
             audioQueue = nil
             currentFormat = nil
             decoder = nil
+            pendingStartBuffers.removeAll()
             throw AudioPlayerError.queueStartFailed(startStatus)
         }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
-            + " \(format.channels)ch \(format.bitDepth)bit (output: \(effectiveBitDepth)-bit)"
+            + " \(format.channels)ch \(format.bitDepth)bit (output: \(format.effectiveOutputBitDepth)-bit)"
         Log.audio.info("AudioQueue started: \(desc, privacy: .public)")
         _isPlaying = true
+    }
+
+    /// Start playback with specified format.
+    func start(format: AudioFormatSpec, codecHeader: Data?) throws {
+        try prepare(format: format, codecHeader: codecHeader)
+        try startPrepared()
     }
 
     /// Stop playback and clean up
@@ -341,6 +379,8 @@ actor AudioPlayer {
             state.framesConsumed = 0
             state.timeSnapshot = nil
         }
+        pendingStartBuffers.removeAll()
+        preparedStartCursorAnchor = nil
     }
 
     /// Replace the decoder without stopping playback.
@@ -364,6 +404,13 @@ actor AudioPlayer {
             throw AudioPlayerError.notStarted
         }
         return try decoder.decode(data)
+    }
+
+    /// Configure the startup cursor anchor that will be applied after
+    /// `startPrepared()` synchronously fills the initial AudioQueue buffers, but
+    /// before `AudioQueueStart` lets the render callback race with actor state.
+    func alignPreparedStartCursor(firstServerTimestamp: Int64) {
+        preparedStartCursorAnchor = firstServerTimestamp
     }
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
@@ -456,6 +503,80 @@ actor AudioPlayer {
         let cbFormat: AudioFormatSpec?
     }
 
+    private static func updateCorrectionSchedule(
+        state: inout LockedState,
+        capacity: Int,
+        frameSize: Int,
+        sampleRate: Int
+    ) {
+        guard state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot else { return }
+        let nowAbsolute = MonotonicClock.absoluteMicroseconds()
+        let expectedServerTime = snapshot.localTimeToServer(nowAbsolute)
+
+        // AQ pipeline latency estimate: ~2 buffers in flight (1 playing + 1 queued).
+        // Actual depth can vary slightly, but this is sufficient for the continuous
+        // sync correction loop which converges regardless of a small constant bias.
+        let aqLatencyUs = Int64(2 * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+
+        let syncErrorUs = (expectedServerTime - state.cursorMicroseconds) - aqLatencyUs
+        state.lastSyncErrorUs = syncErrorUs
+
+        let framesInBuffer = capacity / frameSize
+        var graceAbsorbedThisCallback = false
+        if state.correctionGraceFrames > 0 {
+            state.correctionGraceFrames -= Int64(framesInBuffer)
+            if state.correctionGraceFrames <= 0 {
+                // The grace window intentionally plays startup audio without pitch
+                // correction while AudioQueue callback/cursor bookkeeping settles.
+                // Do not feed the accumulated grace-era bias directly into the
+                // corrector on the expiry callback — that creates an audible max-rate
+                // insert/drop ramp at ~1s. Instead, rebaseline the cursor to the same
+                // equilibrium used by the sync-error formula, then let the next
+                // callback correct only real drift.
+                state.cursorMicroseconds = graceExpiryRebaselineCursor(
+                    expectedServerTime: expectedServerTime,
+                    audioQueueLatencyUs: aqLatencyUs
+                )
+                state.cursorRemainder = 0
+                state.correctionSchedule = CorrectionSchedule()
+                state.dropCounter = 0
+                state.insertCounter = 0
+                state.lastSyncErrorUs = 0
+                graceAbsorbedThisCallback = true
+            }
+        }
+
+        let newSchedule: CorrectionSchedule = if state.correctionGraceFrames > 0 || graceAbsorbedThisCallback {
+            CorrectionSchedule() // no correction during grace period or its expiry handoff
+        } else {
+            state.syncPlanner.plan(
+                errorMicroseconds: syncErrorUs,
+                sampleRate: UInt32(sampleRate),
+                currentlyCorrecting: state.correctionSchedule.isCorrecting
+            )
+        }
+
+        if newSchedule.reanchor {
+            // Can't reset the ring buffer and cursor here safely while iterating,
+            // so signal the actor to handle it on the next poll.
+            state.pendingReanchorServerTime = expectedServerTime
+            state.reanchorRequested = true
+            state.correctionSchedule = CorrectionSchedule()
+            state.dropCounter = 0
+            state.insertCounter = 0
+        } else if newSchedule != state.correctionSchedule {
+            let wasActive = state.correctionSchedule.isCorrecting
+            state.correctionSchedule = newSchedule
+            if newSchedule.isCorrecting, !wasActive {
+                // Initialize counters to the full cadence value — the first correction
+                // fires after one full cycle, giving the schedule time to stabilize
+                // before modifying the output.
+                state.dropCounter = newSchedule.dropEveryNFrames
+                state.insertCounter = newSchedule.insertEveryNFrames
+            }
+        }
+    }
+
     fileprivate nonisolated func fillBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
         let capacity = Int(buffer.pointee.mAudioDataBytesCapacity)
         let dest = buffer.pointee.mAudioData.assumingMemoryBound(to: UInt8.self)
@@ -476,58 +597,7 @@ actor AudioPlayer {
             let cb = processCallback // nonisolated let, not in locked state
             let cbFormat = state.processCallbackFormat
 
-            // --- Compute sync error and update correction schedule ---
-            // Monotonic clock and cursor are read in the same lock scope = zero jitter.
-            if state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot {
-                let nowAbsolute = MonotonicClock.absoluteMicroseconds()
-                let expectedServerTime = snapshot.localTimeToServer(nowAbsolute)
-
-                // AQ pipeline latency estimate: ~2 buffers in flight (1 playing + 1 queued).
-                // Actual depth can vary slightly, but this is sufficient for the continuous
-                // sync correction loop which converges regardless of a small constant bias.
-                let aqLatencyUs = Int64(2 * capacity) * 1_000_000 / Int64(sr * fs)
-
-                let syncErrorUs = (expectedServerTime - state.cursorMicroseconds) - aqLatencyUs
-                state.lastSyncErrorUs = syncErrorUs
-
-                // During grace period after AudioQueue rebuild, measure sync error
-                // (for telemetry) but don't engage correction. The transient error
-                // from the rebuild settles naturally without pitch-shifting the audio.
-                let framesInBuffer = capacity / fs
-                if state.correctionGraceFrames > 0 {
-                    state.correctionGraceFrames -= Int64(framesInBuffer)
-                }
-
-                let newSchedule: CorrectionSchedule = if state.correctionGraceFrames > 0 {
-                    CorrectionSchedule() // no correction during grace period
-                } else {
-                    state.syncPlanner.plan(
-                        errorMicroseconds: syncErrorUs,
-                        sampleRate: UInt32(sr),
-                        currentlyCorrecting: state.correctionSchedule.isCorrecting
-                    )
-                }
-
-                if newSchedule.reanchor {
-                    // Can't reset the ring buffer and cursor here safely while iterating,
-                    // so signal the actor to handle it on the next poll.
-                    state.pendingReanchorServerTime = expectedServerTime
-                    state.reanchorRequested = true
-                    state.correctionSchedule = CorrectionSchedule()
-                    state.dropCounter = 0
-                    state.insertCounter = 0
-                } else if newSchedule != state.correctionSchedule {
-                    let wasActive = state.correctionSchedule.isCorrecting
-                    state.correctionSchedule = newSchedule
-                    if newSchedule.isCorrecting, !wasActive {
-                        // Initialize counters to the full cadence value — the first
-                        // correction fires after one full cycle, giving the schedule
-                        // time to stabilize before modifying the output.
-                        state.dropCounter = newSchedule.dropEveryNFrames
-                        state.insertCounter = newSchedule.insertEveryNFrames
-                    }
-                }
-            }
+            Self.updateCorrectionSchedule(state: &state, capacity: capacity, frameSize: fs, sampleRate: sr)
 
             // --- Fill the buffer with PCM frames, applying drop/insert correction ---
             var outOffset = 0
@@ -610,6 +680,20 @@ actor AudioPlayer {
     func setMute(_ muted: Bool) {
         isMuted = muted
         volumeControl.setMute(muted, currentVolume: currentVolume, on: audioQueue)
+    }
+
+    /// Cursor position that makes the sync-error formula evaluate to equilibrium
+    /// at the startup correction-grace handoff.
+    ///
+    /// `fillBuffer` computes sync error as `(expectedServerTime - cursor) - aqLatency`.
+    /// While startup grace is open, correction is intentionally disabled so AudioQueue
+    /// callback/cursor bookkeeping can settle without pitch-shifting output. On the
+    /// expiry callback, the measured error can include that grace-era bookkeeping
+    /// bias; feeding it directly to the corrector creates an audible max-rate ramp.
+    /// Rebaselining to this cursor absorbs the grace-era bias while preserving future
+    /// drift correction.
+    static func graceExpiryRebaselineCursor(expectedServerTime: Int64, audioQueueLatencyUs: Int64) -> Int64 {
+        expectedServerTime - audioQueueLatencyUs
     }
 
     /// Convert linear volume (0.0-1.0) to perceptual amplitude.

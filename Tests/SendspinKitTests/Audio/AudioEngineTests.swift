@@ -74,7 +74,9 @@ actor StubClock: ClockSyncProtocol {
 actor SpyAudioOutput: AudioOutput {
     var recordedCalls: [String] = []
     var forcedStartThrow: Error?
+    var forcedStartPreparedThrow: Error?
     var forcedSwapThrow: Error?
+    var forcedPlayPCMThrow: Error?
     var decodeDelay: TimeInterval = 0
     var forcedDecodeThrow: Error?
     var playbackState: Bool = false
@@ -93,6 +95,25 @@ actor SpyAudioOutput: AudioOutput {
             underrunCount: underrunCountValue,
             pcmBytesDropped: 0
         )
+    }
+
+    func prepare(format: AudioFormatSpec, codecHeader _: Data?) throws {
+        recordedCalls.append("prepare(\(format.codec))")
+        if let error = forcedStartThrow {
+            throw error
+        }
+    }
+
+    func startPrepared() throws {
+        recordedCalls.append("startPrepared()")
+        if let error = forcedStartPreparedThrow ?? forcedStartThrow {
+            throw error
+        }
+        playbackState = true
+    }
+
+    func alignPreparedStartCursor(firstServerTimestamp: Int64) {
+        recordedCalls.append("alignPreparedStartCursor(\(firstServerTimestamp))")
     }
 
     func start(format: AudioFormatSpec, codecHeader _: Data?) throws {
@@ -129,6 +150,9 @@ actor SpyAudioOutput: AudioOutput {
 
     func playPCM(_ pcm: Data, serverTimestamp _: Int64) throws {
         recordedCalls.append("playPCM(\(pcm.count) bytes)")
+        if let error = forcedPlayPCMThrow {
+            throw error
+        }
     }
 
     func clearBuffer() {
@@ -844,8 +868,16 @@ extension SpyAudioOutput {
         forcedStartThrow = error
     }
 
+    func setForcedStartPreparedThrow(_ error: Error) {
+        forcedStartPreparedThrow = error
+    }
+
     func setForcedSwapThrow(_ error: Error) {
         forcedSwapThrow = error
+    }
+
+    func setForcedPlayPCMThrow(_ error: Error) {
+        forcedPlayPCMThrow = error
     }
 
     func setDecodeDelay(_ delay: TimeInterval) {

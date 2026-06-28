@@ -96,7 +96,7 @@ struct VolumeControlTests {
 
     // MARK: - Integration: AudioPlayer with VolumeControl
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func audioPlayer_usesProvidedVolumeControlForVolume() async throws {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
@@ -113,7 +113,7 @@ struct VolumeControlTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func audioPlayer_usesProvidedVolumeControlForMute() async throws {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
@@ -130,7 +130,7 @@ struct VolumeControlTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func audioPlayer_doesNotCallSetVolumeWhenMuted() async throws {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(

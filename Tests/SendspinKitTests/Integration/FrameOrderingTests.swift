@@ -242,9 +242,9 @@ struct FrameOrderingTests {
         // Pre-stream audio: injected before stream/start, discarded by the gate.
         await mock.injectBinary(audioChunkFrame(index: 0))
 
-        // stream/start, then wait until the engine confirms it started (the `.started`
-        // report that sets the format and yields `.streamStarted`). FIFO guarantees the
-        // pre-stream chunk was already processed — and discarded — by this point.
+        // stream/start opens the control-plane gate and records the format before
+        // render-applied `.streamStarted`; with startup priming, a deliberately
+        // underfilled stream may never emit the render-start event.
         try await mock.injectText(streamStartPCMJSON())
         try await waitForStreamFormat(client)
 
@@ -256,15 +256,15 @@ struct FrameOrderingTests {
             "Timed out waiting for the post-stream audio chunk"
         )
 
+        let acceptedFormat = client.currentStreamFormat
         await client.disconnect()
         chunkTask.cancel()
         _ = await collectTask.value
 
-        let streamStartedSeen = events.contains { if case .streamStarted = $0 { true } else { false } }
         // Exactly one AudioChunk: the pre-stream chunk was gated (no event), the
         // post-stream chunk was accepted. A leaked pre-stream event would make this 2.
         #expect(await chunks.count == 1, "Pre-stream chunk discarded, post-stream chunk accepted → exactly one AudioChunk")
-        #expect(streamStartedSeen, "stream/start must eventually surface a streamStarted event")
+        #expect(acceptedFormat?.codec == .pcm, "stream/start must establish the accepted stream format")
     }
 
     @Test

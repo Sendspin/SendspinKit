@@ -44,6 +44,32 @@ actor AudioEngine {
     // Diagnostics: record command kinds for processing-order test assertions.
     private var appliedKinds: [DataPlaneCommandKind] = []
 
+    /// Whether to use the prepared-start path. Test-injected engines default this
+    /// off to preserve direct scheduler observability; production engines use it
+    /// to locally prime the initial `min_buffer_ms` span before output starts.
+    /// `required_lead_time_ms` remains an advertised server send-ahead contract,
+    /// not a second local release-span gate.
+    private let startupBufferingEnabled: Bool
+    private let startupMinBufferUs: Int64
+    private var startupBuffer: StartupBuffer?
+    private var startupDeadlineTask: Task<Void, Never>?
+    private var startupSequence: UInt64 = 0
+    private var outputHasStarted = false
+
+    private struct StartupBuffer {
+        let sequence: UInt64
+        let format: AudioFormatSpec
+        let outputLatencyUs: Int64
+        var chunks: [StartupBufferedChunk] = []
+    }
+
+    private struct StartupBufferedChunk {
+        let pcmData: Data
+        let playTimeMicroseconds: Int64
+        let originalTimestamp: Int64
+        let generation: UInt64
+    }
+
     /// Operational state tracking for telemetry (engine maintains the state, client drains reports)
     private var operationalState: ClientOperationalState = .synchronized
 
@@ -68,6 +94,40 @@ actor AudioEngine {
     /// underruns and are caught once the window closes.
     private var underrunGraceDeadline: ContinuousClock.Instant?
     private static let underrunGraceWindow: Duration = .milliseconds(3_000)
+
+    static func startupReleaseTimeMicroseconds(
+        firstPlayTime: Int64,
+        lastPlayTime: Int64,
+        outputLatencyUs: Int64,
+        minBufferUs: Int64
+    ) -> Int64? {
+        guard lastPlayTime >= firstPlayTime + minBufferUs else { return nil }
+        return firstPlayTime - outputLatencyUs
+    }
+
+    static func startupReleaseCandidate(
+        playTimes: [Int64],
+        nowUs: Int64,
+        outputLatencyUs: Int64,
+        minBufferUs: Int64,
+        latenessToleranceUs: Int64 = CorrectionPlanner.defaultEngageUs
+    ) -> (index: Int, releaseTimeUs: Int64)? {
+        guard let lastPlayTime = playTimes.last else { return nil }
+        for (index, playTime) in playTimes.enumerated() {
+            guard let releaseTime = startupReleaseTimeMicroseconds(
+                firstPlayTime: playTime,
+                lastPlayTime: lastPlayTime,
+                outputLatencyUs: outputLatencyUs,
+                minBufferUs: minBufferUs
+            ) else {
+                continue
+            }
+            if nowUs - releaseTime <= latenessToleranceUs {
+                return (index, releaseTime)
+            }
+        }
+        return nil
+    }
 
     /// Re-arm the startup underrun grace window. Called after every successful
     /// `output.start(...)` (full stream start and the format-change fallback).
@@ -95,7 +155,13 @@ actor AudioEngine {
     // MARK: - Initialization
 
     /// Designated internal initializer for testing with injected output and clock.
-    init(output: any AudioOutput, scheduler: AudioScheduler, clock: any ClockSyncProtocol) {
+    init(
+        output: any AudioOutput,
+        scheduler: AudioScheduler,
+        clock: any ClockSyncProtocol,
+        enableStartupBuffering: Bool = false,
+        startupMinBufferMs: Int = 0
+    ) {
         self.output = output
         audioScheduler = scheduler
         self.clock = clock
@@ -105,12 +171,17 @@ actor AudioEngine {
         let (reportStream, reportContinuation) = AsyncStream<EngineReport>.makeStream()
         self.reportStream = reportStream
         self.reportContinuation = reportContinuation
+        startupBufferingEnabled = enableStartupBuffering
+        startupMinBufferUs = Int64(startupMinBufferMs) * 1_000
     }
 
     /// Secondary initializer for production use, building real AudioPlayer and AudioScheduler.
     /// (Actors don't support convenience initializers, so this is a separate designated init.)
     init(clock: any ClockSyncProtocol, config: PlayerConfiguration) {
-        let audioScheduler = AudioScheduler(clockSync: clock)
+        let audioScheduler = AudioScheduler(
+            clockSync: clock,
+            releaseLeadTime: TimeInterval(config.minBufferMs) / 1_000.0
+        )
 
         // Build AudioPlayer with the same configuration the client used to construct it.
         let pcmBufferCapacity = max(config.bufferCapacity / 2, 131_072) // min 128KB
@@ -129,6 +200,8 @@ actor AudioEngine {
         let (reportStream, reportContinuation) = AsyncStream<EngineReport>.makeStream()
         self.reportStream = reportStream
         self.reportContinuation = reportContinuation
+        startupBufferingEnabled = true
+        startupMinBufferUs = Int64(config.minBufferMs) * 1_000
     }
 
     // MARK: - Public interface
@@ -209,6 +282,11 @@ actor AudioEngine {
         }
 
         // 4. Stop the output immediately (any buffered playPCM becomes harmless)
+        startupDeadlineTask?.cancel()
+        startupDeadlineTask = nil
+        startupBuffer = nil
+        startupSequence &+= 1
+        outputHasStarted = false
         await output.stop()
 
         // 5. Finish the scheduler and clear its queue
@@ -299,14 +377,34 @@ actor AudioEngine {
         }
     }
 
-    /// Start a new stream: init decoder, start output, spawn scheduler.
+    /// Start a new stream: init decoder, then either start immediately (test path)
+    /// or prepare the backend and wait for startup lead-time/min-buffer priming.
     private func applyStreamStart(format: AudioFormatSpec, codecHeader: Data?) async {
+        startupDeadlineTask?.cancel()
+        startupDeadlineTask = nil
+        startupBuffer = nil
+        startupSequence &+= 1
+
         do {
-            try await output.start(format: format, codecHeader: codecHeader)
-            armUnderrunGrace()
-            await audioScheduler.startScheduling()
-            yield(.started(format))
+            if startupBufferingEnabled {
+                try await output.prepare(format: format, codecHeader: codecHeader)
+                outputHasStarted = false
+                startupBuffer = StartupBuffer(
+                    sequence: startupSequence,
+                    format: format,
+                    outputLatencyUs: Self.outputLatencyUs(format: format)
+                )
+                await audioScheduler.stop()
+                await audioScheduler.clear()
+            } else {
+                try await output.start(format: format, codecHeader: codecHeader)
+                outputHasStarted = true
+                armUnderrunGrace()
+                await audioScheduler.startScheduling()
+                yield(.started(format))
+            }
         } catch {
+            startupBuffer = nil
             yield(.startFailed(reason: error.localizedDescription))
         }
     }
@@ -316,11 +414,127 @@ actor AudioEngine {
         do {
             let pcm = try await output.decode(data)
             let adjustedTs = ts - Int64(staticDelayMs) * 1_000
-            await audioScheduler.schedule(pcm: pcm, serverTimestamp: adjustedTs, generation: streamGeneration)
+            if startupBuffer != nil {
+                let playTime = await clock.serverTimeToLocal(adjustedTs)
+                if startupBuffer != nil {
+                    startupBuffer?.chunks.append(StartupBufferedChunk(
+                        pcmData: pcm,
+                        playTimeMicroseconds: playTime,
+                        originalTimestamp: adjustedTs,
+                        generation: streamGeneration
+                    ))
+                    await releaseStartupBufferIfReady()
+                } else {
+                    await audioScheduler.schedule(
+                        pcm: pcm,
+                        serverTimestamp: adjustedTs,
+                        playTimeMicroseconds: playTime,
+                        generation: streamGeneration
+                    )
+                }
+            } else {
+                await audioScheduler.schedule(pcm: pcm, serverTimestamp: adjustedTs, generation: streamGeneration)
+            }
         } catch {
             // Per-chunk decode failures are silent; stream-start failures are reported separately.
             Log.audio.debug("Chunk decode failed: \(error.localizedDescription)")
         }
+    }
+
+    /// Release the startup buffer when starting AudioQueue now will naturally land
+    /// the first sample near its server timestamp. The release feeds decoded PCM into
+    /// the ring before starting AudioQueue, then hands any future chunks back to the scheduler.
+    private func releaseStartupBufferIfReady(sequence: UInt64? = nil) async {
+        guard var buffer = startupBuffer, !buffer.chunks.isEmpty else { return }
+        if let sequence, buffer.sequence != sequence { return }
+        buffer.chunks.sort { $0.playTimeMicroseconds < $1.playTimeMicroseconds }
+
+        let nowUs = MonotonicClock.absoluteMicroseconds()
+        let playTimes = buffer.chunks.map(\.playTimeMicroseconds)
+        guard let candidate = Self.startupReleaseCandidate(
+            playTimes: playTimes,
+            nowUs: nowUs,
+            outputLatencyUs: buffer.outputLatencyUs,
+            minBufferUs: startupMinBufferUs
+        ) else {
+            startupBuffer = buffer
+            startupDeadlineTask?.cancel()
+            let sequence = buffer.sequence
+            startupDeadlineTask = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(10))
+                await self?.releaseStartupBufferIfReady(sequence: sequence)
+            }
+            return
+        }
+        if candidate.index > 0 {
+            buffer.chunks.removeFirst(candidate.index)
+        }
+        let firstPlayTime = buffer.chunks[0].playTimeMicroseconds
+        let lastPlayTime = buffer.chunks[buffer.chunks.count - 1].playTimeMicroseconds
+        let startTime = candidate.releaseTimeUs
+        guard nowUs >= startTime else {
+            startupBuffer = buffer
+            startupDeadlineTask?.cancel()
+            let delayUs = startTime - nowUs
+            let sequence = buffer.sequence
+            startupDeadlineTask = Task { [weak self] in
+                try? await Task.sleep(for: .microseconds(delayUs))
+                await self?.releaseStartupBufferIfReady(sequence: sequence)
+            }
+            return
+        }
+
+        startupDeadlineTask?.cancel()
+        startupDeadlineTask = nil
+        startupBuffer = nil
+
+        let releaseHorizon = firstPlayTime + startupMinBufferUs
+        let startupTelemetry = "startup release chunks=\(buffer.chunks.count)"
+            + " span=\(lastPlayTime - firstPlayTime)us"
+            + " min=\(startupMinBufferUs)us"
+            + " lateness=\(nowUs - startTime)us"
+        Log.audio.debug("\(startupTelemetry, privacy: .public)")
+
+        do {
+            var firstPrimedTimestamp: Int64?
+            for chunk in buffer.chunks where chunk.playTimeMicroseconds <= releaseHorizon {
+                firstPrimedTimestamp = firstPrimedTimestamp ?? chunk.originalTimestamp
+                try await output.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+            }
+
+            if let firstPrimedTimestamp {
+                await output.alignPreparedStartCursor(firstServerTimestamp: firstPrimedTimestamp)
+            }
+            try await output.startPrepared()
+            outputHasStarted = true
+            armUnderrunGrace()
+            await audioScheduler.startScheduling()
+            yield(.started(buffer.format))
+        } catch {
+            await output.stop()
+            outputHasStarted = false
+            yield(.startFailed(reason: error.localizedDescription))
+            return
+        }
+
+        for chunk in buffer.chunks where chunk.playTimeMicroseconds > releaseHorizon {
+            await audioScheduler.schedule(
+                pcm: chunk.pcmData,
+                serverTimestamp: chunk.originalTimestamp,
+                playTimeMicroseconds: chunk.playTimeMicroseconds,
+                generation: chunk.generation
+            )
+        }
+    }
+
+    private static func outputLatencyUs(format: AudioFormatSpec) -> Int64 {
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
+        // Match AudioPlayer's sync-error model: one AudioQueue buffer playing and
+        // one queued. Keeping the constants shared prevents startup release timing
+        // from drifting if the backend buffer size changes.
+        return Int64(audioQueueEstimatedInFlightBuffers) * Int64(audioQueueBufferByteSize) * 1_000_000
+            / Int64(format.sampleRate * bytesPerFrame)
     }
 
     /// Apply a seamless format change (engine-internal, no MainActor.run).
@@ -341,7 +555,9 @@ actor AudioEngine {
             pendingCodecHeader = nil
             do {
                 try await output.start(format: format, codecHeader: codecHeader)
+                outputHasStarted = true
                 armUnderrunGrace()
+                await audioScheduler.startScheduling()
                 yield(.formatApplied(format))
             } catch {
                 yield(.startFailed(reason: error.localizedDescription))
@@ -353,6 +569,11 @@ actor AudioEngine {
     private func applyStreamClear(roles: [String]?) async {
         let shouldClear = roles == nil || roles?.contains("player") ?? false
         if shouldClear {
+            startupDeadlineTask?.cancel()
+            startupDeadlineTask = nil
+            if startupBuffer != nil {
+                startupBuffer?.chunks.removeAll()
+            }
             await audioScheduler.clear()
             await output.clearBuffer()
         }
@@ -362,6 +583,11 @@ actor AudioEngine {
     private func applyStreamEnd(roles: [String]?) async {
         let shouldEnd = roles == nil || roles?.contains("player") ?? false
         if shouldEnd {
+            startupBuffer = nil
+            startupDeadlineTask?.cancel()
+            startupDeadlineTask = nil
+            startupSequence &+= 1
+            outputHasStarted = false
             await audioScheduler.stop()
             await audioScheduler.clear()
             await output.stop()
@@ -428,6 +654,7 @@ actor AudioEngine {
                 Log.audio.info("Seamless switch: rebuilding AudioQueue at \(format.sampleRate)Hz (pre-buffered \(preBuffer.count) chunks)")
                 do {
                     try await output.start(format: format, codecHeader: pendingCodecHeader)
+                    outputHasStarted = true
                 } catch {
                     // A failed deferred rebuild would otherwise be silent — the
                     // .formatApplied above already reported the change, so the client

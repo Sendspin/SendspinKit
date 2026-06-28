@@ -90,6 +90,36 @@ struct AudioSchedulerTests {
     }
 
     @Test
+    func schedulerHonorsConfiguredReleaseLeadTime() async {
+        let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
+        let scheduler = AudioScheduler(clockSync: clockSync, releaseLeadTime: 0.5)
+
+        let now = MonotonicClock.absoluteMicroseconds()
+        await scheduler.schedule(pcm: Data([0xAB]), serverTimestamp: now + 300_000)
+        await scheduler.schedule(pcm: Data([0xCD]), serverTimestamp: now + 700_000)
+        await scheduler.checkQueue()
+
+        let stats = await scheduler.stats
+        let queued = await scheduler.queuedChunks
+        #expect(stats.played == 1)
+        #expect(queued.map(\.pcmData) == [Data([0xCD])])
+    }
+
+    @Test
+    func schedulerStillDropsLateChunksWithConfiguredReleaseLeadTime() async {
+        let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
+        let scheduler = AudioScheduler(clockSync: clockSync, releaseLeadTime: 0.5)
+
+        let pastMicros = MonotonicClock.absoluteMicroseconds() - 100_000
+        await scheduler.schedule(pcm: Data([0xFF]), serverTimestamp: pastMicros)
+        await scheduler.checkQueue()
+
+        let stats = await scheduler.stats
+        #expect(stats.dropped == 1)
+        #expect(stats.played == 0)
+    }
+
+    @Test
     func schedulerYieldsSlightlyLateChunksWithinPlaybackWindow() async {
         let clockSync = MockClockSynchronizer(offset: 0, drift: 0.0)
         let scheduler = AudioScheduler(clockSync: clockSync)

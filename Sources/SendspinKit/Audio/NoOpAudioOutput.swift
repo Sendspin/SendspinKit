@@ -19,6 +19,12 @@ actor NoOpAudioOutput: AudioOutput {
         )
     }
 
+    func prepare(format _: AudioFormatSpec, codecHeader _: Data?) throws {}
+
+    func startPrepared() throws {}
+
+    func alignPreparedStartCursor(firstServerTimestamp _: Int64) {}
+
     func start(format _: AudioFormatSpec, codecHeader _: Data?) throws {}
 
     func stop() {}

@@ -468,6 +468,10 @@ public final class SendspinClient {
             artworkStreamActive = true
             emitEvent(.artworkStreamStarted(channels))
 
+        case let .streamAccepted(format):
+            playerStreamActive = true
+            updateStreamFormat(format)
+
         case let .streamStarted(format):
             playerStreamActive = true
             updateStreamFormat(format)

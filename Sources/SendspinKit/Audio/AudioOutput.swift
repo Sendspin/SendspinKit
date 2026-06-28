@@ -11,6 +11,16 @@ protocol AudioOutput: Actor, Sendable {
     /// Current telemetry snapshot (underrun count, sync correction state, etc).
     var telemetrySnapshot: AudioPlayer.TelemetrySnapshot { get }
 
+    /// Prepare playback with the given format and optional codec header without starting audible output.
+    /// This lets the engine prime decoded PCM before the backend begins consuming it.
+    func prepare(format: AudioFormatSpec, codecHeader: Data?) throws
+
+    /// Start a previously prepared output after initial PCM has been queued.
+    func startPrepared() throws
+
+    /// Align the playback cursor after synchronous pre-start AudioQueue priming.
+    func alignPreparedStartCursor(firstServerTimestamp: Int64)
+
     /// Start playback with the given format and optional codec header.
     /// Throws if the AudioQueue cannot be initialized or audio playback cannot begin.
     func start(format: AudioFormatSpec, codecHeader: Data?) throws

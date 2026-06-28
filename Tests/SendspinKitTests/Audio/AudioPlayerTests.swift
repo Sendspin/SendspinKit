@@ -2,6 +2,14 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+enum RealAudioTestGate {
+    static var enabled: Bool {
+        ProcessInfo.processInfo.environment["SENDSPIN_REAL_AUDIO_TESTS"] == "1"
+    }
+
+    static let reason: Comment = "Set SENDSPIN_REAL_AUDIO_TESTS=1 to run real AudioQueue hardware tests"
+}
+
 struct AudioPlayerTests {
     @Test
     func initializeAudioPlayerWithDependencies() async {
@@ -11,7 +19,7 @@ struct AudioPlayerTests {
         #expect(isPlaying == false)
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func configureAudioFormat() async throws {
         let player = AudioPlayer()
 
@@ -28,7 +36,7 @@ struct AudioPlayerTests {
         #expect(isPlaying == true)
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func playPCMDataWithTimestamp() async throws {
         let player = AudioPlayer()
 
@@ -52,7 +60,7 @@ struct AudioPlayerTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func verifyOldEnqueueMethodRemoved() async throws {
         // This test documents that the old enqueue(chunk:) method has been removed
         // in favor of the AudioScheduler-based architecture.
@@ -65,6 +73,26 @@ struct AudioPlayerTests {
 
         let pcmData = Data(repeating: 0, count: 1_024)
         try await player.playPCM(pcmData, serverTimestamp: 0)
+
+        await player.stop()
+    }
+
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
+    func sameFormatPrepareWhilePlayingRebuildsForPreparedRestart() async throws {
+        let player = AudioPlayer()
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+
+        try await player.start(format: format, codecHeader: nil)
+        #expect(await player.isPlaying)
+
+        try await player.prepare(format: format, codecHeader: nil)
+        #expect(await !(player.isPlaying), "prepare must stop a live same-format queue before a prepared restart")
+
+        let frameBytes = format.channels * format.effectiveOutputBitDepth / 8
+        try await player.playPCM(Data(repeating: 0, count: format.sampleRate * frameBytes / 10), serverTimestamp: 123_000)
+        await player.alignPreparedStartCursor(firstServerTimestamp: 123_000)
+        try await player.startPrepared()
+        #expect(await player.isPlaying)
 
         await player.stop()
     }
@@ -128,6 +156,39 @@ struct AudioPlayerTests {
     // MARK: - Perceptual volume
 
     @Test
+    func graceExpiryRebaselineCursorAbsorbsStartupBias() {
+        let formatSampleRate = 44_100
+        let formatChannels = 2
+        let formatBytesPerSample = MemoryLayout<Int16>.size
+        let bytesPerFrame = formatChannels * formatBytesPerSample
+        let expectedServerTime: Int64 = 10_000_000
+        let audioQueueLatencyUs = Int64(audioQueueEstimatedInFlightBuffers) * Int64(audioQueueBufferByteSize) * 1_000_000
+            / Int64(formatSampleRate * bytesPerFrame)
+        let biasedRawCursor = expectedServerTime
+
+        let biasedSyncError = (expectedServerTime - biasedRawCursor) - audioQueueLatencyUs
+        #expect(biasedSyncError < -CorrectionPlanner.defaultEngageUs)
+        #expect(CorrectionPlanner().plan(
+            errorMicroseconds: biasedSyncError,
+            sampleRate: UInt32(formatSampleRate),
+            currentlyCorrecting: false
+        ).insertEveryNFrames > 0)
+
+        let rebaselinedCursor = AudioPlayer.graceExpiryRebaselineCursor(
+            expectedServerTime: expectedServerTime,
+            audioQueueLatencyUs: audioQueueLatencyUs
+        )
+        #expect(rebaselinedCursor == expectedServerTime - audioQueueLatencyUs)
+
+        let rebaselinedSyncError = (expectedServerTime - rebaselinedCursor) - audioQueueLatencyUs
+        #expect(CorrectionPlanner().plan(
+            errorMicroseconds: rebaselinedSyncError,
+            sampleRate: UInt32(formatSampleRate),
+            currentlyCorrecting: false
+        ) == CorrectionSchedule())
+    }
+
+    @Test
     func perceptualGainAtBoundaries() {
         #expect(AudioPlayer.perceptualGain(0.0) == 0.0)
         #expect(AudioPlayer.perceptualGain(1.0) == 1.0)
@@ -153,7 +214,7 @@ struct AudioPlayerTests {
         }
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func decodeMethodStillAvailable() async throws {
         let player = AudioPlayer()
 

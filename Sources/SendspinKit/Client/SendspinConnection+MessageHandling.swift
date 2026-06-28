@@ -257,6 +257,12 @@ extension SendspinConnection {
         if isFormatChange {
             audioEngine.commands.enqueue(.formatChange(format, codecHeader: codecHeader))
         } else {
+            if clientOperationalState == .error {
+                clientOperationalState = .synchronized
+                controlSink.enqueue(.operationalState(.synchronized))
+                try? await sendClientStateIfChanged()
+            }
+            controlSink.enqueue(.streamAccepted(format))
             audioEngine.commands.enqueue(.streamStart(format, codecHeader: codecHeader))
         }
     }

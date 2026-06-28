@@ -27,8 +27,10 @@ struct ScheduledChunk {
 /// Actor managing timestamp-based audio playback scheduling
 actor AudioScheduler {
     private let clockSync: any ClockSyncProtocol
-    /// Playback window in microseconds — chunks within ±this window of "now" are played
+    /// Playback window in microseconds — chunks this late are dropped as unsalvageable.
     private let playbackWindowUs: Int64
+    /// How far ahead of nominal play time chunks are released to the output ring.
+    private let releaseLeadTimeUs: Int64
     private var queue: [ScheduledChunk] = []
     /// Index of the next chunk to consume. Using an index avoids O(n) shifts
     /// from `removeFirst()`. The prefix is compacted when it exceeds half the
@@ -43,10 +45,12 @@ actor AudioScheduler {
 
     init(
         clockSync: any ClockSyncProtocol,
-        playbackWindow: TimeInterval = 0.05
+        playbackWindow: TimeInterval = 0.05,
+        releaseLeadTime: TimeInterval? = nil
     ) {
         self.clockSync = clockSync
         playbackWindowUs = Int64(playbackWindow * 1_000_000)
+        releaseLeadTimeUs = Int64((releaseLeadTime ?? playbackWindow) * 1_000_000)
 
         // Create AsyncStream
         (scheduledChunks, chunkContinuation) = AsyncStream.makeStream()
@@ -56,10 +60,24 @@ actor AudioScheduler {
     func schedule(pcm: Data, serverTimestamp: Int64, generation: UInt64 = 0) async {
         // Convert server timestamp to local playback time (absolute µs from MonotonicClock)
         let localTimeMicros = await clockSync.serverTimeToLocal(serverTimestamp)
+        schedule(
+            pcm: pcm,
+            serverTimestamp: serverTimestamp,
+            playTimeMicroseconds: localTimeMicros,
+            generation: generation
+        )
+    }
 
+    /// Schedule a PCM chunk whose local play time has already been computed.
+    func schedule(
+        pcm: Data,
+        serverTimestamp: Int64,
+        playTimeMicroseconds: Int64,
+        generation: UInt64 = 0
+    ) {
         let chunk = ScheduledChunk(
             pcmData: pcm,
-            playTimeMicroseconds: localTimeMicros,
+            playTimeMicroseconds: playTimeMicroseconds,
             originalTimestamp: serverTimestamp,
             generation: generation
         )
@@ -131,7 +149,7 @@ actor AudioScheduler {
                 if readIndex < queue.count {
                     let next = queue[readIndex]
                     let nowUs = MonotonicClock.absoluteMicroseconds()
-                    let delayUs = next.playTimeMicroseconds - nowUs - playbackWindowUs
+                    let delayUs = next.playTimeMicroseconds - nowUs - releaseLeadTimeUs
                     if delayUs > 0 {
                         // Cap at playbackWindow so new arrivals aren't delayed too long
                         let cappedDelayUs = min(delayUs, playbackWindowUs)
@@ -192,8 +210,8 @@ actor AudioScheduler {
             let next = queue[readIndex]
             let delayUs = next.playTimeMicroseconds - nowUs
 
-            if delayUs > playbackWindowUs {
-                // Too early, wait
+            if delayUs > releaseLeadTimeUs {
+                // Too early to hand to the output ring.
                 break
             } else if delayUs < -playbackWindowUs {
                 // Too late beyond scheduler jitter tolerance; drop to maintain sync.

@@ -90,11 +90,13 @@ extension SendspinConnection {
                 try? await sendClientStateIfChanged()
 
             case let .started(format):
-                // Successful start: restore to synchronized after an earlier error.
-                clientOperationalState = .synchronized
                 controlSink.enqueue(.streamStarted(format))
-                controlSink.enqueue(.operationalState(.synchronized))
-                try? await sendClientStateIfChanged()
+                if clientOperationalState == .error {
+                    // Successful start: restore to synchronized after an earlier error.
+                    clientOperationalState = .synchronized
+                    controlSink.enqueue(.operationalState(.synchronized))
+                    try? await sendClientStateIfChanged()
+                }
 
             case let .formatApplied(format):
                 controlSink.enqueue(.streamFormatChanged(format))

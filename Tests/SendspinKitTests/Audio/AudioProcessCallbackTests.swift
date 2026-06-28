@@ -25,7 +25,7 @@ struct AudioProcessCallbackTests {
 
     // MARK: - Callback invocation
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func callbackIsInvokedDuringPlayback() async throws {
         let invoked = CallbackRecorder()
 
@@ -51,7 +51,7 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func callbackReceivesCorrectFormatFor16BitStereo() async throws {
         let invoked = CallbackRecorder()
 
@@ -81,7 +81,7 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func callbackReceives32BitEffectiveFormatFor24BitSource() async throws {
         let invoked = CallbackRecorder()
 
@@ -110,7 +110,7 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func callbackReceivesMutableBuffer() async throws {
         let modified = CallbackRecorder()
 
@@ -136,7 +136,7 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func callbackFiresEvenWithEmptyRingBufferSilence() async throws {
         let invoked = CallbackRecorder()
 
@@ -156,7 +156,7 @@ struct AudioProcessCallbackTests {
         await player.stop()
     }
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func bufferByteCountMatchesAudioQueueBufferSize() async throws {
         let invoked = CallbackRecorder()
 
@@ -189,7 +189,7 @@ struct AudioProcessCallbackTests {
 
     // MARK: - No callback configured
 
-    @Test
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func playerWorksFineWithoutAProcessCallback() async throws {
         let player = AudioPlayer(
             // no processCallback

@@ -431,6 +431,29 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
+    @Test
+    func streamStartAfterExternalSourcePreservesExternalSourceState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await client.enterExternalSource()
+        #expect(client.clientOperationalState == .externalSource)
+
+        let countBeforeStreamStart = await mock.sentTextMessages.count
+        try await mock.injectText(promotionStreamStartJSON())
+
+        #expect(await waitUntil(timeout: .seconds(2)) { await MainActor.run { client.playerStreamActive } })
+        #expect(client.clientOperationalState == .externalSource, "stream/start must not exit external_source")
+
+        let statesAfterStreamStart = await clientStates(from: mock, after: countBeforeStreamStart)
+        #expect(
+            !statesAfterStreamStart.contains(where: { $0.state == .synchronized }),
+            "late stream/start must not send a synchronized client/state while external_source is active"
+        )
+
+        await client.disconnect()
+    }
+
     // MARK: Control-stream depth drains via the facade
 
     @Test
