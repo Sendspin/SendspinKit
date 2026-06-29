@@ -69,6 +69,16 @@ public final class SendspinClient {
     public private(set) var currentGroup: GroupInfo?
     /// Current controller state from the server.
     public private(set) var currentControllerState: ControllerState?
+    /// App-facing playback status derived from the current stream, group, and metadata state.
+    ///
+    /// Eventually consistent: `playerStreamActive` is a render-applied mirror that
+    /// can lag the connection's authoritative stream gates, so this is an
+    /// observability projection — not a wire-ordered signal. Prefer the typed
+    /// `ClientEvent` stream for transitions that must be wire-ordered.
+    public var currentPlaybackStatus: PlaybackStatus? {
+        PlaybackStatus(group: currentGroup, metadata: currentMetadata, isPlayerStreamActive: playerStreamActive)
+    }
+
     /// Codec header for the current stream (e.g. FLAC streaminfo), if any.
     /// Set when `stream/start` carries a `codec_header` field; cleared on `stream/end`.
     public private(set) var currentCodecHeader: Data?
@@ -591,10 +601,13 @@ public final class SendspinClient {
     /// previous), so without this a reconnected server's first partial delta would
     /// inherit the dead connection's metadata/controller. `currentServerId` and
     /// `currentConnectionReason` are excluded — ``handleServerHello(_:)`` overwrites
-    /// them on every hello — and `currentGroup` is excluded because the spec keeps
-    /// group membership across reconnections.
+    /// them on every hello. Group id/name survive per spec, but playback state is
+    /// session-scoped and is cleared to avoid reporting stale playback status.
     func resetServerSessionState() {
         updateMetadata(nil)
+        if let group = currentGroup {
+            updateGroup(GroupInfo(groupId: group.groupId, groupName: group.groupName, playbackState: nil))
+        }
         updateControllerState(nil)
     }
 

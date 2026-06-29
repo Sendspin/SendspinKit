@@ -9,6 +9,32 @@ public enum PlaybackState: String, Codable, Sendable, Hashable {
     case stopped
 }
 
+/// App-facing playback status derived from Sendspin protocol state.
+///
+/// Sendspin's wire-level ``PlaybackState`` only distinguishes `playing` from
+/// `stopped`; pause is represented by `playback_state == playing` plus
+/// ``PlaybackProgress/playbackSpeedX1000`` equal to zero. Use this type when
+/// building UI instead of re-implementing that protocol detail in each app.
+public enum PlaybackStatus: Sendable, Hashable {
+    case playing
+    case paused
+    case stopped
+
+    public init?(group: GroupInfo?, metadata: TrackMetadata?, isPlayerStreamActive: Bool = false) {
+        if group?.playbackState == .stopped {
+            self = .stopped
+        } else if isPlayerStreamActive {
+            self = .playing
+        } else if metadata?.progress?.playbackSpeedX1000 == 0 {
+            self = .paused
+        } else if group?.playbackState == .playing {
+            self = .playing
+        } else {
+            return nil
+        }
+    }
+}
+
 /// Repeat mode for playback queue.
 ///
 /// Values match the wire format: `'off'`, `'one'`, `'all'`.

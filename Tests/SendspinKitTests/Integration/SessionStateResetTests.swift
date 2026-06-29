@@ -8,10 +8,11 @@ struct SessionStateResetTests {
 
     private func serverStateMetadataJSON(
         title: Nullable<String> = .absent,
-        album: Nullable<String> = .absent
+        album: Nullable<String> = .absent,
+        progress: Nullable<MetadataProgress> = .absent
     ) throws -> String {
         let message = ServerStateMessage(payload: ServerStatePayload(
-            metadata: ServerMetadataState(title: title, album: album)
+            metadata: ServerMetadataState(title: title, album: album, progress: progress)
         ))
         return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
     }
@@ -43,6 +44,15 @@ struct SessionStateResetTests {
             playbackState: playbackState,
             groupId: groupId,
             groupName: groupName
+        ))
+        return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
+    }
+
+    private func streamStartPCMJSON() throws -> String {
+        let message = StreamStartMessage(payload: StreamStartPayload(
+            player: StreamStartPlayer(codec: AudioCodec.pcm.rawValue, sampleRate: 48_000, channels: 2, bitDepth: 16, codecHeader: nil),
+            artwork: nil,
+            visualizer: nil
         ))
         return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
     }
@@ -185,7 +195,7 @@ struct SessionStateResetTests {
     @Test
     func groupMembershipSurvivesReconnect() async throws {
         // The spec keeps group membership across reconnections, so the session
-        // reset must leave `currentGroup` untouched.
+        // reset must preserve group identity while clearing session-scoped playback state.
         let client = try makeTestClient()
         let mock1 = try await connectClient(client)
 
@@ -198,6 +208,59 @@ struct SessionStateResetTests {
         _ = try await connectClient(client)
         #expect(client.currentGroup?.groupId == "g1", "Group membership must survive a reconnect (spec)")
         #expect(client.currentGroup?.groupName == "Kitchen")
+        // Assert the observable outcome (cleared playback state) rather than a
+        // timing coincidence: these pass today only because `setupConnection`
+        // resets session state before its first suspension. Polling decouples the
+        // test from that ordering invariant.
+        let clearedPlayback = await waitUntil { await MainActor.run { client.currentGroup?.playbackState == nil } }
+        #expect(clearedPlayback, "Playback state is session-scoped and must not survive reconnect")
+        let clearedStatus = await waitUntil { await MainActor.run { client.currentPlaybackStatus == nil } }
+        #expect(clearedStatus, "Derived playback status must not report stale playback after reconnect")
+
+        await client.disconnect()
+    }
+
+    @Test
+    func currentPlaybackStatusTracksGroupAndProgress() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(groupUpdateJSON(groupId: "g1", groupName: "Kitchen", playbackState: .playing))
+        let gotPlaying = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .playing } }
+        #expect(gotPlaying)
+
+        try await mock.injectText(serverStateMetadataJSON(
+            progress: .value(MetadataProgress(trackProgress: 10_000, trackDuration: 120_000, playbackSpeed: 0))
+        ))
+        let gotPaused = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .paused } }
+        #expect(gotPaused)
+
+        try await mock.injectText(groupUpdateJSON(playbackState: .stopped))
+        let gotStopped = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .stopped } }
+        #expect(gotStopped)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func activePlayerStreamOverridesStalePausedProgress() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+
+        try await mock.injectText(groupUpdateJSON(groupId: "g1", groupName: "Kitchen", playbackState: .stopped))
+        try await mock.injectText(serverStateMetadataJSON(
+            progress: .value(MetadataProgress(trackProgress: 32_000, trackDuration: 312_000, playbackSpeed: 0))
+        ))
+        let gotStopped = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .stopped } }
+        #expect(gotStopped)
+
+        try await mock.injectText(groupUpdateJSON(playbackState: .playing))
+        let staleProgressMakesPaused = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .paused } }
+        #expect(staleProgressMakesPaused)
+
+        try await mock.injectText(streamStartPCMJSON())
+        let gotPlayingFromActiveStream = await waitUntil { await MainActor.run { client.currentPlaybackStatus == .playing } }
+        #expect(gotPlayingFromActiveStream, "An active local player stream must override stale paused progress metadata")
 
         await client.disconnect()
     }
