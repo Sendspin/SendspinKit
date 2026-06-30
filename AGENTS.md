@@ -5,7 +5,7 @@ Swift client library for the Sendspin Protocol — synchronized multi-room audio
 ## Tech Stack
 - Swift 6.2+ (strict concurrency), SwiftPM. iOS 17 / macOS 14 / tvOS 17 / watchOS 10, non-Apple OSes are explicitly out of scope.
 - Transport: `Network.framework` (`NWWebSocketTransport`) — no third-party WebSocket dep.
-- Codecs: swift-opus, flac-binary-xcframework, ogg-binary-xcframework.
+- Codecs: native Opus (AVAudioConverter `kAudioFormatOpus`), flac-binary-xcframework, ogg-binary-xcframework.
 - Tests: Swift Testing (`@Test`/`#expect`), not XCTest.
 
 ## Pre-commit Gate (MANDATORY, CI-enforced)
@@ -21,7 +21,6 @@ Run on changed files before every commit: `swiftformat --lint .` and `swiftlint 
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.
 
 ## Conventions
-- Files open with two `// ABOUTME:` comment lines.
 - No magic values in tests — import the source constant (binary type bytes, role strings, reasons,
   `highWatermark`, etc.).
 - Tautological tests are the recurring failure mode here: every behavior test must fail when the

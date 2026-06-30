@@ -16,7 +16,7 @@ private func resolveServerURL(server: String?, discover: Bool, timeout: Double) 
 
 // MARK: - Codec helpers
 
-/// Opus on the wire is always 48 kHz / 16-bit (libopus decoder convention).
+/// Opus compatibility format used by the canonical aiosendspin server.
 /// Named here so the negotiation logic below isn't peppered with magic numbers.
 private enum OpusWireFormat {
     static let sampleRate: Int = 48_000

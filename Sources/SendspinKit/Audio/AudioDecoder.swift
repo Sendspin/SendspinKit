@@ -1,7 +1,7 @@
+import AudioToolbox
 @preconcurrency import AVFoundation
 import FLAC
 import Foundation
-import Opus
 
 /// Audio decoder protocol
 protocol AudioDecoder {
@@ -84,90 +84,149 @@ class PCMDecoder: AudioDecoder {
     }
 }
 
-/// Opus decoder using libopus via swift-opus package
+/// Wrapper for a single compressed packet so `AVAudioConverter`'s `@Sendable`
+/// input closure can vend it once. `@unchecked Sendable` is safe: the instance
+/// is allocated in `decode()` and never escapes that synchronous call.
+private final class OpusPacketInput: @unchecked Sendable {
+    private let buffer: AVAudioCompressedBuffer
+    private var consumed = false
+
+    init(_ buffer: AVAudioCompressedBuffer) {
+        self.buffer = buffer
+    }
+
+    func supply(to status: UnsafeMutablePointer<AVAudioConverterInputStatus>) -> AVAudioBuffer? {
+        guard !consumed else {
+            status.pointee = .noDataNow
+            return nil
+        }
+        consumed = true
+        status.pointee = .haveData
+        return buffer
+    }
+}
+
+/// Decodes one raw Opus packet at a time to interleaved Int32 PCM.
 ///
-/// **Threading contract:** Not thread-safe. Like `FLACDecoder`, this must be used
-/// from a single serial context. In practice it is only accessed from `AudioPlayer`
-/// (an actor). `Opus.Decoder` from swift-opus wraps a C `OpusDecoder*` and handles
-/// its own cleanup in `deinit`.
-class OpusDecoder: AudioDecoder {
-    private let decoder: Opus.Decoder
+/// Not thread-safe; `AVAudioConverter` is stateful and must remain actor-confined.
+final class OpusDecoder: AudioDecoder {
+    private let sampleRate: Int
     private let channels: Int
-    /// Reusable buffer for float→int32 conversion. Cleared and refilled on each
-    /// decode() call, but keeps its heap allocation across calls to avoid churn.
+    private let compressedFormat: AVAudioFormat
+    private let pcmFormat: AVAudioFormat
+    private let converter: AVAudioConverter
     private var int32Buffer: [Int32] = []
 
     init(sampleRate: Int, channels: Int, bitDepth _: Int) throws {
+        self.sampleRate = sampleRate
         self.channels = channels
 
-        // Create AVAudioFormat for Opus decoder
-        // swift-opus accepts standard PCM formats and handles Opus internally
-        guard let format = AVAudioFormat(
+        var opusDescription = AudioStreamBasicDescription(
+            mSampleRate: Double(sampleRate),
+            mFormatID: kAudioFormatOpus,
+            mFormatFlags: 0,
+            mBytesPerPacket: 0,
+            mFramesPerPacket: 0,
+            mBytesPerFrame: 0,
+            mChannelsPerFrame: UInt32(channels),
+            mBitsPerChannel: 0,
+            mReserved: 0
+        )
+        guard let compressedFormat = AVAudioFormat(streamDescription: &opusDescription) else {
+            throw AudioDecoderError.formatCreationFailed("Opus compressed audio format")
+        }
+        self.compressedFormat = compressedFormat
+
+        guard let pcmFormat = AVAudioFormat(
             commonFormat: .pcmFormatFloat32,
             sampleRate: Double(sampleRate),
             channels: AVAudioChannelCount(channels),
-            interleaved: true
+            interleaved: false
         ) else {
-            throw AudioDecoderError.formatCreationFailed("Failed to create audio format for Opus")
+            throw AudioDecoderError.formatCreationFailed("Opus PCM output format")
         }
+        self.pcmFormat = pcmFormat
 
-        // Create opus decoder (validates sample rate internally)
-        do {
-            decoder = try Opus.Decoder(format: format)
-        } catch {
-            throw AudioDecoderError.formatCreationFailed("Opus decoder: \(error.localizedDescription)")
+        guard let converter = AVAudioConverter(from: compressedFormat, to: pcmFormat) else {
+            throw AudioDecoderError.formatCreationFailed("AVAudioConverter for Opus")
         }
+        self.converter = converter
     }
 
     func decode(_ data: Data) throws -> Data {
-        // Decode Opus packet to AVAudioPCMBuffer
-        let pcmBuffer: AVAudioPCMBuffer
-        do {
-            pcmBuffer = try decoder.decode(data)
-        } catch {
-            throw AudioDecoderError.conversionFailed("Opus decode failed: \(error.localizedDescription)")
+        guard !data.isEmpty else { return Data() }
+
+        let compressedBuffer = AVAudioCompressedBuffer(
+            format: compressedFormat,
+            packetCapacity: 1,
+            maximumPacketSize: data.count
+        )
+        compressedBuffer.byteLength = UInt32(data.count)
+        compressedBuffer.packetCount = 1
+        data.copyBytes(
+            to: compressedBuffer.data.assumingMemoryBound(to: UInt8.self),
+            count: data.count
+        )
+
+        guard let packetDescriptions = compressedBuffer.packetDescriptions else {
+            throw AudioDecoderError.conversionFailed("AVAudioCompressedBuffer missing packet descriptions")
+        }
+        packetDescriptions[0] = AudioStreamPacketDescription(
+            mStartOffset: 0,
+            mVariableFramesInPacket: 0,
+            mDataByteSize: UInt32(data.count)
+        )
+
+        // RFC 6716 caps a single Opus packet at 120 ms; size for that worst case.
+        let maxFrames = sampleRate * 120 / 1_000
+        guard let pcmBuffer = AVAudioPCMBuffer(
+            pcmFormat: pcmFormat,
+            frameCapacity: AVAudioFrameCount(maxFrames)
+        ) else {
+            throw AudioDecoderError.conversionFailed("Opus PCM output buffer allocation")
         }
 
-        // swift-opus outputs interleaved float32 into floatChannelData[0].
-        // opus_decode_float always writes interleaved samples (L R L R...),
-        // and swift-opus passes floatChannelData![0] as the output pointer.
-        // The buffer format is interleaved, so floatChannelData has exactly
-        // one pointer — accessing [1] etc. would be out of bounds.
+        let input = OpusPacketInput(compressedBuffer)
+        var conversionError: NSError?
+        let status = converter.convert(to: pcmBuffer, error: &conversionError) { _, inputStatus in
+            input.supply(to: inputStatus)
+        }
+
+        guard status != .error else {
+            let detail = conversionError?.localizedDescription ?? "unknown converter error"
+            throw AudioDecoderError.conversionFailed("Opus AVAudioConverter failed: \(detail)")
+        }
+
+        guard pcmBuffer.frameLength > 0 else {
+            throw AudioDecoderError.conversionFailed("Opus AVAudioConverter produced no PCM frames; status=\(status)")
+        }
+
+        return try interleavedInt32(from: pcmBuffer)
+    }
+
+    private func interleavedInt32(from pcmBuffer: AVAudioPCMBuffer) throws -> Data {
         guard let floatChannelData = pcmBuffer.floatChannelData else {
-            throw AudioDecoderError.conversionFailed("No float channel data in decoded buffer")
+            throw AudioDecoderError.conversionFailed("No float channel data in decoded Opus buffer")
         }
 
         let frameLength = Int(pcmBuffer.frameLength)
         let totalSamples = frameLength * channels
 
-        // Reuse the persistent buffer to avoid per-call heap allocation.
-        // removeAll(keepingCapacity:) preserves the underlying storage.
         int32Buffer.removeAll(keepingCapacity: true)
         int32Buffer.reserveCapacity(totalSamples)
 
-        // Convert interleaved float32 samples to int32
-        // float range [-1.0, 1.0] -> int32 range [Int32.min, Int32.max]
-        //
-        // Clamping is required because Float(Int32.max) rounds up to 2147483648.0,
-        // so a sample of exactly 1.0 would overflow Int32 without clamping.
-        let floatData = floatChannelData[0]
-        for i in 0 ..< totalSamples {
-            int32Buffer.append(clampFloatToInt32(floatData[i]))
+        for frame in 0 ..< frameLength {
+            for channel in 0 ..< channels {
+                int32Buffer.append(Self.clamp(floatChannelData[channel][frame]))
+            }
         }
 
-        // Convert [Int32] to Data
         return int32Buffer.withUnsafeBytes { Data($0) }
     }
 
-    /// Convert a float sample in [-1.0, 1.0] to Int32 range with safe clamping.
-    private func clampFloatToInt32(_ sample: Float) -> Int32 {
-        // Float(Int32.max) rounds up to 2147483648.0 (not representable as Int32),
-        // so a sample of exactly 1.0 produces a scaled value that overflows Int32.
-        // The Int64 intermediate + clamping handles this: 1.0 maps to Int32.max,
-        // and any out-of-range values (e.g. from hot signals) are clamped rather
-        // than trapping.
-        let scaled = sample * Float(Int32.max)
-        return Int32(clamping: Int64(scaled))
+    private static func clamp(_ sample: Float) -> Int32 {
+        // Float(Int32.max) rounds up to 2147483648.0 (not representable as Int32).
+        Int32(clamping: Int64(sample * Float(Int32.max)))
     }
 }
 

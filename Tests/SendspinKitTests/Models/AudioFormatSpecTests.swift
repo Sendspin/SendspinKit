@@ -125,6 +125,25 @@ struct AudioFormatSpecTests {
     }
 
     @Test
+    func audioFormatSpec_acceptsNon16BitDepthForOpusMetadata() throws {
+        for bitDepth in [24, 32] {
+            let format = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: bitDepth)
+            #expect(format.bitDepth == bitDepth)
+        }
+    }
+
+    @Test
+    func audioFormatSpec_acceptsNon16BitDepthForOpusViaDecode() throws {
+        let json = Data("""
+        {"codec": "opus", "channels": 2, "sample_rate": 48000, "bit_depth": 24}
+        """.utf8)
+
+        let format = try JSONDecoder().decode(AudioFormatSpec.self, from: json)
+        #expect(format.codec == .opus)
+        #expect(format.bitDepth == 24)
+    }
+
+    @Test
     func audioFormatSpec_rejectsUnknownCodecViaDecode() {
         // AudioCodec is a String-backed enum — unknown values fail at the Codable layer
         let json = Data("""
@@ -213,7 +232,7 @@ struct AudioFormatSpecTests {
     }
 
     @Test
-    func effectiveOutputBitDepth_returns32ForOpusRegardlessOfBitDepth() throws {
+    func effectiveOutputBitDepth_returns32ForOpus() throws {
         let spec = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
         #expect(spec.effectiveOutputBitDepth == 32)
     }

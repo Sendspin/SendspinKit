@@ -27,9 +27,7 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
     }
 
     /// Validates audio format parameters.
-    private static func validate(
-        channels: Int, sampleRate: Int, bitDepth: Int
-    ) throws(ConfigurationError) {
+    private static func validate(channels: Int, sampleRate: Int, bitDepth: Int) throws(ConfigurationError) {
         guard channels > 0, channels <= maxChannels else { throw .invalidChannelCount(channels) }
         guard sampleRate > 0, sampleRate <= maxSampleRate else { throw .invalidSampleRate(sampleRate) }
         guard supportedBitDepths.contains(bitDepth) else { throw .unsupportedBitDepth(bitDepth) }

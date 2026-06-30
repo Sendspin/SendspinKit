@@ -89,7 +89,7 @@ func (d *OpusDecoder) Decode(data []byte) ([]int32, error) {
 		return nil, fmt.Errorf("opus decode failed: %w", err)
 	}
 
-	// Convert int16 to int32 (Opus is always 16-bit)
+	// Convert this libopus binding's int16 PCM output to int32
 	actualSamples := n * d.format.Channels
 	pcm32 := make([]int32, actualSamples)
 	for i := 0; i < actualSamples; i++ {

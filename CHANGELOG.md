@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to ResonateKit will be documented in this file.
+All notable changes to SendspinKit will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -8,14 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.0] - 2025-10-26
 
 ### Added
-- Opus audio codec support using swift-opus library (v0.0.2)
+- Opus audio codec support via native `AVAudioConverter` (`kAudioFormatOpus`)
 - FLAC audio codec support using flac-binary-xcframework (v0.2.0)
 - Comprehensive codec documentation in docs/CODEC_SUPPORT.md
-- ogg-binary-xcframework dependency (v0.1.2) for FLAC framework support
-- Normalized int32 PCM output across all codecs for consistent pipeline processing
+- ogg-binary-xcframework dependency for FLAC framework support
+- Native Opus decoding through AVAudioConverter with Int32 PCM output for the playback pipeline
 
 ### Changed
-- AudioDecoder now outputs normalized int32 PCM for all codecs (PCM, Opus, FLAC)
+- AudioDecoder now uses codec-specific minimal conversion paths: PCM 16/32-bit passthrough, PCM 24-bit unpacking, and Int32 output for compressed codecs
 - AudioDecoderFactory supports opus and flac codec types
 - Updated README with codec support section and multi-codec examples
 - Player configuration examples now advertise all supported codecs

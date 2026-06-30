@@ -1,8 +1,8 @@
-# Codec Support in ResonateKit
+# Codec Support in SendspinKit
 
 ## Supported Audio Codecs
 
-ResonateKit supports the following audio codecs for streaming playback over the Resonate Protocol:
+SendspinKit supports the following audio codecs for streaming playback over the Sendspin Protocol:
 
 ### PCM (Uncompressed)
 - **Bit Depths:** 16-bit, 24-bit, 32-bit
@@ -17,10 +17,10 @@ ResonateKit supports the following audio codecs for streaming playback over the 
 - 24-bit: Unpacks 3-byte samples to 4-byte Int32 format for consistent pipeline processing
 
 ### Opus (Lossy Compressed)
-- **Bit Depth:** 16-bit (decoded output, normalized to int32)
+- **Bit Depth:** 16-bit negotiated stream format; decoded output is converted to Int32 PCM internally
 - **Sample Rates:** 8kHz, 12kHz, 16kHz, 24kHz, 48kHz
 - **Channels:** Mono, Stereo
-- **Library:** [alta/swift-opus](https://github.com/alta/swift-opus) v0.0.2+ (libopus 1.3+)
+- **Library:** Native Opus decoder via `AVAudioConverter` (`kAudioFormatOpus`, iOS 13+/macOS 10.15+)
 - **Performance:** ~0.5ms decode time per 20ms frame on Apple Silicon
 - **Compression:** Lossy, optimized for low latency
 - **Use Case:** Real-time streaming with low bandwidth (ideal for voice and music)
@@ -30,6 +30,7 @@ ResonateKit supports the following audio codecs for streaming playback over the 
 - Converts float32 samples [-1.0, 1.0] to int32 [Int32.min, Int32.max]
 - Handles both mono and stereo channel interleaving
 - Standard 20ms frame size (960 samples @ 48kHz)
+- The Sendspin spec requires `bit_depth` for every audio format but does not define non-PCM bit-depth semantics; SendspinKit advertises Opus as `bit_depth: 16` for compatibility with the canonical aiosendspin server's libopus/s16 encoder path, while accepting any supported `bit_depth` on inbound Opus streams because decoding ignores it
 
 ### FLAC (Lossless Compressed)
 - **Bit Depths:** 16-bit, 24-bit
@@ -49,17 +50,15 @@ ResonateKit supports the following audio codecs for streaming playback over the 
 
 ## Output Format
 
-All decoders output **int32 PCM samples** in interleaved format to ensure a consistent audio pipeline:
+Compressed decoders and 24-bit PCM produce interleaved Int32 PCM for AudioQueue output; 16-bit and 32-bit PCM are passed through unchanged:
 
-- **16-bit sources:** Left-shifted 8 bits (24-bit aligned in int32)
-- **24-bit sources:** Native 24-bit position in int32
-- **32-bit sources:** Pass-through (full int32 range)
+- **16-bit PCM:** pass-through Int16 samples
+- **24-bit PCM:** unpacked into left-justified Int32 samples
+- **32-bit PCM:** pass-through Int32 samples
+- **Opus:** decoded by AVAudioConverter as Float32, then converted to interleaved Int32 samples
+- **FLAC:** decoded by libFLAC to Int32 samples
 
-This normalization ensures:
-- Consistent processing regardless of source codec
-- Optimal dynamic range utilization
-- Simple downstream pipeline (always int32)
-- Matches the Go reference implementation's audio handling
+This keeps each codec on the smallest reliable conversion path while presenting the effective output depth used by the audio pipeline.
 
 **Sample Layout:**
 ```
@@ -67,7 +66,7 @@ Stereo interleaved: [L0, R0, L1, R1, L2, R2, ...]
 Mono: [M0, M1, M2, M3, ...]
 ```
 
-Each sample is 4 bytes (Int32), little-endian on Apple platforms.
+For Int32 output paths, each sample is 4 bytes, little-endian on Apple platforms. 16-bit PCM passthrough remains 2 bytes per sample.
 
 ## Performance Characteristics
 
@@ -90,7 +89,7 @@ All decoders are designed for real-time streaming with minimal latency:
 
 ## Codec Selection
 
-The server controls codec selection via the `StreamStart` message. ResonateKit advertises supported codecs during connection negotiation:
+The server controls codec selection via the `StreamStart` message. SendspinKit advertises supported codecs during connection negotiation:
 
 ```swift
 PlayerConfiguration(
@@ -122,7 +121,7 @@ dependencies: [
 ],
 targets: [
     .target(
-        name: "ResonateKit",
+        name: "SendspinKit",
         dependencies: [
             .product(name: "NewCodec", package: "swift-newcodec")
         ]
@@ -132,7 +131,7 @@ targets: [
 
 ### 2. Create Decoder Class
 
-Implement `AudioDecoder` protocol in `Sources/ResonateKit/Audio/AudioDecoder.swift`:
+Implement `AudioDecoder` protocol in `Sources/SendspinKit/Audio/AudioDecoder.swift`:
 
 ```swift
 import NewCodec
@@ -165,7 +164,7 @@ public class NewCodecDecoder: AudioDecoder {
 
 ### 3. Update AudioCodec Enum
 
-Add codec to `Sources/ResonateKit/Protocol/AudioCodec.swift`:
+Add codec to `Sources/SendspinKit/Models/AudioCodec.swift`:
 
 ```swift
 public enum AudioCodec: String, Codable, Sendable {
@@ -203,34 +202,33 @@ public static func create(
 
 ### 5. Write Tests
 
-Create `Tests/ResonateKitTests/Audio/NewCodecDecoderTests.swift`:
+Create `Tests/SendspinKitTests/Audio/NewCodecDecoderTests.swift`:
 
 ```swift
-import XCTest
-@testable import ResonateKit
+import Testing
+@testable import SendspinKit
 
-final class NewCodecDecoderTests: XCTestCase {
-    func testNewCodecDecoderCreation() throws {
-        let decoder = try AudioDecoderFactory.create(
+struct NewCodecDecoderTests {
+    @Test
+    func decoderCreation() throws {
+        _ = try AudioDecoderFactory.create(
             codec: .newcodec,
             sampleRate: 48000,
             channels: 2,
             bitDepth: 16,
             header: nil
         )
-        XCTAssertNotNil(decoder)
     }
 
-    func testNewCodecDecodeProducesInt32Output() throws {
+    @Test
+    func decodeProducesInt32Output() throws {
         let decoder = try NewCodecDecoder(sampleRate: 48000, channels: 2, bitDepth: 16)
 
-        // Create test packet
         let testPacket = Data([/* test data */])
         let decoded = try decoder.decode(testPacket)
 
-        // Verify int32 output (4 bytes per sample)
-        XCTAssertTrue(decoded.count % 4 == 0)
-        XCTAssertGreaterThan(decoded.count, 0)
+        #expect(decoded.count.isMultiple(of: 4))
+        #expect(decoded.count > 0)
     }
 }
 ```
@@ -279,8 +277,8 @@ Test with real server streams:
 
 ## References
 
-- [Resonate Protocol Specification](https://github.com/Resonate-Protocol/spec)
-- [swift-opus Documentation](https://github.com/alta/swift-opus)
+- [Sendspin Protocol Specification](https://github.com/Sendspin/spec)
+- [Opus Codec (RFC 6716)](https://www.rfc-editor.org/rfc/rfc6716)
 - [FLAC Binary Framework](https://github.com/sbooth/flac-binary-xcframework)
-- [AudioDecoder Implementation](../Sources/ResonateKit/Audio/AudioDecoder.swift)
-- [Go Reference Implementation](https://github.com/harperreed/resonate-go)
+- [AudioDecoder Implementation](../Sources/SendspinKit/Audio/AudioDecoder.swift)
+- [Sendspin Conformance Suite](https://github.com/Sendspin/conformance)

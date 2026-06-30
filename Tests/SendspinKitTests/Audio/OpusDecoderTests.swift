@@ -3,42 +3,47 @@ import Foundation
 import Testing
 
 struct OpusDecoderTests {
+    /// RFC 6716 Appendix B: Opus packet for one frame of silence.
+    private static let silencePacket = Data([0xFC, 0xFF, 0xFE])
+    private static let bytesPerSample = MemoryLayout<Int32>.size
+    private static let stereoChannels = 2
+    private static let frameDurationFrames = 960 // 20 ms at 48 kHz
+
     @Test
-    func opusDecoderCreation() throws {
-        // Opus standard format: 48kHz stereo
-        _ = try AudioDecoderFactory.create(
+    func decodeSilenceProducesInterleavedInt32() throws {
+        let decoder = try AudioDecoderFactory.create(
             codec: .opus,
             sampleRate: 48_000,
-            channels: 2,
+            channels: Self.stereoChannels,
             bitDepth: 16,
             header: nil
         )
+
+        let first = try decoder.decode(Self.silencePacket)
+        #expect(!first.isEmpty)
+        assertInt32Silence(first)
+
+        let second = try decoder.decode(Self.silencePacket)
+        #expect(second.count == Self.frameDurationFrames * Self.stereoChannels * Self.bytesPerSample)
+        assertInt32Silence(second)
     }
 
     @Test
-    func opusDecodeProducesInt32Output() throws {
-        let decoder = try OpusDecoder(sampleRate: 48_000, channels: 2, bitDepth: 16)
-
-        // Create a minimal valid Opus packet (silence frame)
-        // Opus TOC byte for 20ms SILK frame: 0x3C
-        let silencePacket = Data([0x3C, 0xFC, 0xFF, 0xFE])
-
-        let decoded = try decoder.decode(silencePacket)
-
-        // Should output int32 samples (4 bytes per sample)
-        #expect(decoded.count % 4 == 0, "Output should be int32 samples")
-        #expect(decoded.count > 0, "Should decode some samples")
-    }
-
-    @Test
-    func opusDecoderSampleRates() throws {
-        // Test all standard Opus sample rates
+    func allStandardSampleRatesCanCreateDecoder() throws {
         for sampleRate in [8_000, 12_000, 16_000, 24_000, 48_000] {
-            _ = try OpusDecoder(
+            _ = try AudioDecoderFactory.create(
+                codec: .opus,
                 sampleRate: sampleRate,
                 channels: 2,
-                bitDepth: 16
+                bitDepth: 16,
+                header: nil
             )
         }
+    }
+
+    private func assertInt32Silence(_ data: Data) {
+        #expect(data.count.isMultiple(of: Self.stereoChannels * Self.bytesPerSample))
+        let samples = data.withUnsafeBytes { Array($0.bindMemory(to: Int32.self)) }
+        #expect(samples.allSatisfy { $0 == 0 })
     }
 }

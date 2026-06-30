@@ -1,5 +1,5 @@
 {
-  "originHash" : "8b8d70bf63327be247c4e60b073d1705548b960455dc2acebd477615ea6aa083",
+  "originHash" : "7f7a2db9a8a5b153efe7eb8b3251fe2b5a95131e797586131ddc27d25d601d67",
   "pins" : [
     {
       "identity" : "flac-binary-xcframework",
@@ -26,15 +26,6 @@
       "state" : {
         "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
         "version" : "1.7.1"
-      }
-    },
-    {
-      "identity" : "swift-opus",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/alta/swift-opus.git",
-      "state" : {
-        "revision" : "5f0164b8915fb9001265c54413aa0f0efbd3df06",
-        "version" : "0.0.2"
       }
     }
   ],
