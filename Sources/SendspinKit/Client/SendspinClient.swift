@@ -51,10 +51,10 @@ public final class SendspinClient {
     /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
     /// updated when the server sends a `set_static_delay` command.
     public private(set) var staticDelayMs: Int
-    /// Observability mirrors of the connection's protocol-intent gates. These do
-    /// NOT gate anything: the authoritative gates live in `SendspinConnection`,
-    /// where `stream/request-format` sends are validated. The mirrors are
-    /// render-applied (player: from the engine's `.started` report; artwork:
+    /// Observability mirrors of server-declared stream activity. These do NOT
+    /// gate `stream/request-format`: per spec, those requests are allowed before
+    /// a stream starts and after it ends. The mirrors are render-applied (player:
+    /// from the engine's `.started` report; artwork:
     /// from `.artworkStreamStarted`), so they can lag the connection's gates.
     /// `stream/clear` leaves both untouched — the stream continues (per spec).
     var playerStreamActive = false
@@ -585,8 +585,8 @@ public final class SendspinClient {
     /// Clear every marker of the currently-active stream(s). Shared by
     /// ``disconnect(reason:)`` and the connection-lost path so a dropped link
     /// leaves the same coherent "no active stream" state an explicit disconnect
-    /// would. (Requests themselves fail with `streamNotActive` via the
-    /// `connection == nil` guard — these mirrors are observability state.)
+    /// would. Request-format APIs fail with `notConnected` once `connection` is
+    /// nil; these mirrors are observability state.
     func resetStreamState() {
         updateStreamFormat(nil)
         updateCodecHeader(nil)

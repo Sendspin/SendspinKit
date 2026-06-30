@@ -47,10 +47,11 @@ for SwiftUI.
   handleStreamStart) keys `isFormatChange`; the public render-applied `currentStreamFormat` does not.
 - **`EngineReport.operationalState` carries the full target state** (bidirectional in/out of
   `.error`/`.synchronized`) — a one-way edge would break the single-writer claim.
-- **Protocol-intent gates are connection-authoritative.** The facade's
+- **Stream-active mirrors are observational.** The facade's
   `playerStreamActive`/`artworkStreamActive` are render-applied observability mirrors that gate
-  nothing. `stream/clear` clears buffers WITHOUT ending the stream (spec): gates and format survive
-  it on both sides.
+  nothing. `stream/request-format` is valid even when no stream is active; the server must not start
+  one in response, but should remember the request for the next stream. `stream/clear` clears buffers
+  WITHOUT ending the stream (spec): mirrors and format survive it on both sides.
 - **The `currentArtwork` MainActor observer honors `SessionValidityToken`** just like the public
   binary yields — a retired connection's in-flight artwork must not mutate facade state.
 

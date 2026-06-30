@@ -145,15 +145,17 @@ struct StreamRequestFormatTests {
     }
 
     @Test
-    func requestPlayerFormat_throwsBeforeAnyStream() async throws {
+    func requestPlayerFormat_sendsBeforeAnyStreamWithoutActivatingMirror() async throws {
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 
-        await #expect(throws: SendspinClientError.streamNotActive(.player)) {
-            try await client.requestPlayerFormat(codec: .flac)
-        }
+        try await client.requestPlayerFormat(codec: .flac)
+
         let sent = try await sentRequestFormats(mock)
-        #expect(sent.isEmpty, "No stream/request-format may be emitted without an active stream")
+        #expect(sent.count == 1)
+        #expect(sent.first?.payload.player?.codec == .flac)
+        #expect(sent.first?.payload.artwork == nil)
+        #expect(!client.playerStreamActive, "Requesting a format must not locally activate a stream")
 
         await client.disconnect()
     }
@@ -178,7 +180,7 @@ struct StreamRequestFormatTests {
     }
 
     @Test
-    func requestPlayerFormat_throwsAfterStreamEnd() async throws {
+    func requestPlayerFormat_sendsAfterStreamEndWithoutReactivatingMirror() async throws {
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 
@@ -189,33 +191,35 @@ struct StreamRequestFormatTests {
         let ended = await waitUntil { await MainActor.run { !client.playerStreamActive } }
         #expect(ended, "Player stream should be inactive after stream/end")
 
-        await #expect(throws: SendspinClientError.streamNotActive(.player)) {
-            try await client.requestPlayerFormat(codec: .flac)
-        }
+        try await client.requestPlayerFormat(codec: .flac)
+
+        let sent = try await sentRequestFormats(mock)
+        #expect(sent.count == 1)
+        #expect(sent.first?.payload.player?.codec == .flac)
+        #expect(!client.playerStreamActive, "Requesting a format after stream/end must not reactivate the mirror")
 
         await client.disconnect()
     }
 
     @Test
-    func requestPlayerFormat_convenienceOverloadInheritsTheGate() async throws {
+    func requestPlayerFormat_convenienceOverloadSendsBeforeAndDuringStream() async throws {
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 
         let format = try AudioFormatSpec(codec: .flac, channels: 1, sampleRate: 8_000, bitDepth: 16)
 
-        // Before a stream: the AudioFormatSpec overload must be gated just like the
+        // Before a stream: the AudioFormatSpec overload must send just like the
         // parameterized one (it delegates to it).
-        await #expect(throws: SendspinClientError.streamNotActive(.player)) {
-            try await client.requestPlayerFormat(format)
-        }
+        try await client.requestPlayerFormat(format)
 
         try await mock.injectText(playerStreamStartJSON())
         _ = await waitUntil { await MainActor.run { client.playerStreamActive } }
 
         try await client.requestPlayerFormat(format)
         let sent = try await sentRequestFormats(mock)
-        #expect(sent.count == 1)
+        #expect(sent.count == 2)
         #expect(sent.first?.payload.player?.codec == .flac)
+        #expect(sent.last?.payload.player?.codec == .flac)
 
         await client.disconnect()
     }
@@ -335,15 +339,18 @@ struct StreamRequestFormatTests {
     }
 
     @Test
-    func requestArtworkFormat_throwsBeforeAnyStream() async throws {
+    func requestArtworkFormat_sendsBeforeAnyStreamWithoutActivatingMirror() async throws {
         let client = try makeArtworkClient()
         let mock = try await connectClient(client, activeRoles: [.artworkV1])
 
-        await #expect(throws: SendspinClientError.streamNotActive(.artwork)) {
-            try await client.requestArtworkFormat(channel: 0, format: .png)
-        }
+        try await client.requestArtworkFormat(channel: 0, format: .png)
+
         let sent = try await sentRequestFormats(mock)
-        #expect(sent.isEmpty)
+        #expect(sent.count == 1)
+        #expect(sent.first?.payload.artwork?.channel == 0)
+        #expect(sent.first?.payload.artwork?.format == .png)
+        #expect(sent.first?.payload.player == nil)
+        #expect(!client.artworkStreamActive, "Requesting a format must not locally activate artwork")
 
         await client.disconnect()
     }
@@ -371,11 +378,11 @@ struct StreamRequestFormatTests {
     // MARK: stream/clear (spec: clear buffers WITHOUT ending the stream)
 
     @Test
-    func streamClear_keepsRequestFormatGatesOpen() async throws {
+    func streamClear_preservesStreamMirrorsAndStillAllowsRequestFormat() async throws {
         // Spec: stream/clear "instructs clients to clear buffers without ending
         // the stream" — clients "continue with chunks received after this
-        // message". The stream stays protocol-active, so both request-format
-        // gates must remain open (a seek must not break format renegotiation).
+        // message". The stream stays protocol-active, so the stream-active
+        // mirrors remain true and request-format remains sendable.
         let client = try makePlayerArtworkClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
 
@@ -389,8 +396,8 @@ struct StreamRequestFormatTests {
         try await mock.injectText(streamClearJSON())
         #expect(await cleared.value, "Expected a streamCleared event")
 
-        #expect(client.playerStreamActive, "stream/clear must not close the player gate")
-        #expect(client.artworkStreamActive, "stream/clear must not close the artwork gate")
+        #expect(client.playerStreamActive, "stream/clear must not close the player mirror")
+        #expect(client.artworkStreamActive, "stream/clear must not close the artwork mirror")
 
         try await client.requestPlayerFormat(codec: .pcm)
         try await client.requestArtworkFormat(channel: 0, format: .png)
@@ -404,10 +411,10 @@ struct StreamRequestFormatTests {
     @Test
     func streamClear_preservesCurrentStreamFormat() async throws {
         // stream/clear clears buffers WITHOUT ending the stream, so the negotiated
-        // format must survive it. The complementary gate-survival is covered by
-        // `streamClear_keepsRequestFormatGatesOpen`; here we pin the *format* half
-        // of "both sides survive a clear": the render-applied `currentStreamFormat`
-        // mirror AND the still-open player gate.
+        // format must survive it. The complementary mirror-survival is covered by
+        // `streamClear_preservesStreamMirrorsAndStillAllowsRequestFormat`; here we
+        // pin the *format* half of "both sides survive a clear": the
+        // render-applied `currentStreamFormat` mirror AND the player active mirror.
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 
@@ -422,7 +429,7 @@ struct StreamRequestFormatTests {
 
         let after = await MainActor.run { client.currentStreamFormat }
         #expect(after == before, "stream/clear must NOT drop the negotiated stream format")
-        #expect(client.playerStreamActive, "stream/clear must NOT close the player gate")
+        #expect(client.playerStreamActive, "stream/clear must NOT close the player mirror")
 
         await client.disconnect()
     }
@@ -430,12 +437,10 @@ struct StreamRequestFormatTests {
     // MARK: Gate authority (connection, not facade mirror)
 
     @Test
-    func requestPlayerFormat_gateAuthorityLivesInConnection() async throws {
-        // The connection owns the protocol-intent gates; the facade boolean is a
-        // render-applied observability mirror. Falsifying the mirror must not
-        // block a request while the connection's gate (opened at stream/start)
-        // is open. Mutation proof: re-gating the facade API on its own boolean
-        // makes this throw streamNotActive.
+    func requestPlayerFormat_doesNotGateOnFacadeMirror() async throws {
+        // The facade boolean is a render-applied observability mirror. Falsifying
+        // the mirror must not block a request; request-format sendability depends
+        // on connection/handshake/role state, not local stream-active mirrors.
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 
@@ -453,7 +458,7 @@ struct StreamRequestFormatTests {
     }
 
     @Test
-    func requestArtworkFormat_gateAuthorityLivesInConnection() async throws {
+    func requestArtworkFormat_doesNotGateOnFacadeMirror() async throws {
         let client = try makeArtworkClient()
         let mock = try await connectClient(client, activeRoles: [.artworkV1])
 
@@ -475,7 +480,7 @@ struct StreamRequestFormatTests {
     @Test
     func endingPlayerStreamLeavesArtworkRequestable() async throws {
         // player and artwork are independent streams: a stream/end naming only
-        // "player" must close the player gate while leaving artwork's open.
+        // "player" must close the player mirror while leaving artwork's open.
         let client = try makePlayerArtworkClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
 
@@ -490,14 +495,13 @@ struct StreamRequestFormatTests {
         #expect(playerClosed)
         #expect(client.artworkStreamActive, "Ending the player stream must not touch artwork")
 
-        await #expect(throws: SendspinClientError.streamNotActive(.player)) {
-            try await client.requestPlayerFormat(codec: .flac)
-        }
+        try await client.requestPlayerFormat(codec: .flac)
         try await client.requestArtworkFormat(channel: 0, format: .png)
 
         let sent = try await sentRequestFormats(mock)
-        #expect(sent.count == 1)
-        #expect(sent.first?.payload.artwork?.channel == 0)
+        #expect(sent.count == 2)
+        #expect(sent.first?.payload.player?.codec == .flac)
+        #expect(sent.last?.payload.artwork?.channel == 0)
 
         await client.disconnect()
     }
@@ -505,7 +509,7 @@ struct StreamRequestFormatTests {
     @Test
     func endingArtworkStreamLeavesPlayerRequestable() async throws {
         // player and artwork are independent streams: a stream/end naming only
-        // "artwork" must close the artwork gate while leaving player's open.
+        // "artwork" must close the artwork mirror while leaving player's open.
         let client = try makePlayerArtworkClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
 
@@ -523,14 +527,13 @@ struct StreamRequestFormatTests {
         #expect(artworkClosed, "Ending artwork must close the artwork mirror")
         #expect(client.playerStreamActive, "Ending artwork must not touch player")
 
-        await #expect(throws: SendspinClientError.streamNotActive(.artwork)) {
-            try await client.requestArtworkFormat(channel: 0, format: .png)
-        }
+        try await client.requestArtworkFormat(channel: 0, format: .png)
         try await client.requestPlayerFormat(codec: .pcm)
 
         let sent = try await sentRequestFormats(mock)
-        #expect(sent.count == 1)
-        #expect(sent.first?.payload.player?.codec == .pcm)
+        #expect(sent.count == 2)
+        #expect(sent.first?.payload.artwork?.channel == 0)
+        #expect(sent.last?.payload.player?.codec == .pcm)
 
         await client.disconnect()
     }
@@ -555,12 +558,13 @@ struct StreamRequestFormatTests {
         }
         #expect(bothClosed, "stream/end without roles must close all known stream mirrors")
 
-        await #expect(throws: SendspinClientError.streamNotActive(.player)) {
-            try await client.requestPlayerFormat(codec: .pcm)
-        }
-        await #expect(throws: SendspinClientError.streamNotActive(.artwork)) {
-            try await client.requestArtworkFormat(channel: 0, format: .png)
-        }
+        try await client.requestPlayerFormat(codec: .pcm)
+        try await client.requestArtworkFormat(channel: 0, format: .png)
+
+        let sent = try await sentRequestFormats(mock)
+        #expect(sent.count == 2)
+        #expect(sent.first?.payload.player?.codec == .pcm)
+        #expect(sent.last?.payload.artwork?.channel == 0)
 
         await client.disconnect()
     }

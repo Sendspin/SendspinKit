@@ -56,9 +56,10 @@ actor SendspinConnection {
     /// messages before the handshake completes), cancelled on teardown.
     var clockSyncTask: Task<Void, Never>?
 
-    // Protocol-intent gates. Internal so same-module SendspinConnection extensions
-    // can split implementation across files; the message handlers remain the
-    // single writer and request-format sends gate on these values.
+    // Protocol-intent gates for inbound stream data. Internal so same-module
+    // SendspinConnection extensions can split implementation across files; the
+    // message handlers remain the single writer. Request-format sends are allowed
+    // even when these are false, per spec.
     var playerStreamActive = false
     var artworkStreamActive = false
     var visualizerStreamActive = false

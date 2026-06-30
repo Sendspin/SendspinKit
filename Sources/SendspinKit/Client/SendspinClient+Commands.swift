@@ -67,12 +67,11 @@ public extension SendspinClient {
     /// - Full format change: `try await requestPlayerFormat(codec: .flac, sampleRate: 48000, bitDepth: 24)`
     /// - Downgrade under load: `try await requestPlayerFormat(codec: .opus)`
     ///
-    /// Only valid while a player stream is active (between its `stream/start`
-    /// and `stream/end`): the server answers with a `stream/start` that
-    /// renegotiates that stream, so there is nothing to renegotiate otherwise.
+    /// Valid whether or not a player stream is active. If no stream is active,
+    /// the server must not start one in response, but should remember the request
+    /// and apply it to the next player stream it starts.
     ///
-    /// - Throws: ``SendspinClientError/streamNotActive(_:)`` if no player stream
-    ///   is active, or ``SendspinClientError/notConnected`` if not connected.
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
     @MainActor
     func requestPlayerFormat(
         codec: AudioCodec? = nil,
@@ -111,13 +110,12 @@ public extension SendspinClient {
 
 public extension SendspinClient {
     /// Request the server to change artwork format for a specific channel.
-    /// The server will respond with `stream/start` containing the updated config.
+    /// If an artwork stream is active, the server responds with `stream/start`
+    /// containing the updated config. If no artwork stream is active, the server
+    /// must not start one in response, but should remember the request for the
+    /// next artwork stream it starts.
     ///
-    /// Only valid while an artwork stream is active (between its `stream/start`
-    /// and `stream/end`).
-    ///
-    /// - Throws: ``SendspinClientError/streamNotActive(_:)`` if no artwork stream
-    ///   is active, or ``SendspinClientError/notConnected`` if not connected.
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
     @MainActor
     func requestArtworkFormat(
         channel: Int,

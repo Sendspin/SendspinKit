@@ -298,10 +298,8 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     case roleNotActive(VersionedRole)
     /// A facade-initiated send was attempted before `server/hello` completed the handshake.
     case handshakeIncomplete
-    /// A `stream/request-format` was attempted for a role whose stream is not
-    /// currently active. Per spec the server answers a format request with a
-    /// `stream/start` that renegotiates an existing stream, so there is nothing
-    /// to renegotiate before the role's `stream/start` (or after its `stream/end`).
+    /// A stream-specific operation was attempted for a role whose stream is not
+    /// currently active.
     case streamNotActive(StreamRole)
     /// A URL string supplied to a connect/discovery convenience could not be parsed as an absolute URL.
     case invalidServerURL(String)
@@ -323,7 +321,7 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
         case .handshakeIncomplete:
             "Handshake is not complete; wait for server/hello before sending commands"
         case let .streamNotActive(role):
-            "Cannot request \(role.rawValue) format: no active \(role.rawValue) stream to renegotiate"
+            "No active \(role.rawValue) stream"
         case let .invalidServerURL(server):
             "Invalid Sendspin server URL: \(server)"
         case .noDiscoveredServers:
