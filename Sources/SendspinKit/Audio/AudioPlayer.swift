@@ -41,6 +41,9 @@ let audioQueueBufferByteSize: UInt32 = 16_384
 /// The sync-error formula treats one buffer as playing and one as queued.
 let audioQueueEstimatedInFlightBuffers = 2
 
+private let volumeRampStepCount = 5
+private let volumeRampStepDuration: Duration = .milliseconds(10)
+
 /// All mutable state accessed from both the actor and the audio thread.
 ///
 /// Wrapped in `OSAllocatedUnfairLock<LockedState>` so access is structurally
@@ -144,6 +147,9 @@ actor AudioPlayer {
     private nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
 
     private var currentVolume: Float = 1.0
+    private var appliedVolume: Float = 1.0
+    private var volumeRampTask: Task<Void, Never>?
+    private var volumeRampID = 0
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
 
@@ -182,6 +188,7 @@ actor AudioPlayer {
     }
 
     deinit {
+        volumeRampTask?.cancel()
         // Dispose the AudioQueue synchronously to prevent callbacks firing into
         // a dangling Unmanaged pointer. We can't call the actor-isolated stop()
         // from nonisolated deinit, so we dispose via the nonisolated copy.
@@ -362,6 +369,7 @@ actor AudioPlayer {
 
     /// Stop playback and clean up
     func stop() {
+        cancelVolumeRamp()
         guard let queue = audioQueue else { return }
 
         AudioQueueStop(queue, true)
@@ -667,19 +675,64 @@ actor AudioPlayer {
 
     // MARK: - Volume
 
-    /// Set volume (0.0 to 1.0 linear). Delegates to the configured VolumeControl.
+    /// Set volume (0.0 to 1.0 linear). Applies a short ramp to avoid audible clicks.
     func setVolume(_ volume: Float) {
         let clampedVolume = max(0.0, min(1.0, volume))
         currentVolume = clampedVolume
         if !isMuted {
-            volumeControl.setVolume(clampedVolume, on: audioQueue)
+            startVolumeRamp(to: clampedVolume)
         }
     }
 
-    /// Set mute state. Delegates to the configured VolumeControl.
+    /// Set mute state.
     func setMute(_ muted: Bool) {
+        guard muted != isMuted else { return }
         isMuted = muted
-        volumeControl.setMute(muted, currentVolume: currentVolume, on: audioQueue)
+        if muted {
+            cancelVolumeRamp()
+            appliedVolume = 0.0
+            volumeControl.setMute(true, currentVolume: currentVolume, on: audioQueue)
+        } else {
+            volumeControl.setVolume(0.0, on: audioQueue)
+            volumeControl.setMute(false, currentVolume: 0.0, on: audioQueue)
+            appliedVolume = 0.0
+            startVolumeRamp(to: currentVolume)
+        }
+    }
+
+    private func cancelVolumeRamp() {
+        volumeRampTask?.cancel()
+        volumeRampTask = nil
+        volumeRampID += 1
+    }
+
+    private func startVolumeRamp(to targetVolume: Float) {
+        cancelVolumeRamp()
+        let rampID = volumeRampID
+        let startVolume = appliedVolume
+        guard startVolume != targetVolume else { return }
+
+        volumeRampTask = Task { [weak self] in
+            for step in 1 ... volumeRampStepCount {
+                if Task.isCancelled { return }
+                if step > 1 {
+                    try? await Task.sleep(for: volumeRampStepDuration)
+                    if Task.isCancelled { return }
+                }
+                let progress = Float(step) / Float(volumeRampStepCount)
+                let volume = startVolume + ((targetVolume - startVolume) * progress)
+                await self?.applyRampVolume(volume, rampID: rampID, isFinal: step == volumeRampStepCount)
+            }
+        }
+    }
+
+    private func applyRampVolume(_ volume: Float, rampID: Int, isFinal: Bool) {
+        guard rampID == volumeRampID else { return }
+        appliedVolume = volume
+        volumeControl.setVolume(volume, on: audioQueue)
+        if isFinal {
+            volumeRampTask = nil
+        }
     }
 
     /// Cursor position that makes the sync-error formula evaluate to equilibrium

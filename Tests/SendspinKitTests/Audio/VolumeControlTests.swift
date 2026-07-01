@@ -96,6 +96,53 @@ struct VolumeControlTests {
 
     // MARK: - Integration: AudioPlayer with VolumeControl
 
+    @Test
+    func audioPlayerRampsVolumeChanges() async {
+        let recorder = RecordingVolumeControl()
+        let player = AudioPlayer(volumeControl: recorder)
+
+        await player.setVolume(0.5)
+        #expect(
+            await waitUntil { recorder.volumeValues.last == 0.5 },
+            "volume changes must ramp to the requested target"
+        )
+
+        let volumes = recorder.volumeValues
+        #expect(volumes.count > 1)
+        #expect(volumes.dropLast().contains { $0 > 0.5 && $0 < 1.0 })
+        #expect(volumes.allSatisfy { $0 >= 0.5 && $0 <= 1.0 })
+    }
+
+    @Test
+    func audioPlayerCancelsInFlightVolumeRampWhenNewTargetArrives() async {
+        let recorder = RecordingVolumeControl()
+        let player = AudioPlayer(volumeControl: recorder)
+
+        await player.setVolume(0.0)
+        await player.setVolume(0.5)
+
+        #expect(await waitUntil { recorder.volumeValues.last == 0.5 })
+        let volumes = recorder.volumeValues
+        #expect(!volumes.contains(0.0), "the cancelled ramp must not continue to its obsolete target")
+        #expect(volumes.last == 0.5)
+    }
+
+    @Test
+    func audioPlayerRampsVolumeOnUnmute() async {
+        let recorder = RecordingVolumeControl()
+        let player = AudioPlayer(volumeControl: recorder)
+
+        await player.setVolume(0.75)
+        _ = await waitUntil { recorder.volumeValues.last == 0.75 }
+        await player.setMute(true)
+        await player.setMute(false)
+
+        #expect(await waitUntil { recorder.volumeValues.last == 0.75 })
+        let volumes = recorder.volumeValues
+        #expect(volumes.contains(0.0))
+        #expect(volumes.contains { $0 > 0.0 && $0 < 0.75 })
+    }
+
     @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func audioPlayer_usesProvidedVolumeControlForVolume() async throws {
         let recorder = RecordingVolumeControl()
@@ -107,8 +154,10 @@ struct VolumeControlTests {
         try await player.start(format: format, codecHeader: nil)
 
         await player.setVolume(0.75)
-        let calls = recorder.calls
-        #expect(calls.contains { $0.starts(with: "setVolume(0.75") })
+        #expect(
+            await waitUntil { recorder.volumeValues.contains(0.75) },
+            "volume ramp must eventually apply the requested target"
+        )
 
         await player.stop()
     }
@@ -178,15 +227,21 @@ struct VolumeControlTests {
 private final class RecordingVolumeControl: VolumeControl, @unchecked Sendable {
     private let lock = NSLock()
     private var _calls: [String] = []
+    private var _volumeValues: [Float] = []
 
     var calls: [String] {
         get { lock.withLock { _calls } }
         set { lock.withLock { _calls = newValue } }
     }
 
+    var volumeValues: [Float] {
+        lock.withLock { _volumeValues }
+    }
+
     func setVolume(_ volume: Float, on queue: AudioQueueRef?) {
         lock.withLock {
             _calls.append("setVolume(\(volume), queue: \(queue != nil ? "non-nil" : "nil"))")
+            _volumeValues.append(volume)
         }
         // Also apply to queue so AudioPlayer's behavior is realistic
         if let queue {
