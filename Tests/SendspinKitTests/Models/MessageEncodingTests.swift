@@ -492,4 +492,161 @@ struct MessageEncodingTests {
         #expect(relativeJson.contains("\"offset_ms\":-15000"))
         #expect(!relativeJson.contains("position_ms"))
     }
+
+    // MARK: - Forward compatibility
+
+    @Test
+    func handshakeAndStreamMessages_ignoreUnrecognizedPayloadFields() throws {
+        let decoder = JSONDecoder()
+
+        let serverHelloJSON = """
+        {
+            "type": "server/hello",
+            "payload": {
+                "server_id": "test-server",
+                "name": "Test Server",
+                "version": 1,
+                "active_roles": ["player@v1"],
+                "connection_reason": "discovery",
+                "future_top_level": {"nested": true}
+            }
+        }
+        """
+        let serverHelloData = try #require(serverHelloJSON.data(using: .utf8))
+        let serverHello = try decoder.decode(ServerHelloMessage.self, from: serverHelloData)
+        #expect(serverHello.payload.serverId == "test-server")
+        #expect(serverHello.payload.connectionReason == .discovery)
+
+        let serverTimeJSON = """
+        {
+            "type": "server/time",
+            "payload": {
+                "client_transmitted": 100,
+                "server_received": 200,
+                "server_transmitted": 300,
+                "server_clock_quality": "future-value"
+            }
+        }
+        """
+        let serverTimeData = try #require(serverTimeJSON.data(using: .utf8))
+        let serverTime = try decoder.decode(ServerTimeMessage.self, from: serverTimeData)
+        #expect(serverTime.payload.clientTransmitted == 100)
+        #expect(serverTime.payload.serverReceived == 200)
+        #expect(serverTime.payload.serverTransmitted == 300)
+
+        let streamStartJSON = """
+        {
+            "type": "stream/start",
+            "payload": {
+                "player": {
+                    "codec": "opus",
+                    "sample_rate": 48000,
+                    "channels": 2,
+                    "bit_depth": 16,
+                    "codec_header": "AQIDBA==",
+                    "future_player_field": [1, 2, 3]
+                },
+                "future_payload_field": "ignored"
+            }
+        }
+        """
+        let streamStartData = try #require(streamStartJSON.data(using: .utf8))
+        let streamStart = try decoder.decode(StreamStartMessage.self, from: streamStartData)
+        let player = try #require(streamStart.payload.player)
+        #expect(player.codec == "opus")
+        #expect(player.sampleRate == 48_000)
+        #expect(player.channels == 2)
+        #expect(player.bitDepth == 16)
+        #expect(player.codecHeader == "AQIDBA==")
+    }
+
+    @Test
+    func stateCommandAndGroupMessages_ignoreUnrecognizedPayloadFields() throws {
+        let decoder = JSONDecoder()
+
+        let serverStateJSON = """
+        {
+            "type": "server/state",
+            "payload": {
+                "metadata": {
+                    "timestamp": 12345678,
+                    "title": "New Song",
+                    "progress": {
+                        "track_progress": 12000,
+                        "track_duration": 180000,
+                        "playback_speed": 1000,
+                        "future_progress_field": true
+                    },
+                    "future_metadata_field": null
+                },
+                "controller": {
+                    "volume": 50,
+                    "future_controller_field": {"mode": "later"}
+                },
+                "future_state_field": "ignored"
+            }
+        }
+        """
+        let serverStateData = try #require(serverStateJSON.data(using: .utf8))
+        let serverState = try decoder.decode(ServerStateMessage.self, from: serverStateData)
+        let metadata = try #require(serverState.payload.metadata)
+        let progress = try #require(metadata.progress.merge(previous: nil))
+        #expect(metadata.title.merge(previous: nil) == "New Song")
+        #expect(progress.trackProgress == 12_000)
+        #expect(progress.trackDuration == 180_000)
+        #expect(progress.playbackSpeed == 1_000)
+        #expect(serverState.payload.controller?.volume == 50)
+
+        let serverCommandJSON = """
+        {
+            "type": "server/command",
+            "payload": {
+                "player": {
+                    "command": "set_static_delay",
+                    "static_delay_ms": 250,
+                    "future_command_field": "ignored"
+                },
+                "future_payload_field": "ignored"
+            }
+        }
+        """
+        let serverCommandData = try #require(serverCommandJSON.data(using: .utf8))
+        let serverCommand = try decoder.decode(ServerCommandMessage.self, from: serverCommandData)
+        #expect(serverCommand.payload.player?.command == .setStaticDelay)
+        #expect(serverCommand.payload.player?.staticDelayMs == 250)
+
+        let groupUpdateJSON = """
+        {
+            "type": "group/update",
+            "payload": {
+                "playback_state": "playing",
+                "group_id": "group-1",
+                "group_name": "Kitchen",
+                "future_group_field": 42
+            }
+        }
+        """
+        let groupUpdateData = try #require(groupUpdateJSON.data(using: .utf8))
+        let groupUpdate = try decoder.decode(GroupUpdateMessage.self, from: groupUpdateData)
+        #expect(groupUpdate.payload.playbackState == .playing)
+        #expect(groupUpdate.payload.groupId == "group-1")
+        #expect(groupUpdate.payload.groupName == "Kitchen")
+    }
+
+    @Test
+    func inboundMessages_rejectUnrecognizedValues() throws {
+        let json = """
+        {
+            "type": "group/update",
+            "payload": {
+                "playback_state": "paused"
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(GroupUpdateMessage.self, from: data)
+        }
+    }
 }
