@@ -27,12 +27,16 @@ struct CorrectionSchedule: Equatable {
 /// Purely functional — all stored properties are immutable. No accumulated state
 /// between calls; each `plan()` invocation depends only on its arguments.
 struct CorrectionPlanner {
-    /// Default tuning constants — exposed for test assertions against boundary values.
-    static let defaultDeadbandUs: Int64 = 1_500
-    static let defaultEngageUs: Int64 = 3_000
+    /// Default sync-correction policy for player output.
+    ///
+    /// Soft correction starts at the recommended accuracy target and stops once
+    /// error falls into the dead band. Reanchor remains a rare recovery path for
+    /// large discontinuities, not the normal steady-state correction mechanism.
+    static let defaultDeadbandUs: Int64 = 100
+    static let defaultEngageUs: Int64 = 500
     static let defaultReanchorThresholdUs: Int64 = 500_000
     static let defaultTargetSeconds: Double = 2.0
-    static let defaultMaxSpeedCorrection: Double = 0.04
+    static let defaultMaxSpeedCorrection: Double = 0.005
 
     let deadbandMicroseconds: Int64
     let engageMicroseconds: Int64

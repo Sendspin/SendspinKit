@@ -2,20 +2,16 @@ import Foundation
 
 /// Qualitative bucket for clock sync quality, derived from ``ClockSyncStats/estimatedError``.
 ///
-/// Thresholds are calibrated against human perception of inter-device audio
-/// sync (the actual product concern), not against audio-sample-rate scheduling
-/// precision. The Haas-effect fusion limit is ~35 ms; anything below 20 ms is
-/// essentially imperceptible for multi-room use. The ``unacceptable`` floor
-/// (100 ms) aligns with the RTT gate in ``ClockSynchronizer``, which rejects
-/// samples above 100 ms RTT entirely — if ``estimatedError`` exceeds that,
-/// the filter is producing an estimate looser than what the library considers
-/// a usable single sample.
+/// Thresholds are calibrated to player synchronization needs rather than broad
+/// perceptual buckets. ``estimatedError`` is the filter's offset standard
+/// deviation, so quality is a confidence signal for whether output scheduling
+/// can hold the player accuracy target/floor under current network conditions.
 ///
-/// - ``excellent`` (<5 ms): well below any perceptual threshold
-/// - ``good`` (<20 ms): below the Haas fusion limit; inaudible in practice
-/// - ``fair`` (<50 ms): approaching detectable; OK for casual listening
-/// - ``poor`` (<100 ms): audible offset likely on careful listening
-/// - ``unacceptable`` (≥100 ms): worse than any single sample the RTT gate accepts
+/// - ``excellent`` (<0.5 ms): at the player accuracy target
+/// - ``good`` (<1 ms): inside the required steady-state accuracy floor
+/// - ``fair`` (<5 ms): usable but outside the player floor margin
+/// - ``poor`` (<20 ms): degraded; audible offset is increasingly likely
+/// - ``unacceptable`` (≥20 ms): too noisy for synchronized playback confidence
 public enum ClockSyncQuality: String, Sendable, Hashable, Codable, CaseIterable {
     case excellent
     case good
@@ -31,10 +27,10 @@ public enum ClockSyncQuality: String, Sendable, Hashable, Codable, CaseIterable 
     /// These constants are compared against ``ClockSyncStats/estimatedError``,
     /// which is a standard deviation in microseconds. Threshold type matches
     /// the value type (`Double`) to avoid rounding mid-comparison.
-    public static let excellentUpperBound: Double = 5_000 // 5 ms
-    public static let goodUpperBound: Double = 20_000 // 20 ms
-    public static let fairUpperBound: Double = 50_000 // 50 ms
-    public static let poorUpperBound: Double = 100_000 // 100 ms (= RTT gate)
+    public static let excellentUpperBound: Double = 500 // 0.5 ms
+    public static let goodUpperBound: Double = 1_000 // 1 ms
+    public static let fairUpperBound: Double = 5_000 // 5 ms
+    public static let poorUpperBound: Double = 20_000 // 20 ms
 
     /// Classify an estimated error (μs) into a quality tier.
     public static func classify(estimatedError: Double) -> ClockSyncQuality {

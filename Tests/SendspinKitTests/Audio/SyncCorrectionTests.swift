@@ -6,20 +6,29 @@ struct SyncCorrectionTests {
     private static let deadbandUs = CorrectionPlanner.defaultDeadbandUs
     private static let engageUs = CorrectionPlanner.defaultEngageUs
     private static let reanchorUs = CorrectionPlanner.defaultReanchorThresholdUs
+    private static let maxSpeedCorrection = CorrectionPlanner.defaultMaxSpeedCorrection
+
+    @Test
+    func defaultsMatchPlayerSyncAccuracyPolicy() {
+        #expect(Self.deadbandUs == 100, "soft correction should stop inside the dead band")
+        #expect(Self.engageUs == 500, "soft correction should start at the recommended accuracy target")
+        #expect(Self.reanchorUs == 500_000, "large reanchor should remain a rare recovery path")
+        #expect(Self.maxSpeedCorrection == 0.005, "soft correction should not exceed the playback speed cap")
+    }
 
     // MARK: - Integration tests (from tests/sync_correction.rs)
 
     @Test
     func deadband_smallErrorProducesNoCorrection() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 500, sampleRate: 48_000, currentlyCorrecting: false)
+        let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 1, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule == CorrectionSchedule())
     }
 
     @Test
     func positiveErrorProducesDropSchedule() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: 200_000, sampleRate: 48_000, currentlyCorrecting: false)
+        let schedule = planner.plan(errorMicroseconds: Self.engageUs + 100, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.dropEveryNFrames > 0)
         #expect(schedule.insertEveryNFrames == 0)
         #expect(!schedule.reanchor)
@@ -28,7 +37,7 @@ struct SyncCorrectionTests {
     @Test
     func negativeErrorProducesInsertSchedule() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: -200_000, sampleRate: 48_000, currentlyCorrecting: false)
+        let schedule = planner.plan(errorMicroseconds: -(Self.engageUs + 100), sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.insertEveryNFrames > 0)
         #expect(schedule.dropEveryNFrames == 0)
         #expect(!schedule.reanchor)
@@ -54,7 +63,7 @@ struct SyncCorrectionTests {
     @Test
     func correctionEngagesAboveThreshold() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: Self.engageUs + 500, sampleRate: 48_000, currentlyCorrecting: false)
+        let schedule = planner.plan(errorMicroseconds: Self.engageUs + 100, sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.isCorrecting, "should engage above engage threshold")
         #expect(schedule.dropEveryNFrames > 0, "positive error = drop")
     }
@@ -71,14 +80,14 @@ struct SyncCorrectionTests {
     @Test
     func hysteresisStopsBelowDeadband() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 500, sampleRate: 48_000, currentlyCorrecting: true)
+        let schedule = planner.plan(errorMicroseconds: Self.deadbandUs - 1, sampleRate: 48_000, currentlyCorrecting: true)
         #expect(!schedule.isCorrecting, "should stop below deadband")
     }
 
     @Test
     func negativeErrorInsertsFrames() {
         let planner = CorrectionPlanner()
-        let schedule = planner.plan(errorMicroseconds: -(Self.engageUs + 2_000), sampleRate: 48_000, currentlyCorrecting: false)
+        let schedule = planner.plan(errorMicroseconds: -(Self.engageUs + 100), sampleRate: 48_000, currentlyCorrecting: false)
         #expect(schedule.insertEveryNFrames > 0, "negative error = insert")
         #expect(schedule.dropEveryNFrames == 0)
     }
