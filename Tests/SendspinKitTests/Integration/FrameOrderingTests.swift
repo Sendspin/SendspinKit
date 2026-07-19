@@ -30,7 +30,7 @@ private func artworkFrame(
 /// Build a binary `visualizer` frame (type byte + big-endian timestamp + visualizer data).
 private func visualizerFrame(index: Int = 0, baseTimestamp: Int64 = 1_000_000) -> Data {
     var frame = Data()
-    frame.append(BinaryMessageType.visualizerData.rawValue)
+    frame.append(BinaryMessageType.visualizerLoudness.rawValue)
     var timestamp = (baseTimestamp + Int64(index) * 25_000).bigEndian
     frame.append(Data(bytes: &timestamp, count: 8))
     frame.append(Data(repeating: 0xAB, count: 64)) // Dummy visualizer data
@@ -68,7 +68,7 @@ private func streamStartWithVisualizerJSON() throws -> String {
         payload: StreamStartPayload(
             player: nil,
             artwork: nil,
-            visualizer: StreamStartVisualizer()
+            visualizer: StreamVisualizerConfig(types: [.loudness], rateMax: 30)
         )
     )
     let data = try JSONEncoder().encode(message)

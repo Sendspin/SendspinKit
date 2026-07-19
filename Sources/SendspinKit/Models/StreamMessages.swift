@@ -14,7 +14,7 @@ struct StreamStartMessage: SendspinMessage, Equatable {
 struct StreamStartPayload: Codable, Equatable {
     let player: StreamStartPlayer?
     let artwork: StreamStartArtwork?
-    let visualizer: StreamStartVisualizer?
+    let visualizer: StreamVisualizerConfig?
 }
 
 /// Player stream configuration within stream/start.
@@ -44,17 +44,6 @@ struct StreamStartPlayer: Codable, Equatable {
 struct StreamStartArtwork: Codable, Equatable {
     /// Configuration for each active artwork channel, array index is the channel number
     let channels: [StreamArtworkChannelConfig]
-}
-
-/// Empty `stream/start` visualizer block. The visualizer role is not yet
-/// implemented; this exists so a server `stream/start` carrying a visualizer
-/// block decodes (and re-encodes) without error rather than failing the message.
-struct StreamStartVisualizer: Codable, Equatable {
-    init() {}
-
-    // Explicit Codable implementation for empty struct
-    init(from _: Decoder) throws {}
-    func encode(to _: Encoder) throws {}
 }
 
 /// Stream end message — ends streams for specified roles (or all if omitted)

@@ -199,7 +199,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create visualizer message
         var messageData = Data()
-        messageData.append(BinaryMessageType.visualizerData.rawValue)
+        messageData.append(BinaryMessageType.visualizerSpectrum.rawValue)
 
         let timestamp: Int64 = 3_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
@@ -209,7 +209,7 @@ struct BinaryMessageIntegrationTests {
         // Decode
         let message = try #require(BinaryMessage(data: messageData))
 
-        #expect(message.type == .visualizerData)
+        #expect(message.type == .visualizerSpectrum)
         #expect(message.timestamp == 3_000_000)
         #expect(message.data.count == binCount * 4) // 32 bins * 4 bytes per float
     }

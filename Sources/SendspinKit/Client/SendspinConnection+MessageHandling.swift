@@ -64,7 +64,8 @@ extension SendspinConnection {
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
             await handleArtworkBinary(message)
 
-        case .visualizerData:
+        case .visualizerLoudness, .visualizerBeat, .visualizerFPeak,
+             .visualizerSpectrum, .visualizerPeak, .visualizerPitch:
             await handleVisualizerBinary(message)
         }
     }
@@ -190,8 +191,10 @@ extension SendspinConnection {
         }
 
         // Handle visualizer stream
-        if message.payload.visualizer != nil {
+        if let visualizerInfo = message.payload.visualizer {
             visualizerStreamActive = true
+            negotiatedVisualizerStream = visualizerInfo
+            controlSink.enqueue(.visualizerStreamStarted(visualizerInfo))
         }
 
         // Handle player stream
@@ -291,8 +294,9 @@ extension SendspinConnection {
             artworkStreamActive = false
         }
 
-        if endedRoles == nil || endedRoles?.contains("visualizer") == true {
+        if endedRoles == nil || endedRoles?.contains(StreamRole.visualizer.rawValue) == true {
             visualizerStreamActive = false
+            negotiatedVisualizerStream = nil
         }
 
         // Per spec, entering external_source causes the server to end active streams.
@@ -396,6 +400,8 @@ extension SendspinConnection {
     }
 
     func handleVisualizerBinary(_ message: BinaryMessage) async {
+        guard let feature = message.type.visualizerFeature else { return }
+
         guard visualizerStreamActive else {
             Log.client.warning("Discarding visualizer binary: no active visualizer stream")
             return
@@ -407,7 +413,7 @@ extension SendspinConnection {
         }
 
         let localDisplayTime = await clock.serverTimeToLocal(message.timestamp)
-        let visualizerData = VisualizerData(data: message.data, localDisplayTime: localDisplayTime)
+        let visualizerData = VisualizerData(type: feature, data: message.data, localDisplayTime: localDisplayTime)
         validity.yieldIfValid(visualizerData, to: visualizerSink)
     }
 }

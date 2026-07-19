@@ -110,10 +110,23 @@ public struct ArtworkData: Sendable, Equatable {
 
 /// Visualizer bytes received from the visualizer stream.
 public struct VisualizerData: Sendable, Equatable {
+    /// Which visualizer feature this frame carries, from the binary type byte (16-21).
+    public let type: VisualizerFeatureType
     /// Raw visualizer payload bytes after the Sendspin binary header.
     public let data: Data
     /// Local absolute display time in microseconds.
     public let localDisplayTime: Int64
+
+    /// Decode the payload into a typed ``VisualizerFrame``.
+    ///
+    /// - Parameter spectrumBins: Negotiated `n_disp_bins`, required to size a
+    ///   spectrum frame — pass `currentVisualizerStream?.spectrum?.nDispBins`
+    ///   (or the value from the ``ClientEvent/visualizerStreamStarted(_:)``
+    ///   announcement). Ignored for non-spectrum types.
+    /// - Returns: The decoded frame, or `nil` if the payload length is wrong for the type.
+    public func frame(spectrumBins: Int = 0) -> VisualizerFrame? {
+        VisualizerFrame(type: type, payload: data, spectrumBins: spectrumBins)
+    }
 }
 
 public enum ClientEvent: Sendable, Equatable {
@@ -137,6 +150,9 @@ public enum ClientEvent: Sendable, Equatable {
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
     case artworkStreamStarted([StreamArtworkChannelConfig])
+    /// Server announced a visualizer stream in `stream/start` with the negotiated
+    /// feature set. `config.spectrum?.nDispBins` sizes binary spectrum frames.
+    case visualizerStreamStarted(StreamVisualizerConfig)
     /// Server changed the static delay via `server/command`. The host app should
     /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
     case staticDelayChanged(milliseconds: Int)
@@ -274,11 +290,13 @@ public struct ControllerState: Sendable, Hashable {
     }
 }
 
-/// A role that carries its own independently-negotiated stream and can be the
-/// subject of a `stream/request-format`.
+/// A role that carries its own independently-negotiated stream. `player` and
+/// `artwork` can additionally be the subject of a `stream/request-format`;
+/// the visualizer stream is negotiated once via `client/hello` + `stream/start`.
 public enum StreamRole: String, Sendable, Hashable {
     case player
     case artwork
+    case visualizer
 }
 
 /// Errors thrown by `SendspinClient` methods.
