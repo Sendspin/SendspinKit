@@ -8,6 +8,7 @@ A Swift client library for the [Sendspin Protocol](https://github.com/Sendspin/s
 - **Controller Role** — Play, pause, skip, volume, shuffle, repeat across device groups
 - **Metadata Role** — Track info, artwork URLs, and playback progress
 - **Artwork Role** — Album art delivery with format and resolution negotiation
+- **Color Role** — Synchronized album and audio-derived color themes
 - **Auto-discovery** — mDNS/Bonjour server discovery with continuous or one-shot modes
 - **Multi-codec** — PCM, Opus, and FLAC support with seamless mid-stream format switching
 - **Clock Sync** — Kalman filter time synchronization with drift tracking and adaptive forgetting
@@ -85,6 +86,45 @@ try await controller.next()
 try await controller.setGroupVolume(75)
 try await controller.setShuffle(true)
 ```
+
+### Color Display
+
+```swift
+import SendspinKit
+import SwiftUI
+
+extension Color {
+    init(_ rgb: RGBColor) {
+        self.init(
+            .sRGB,
+            red: Double(rgb.red) / 255,
+            green: Double(rgb.green) / 255,
+            blue: Double(rgb.blue) / 255,
+            opacity: 1
+        )
+    }
+}
+
+let colorDisplay = try SendspinClient(
+    clientId: "my-display",
+    name: "Kitchen Display",
+    roles: [.colorV1]
+)
+
+struct NowPlayingView: View {
+    let client: SendspinClient
+
+    var body: some View {
+        PlayerControls()
+            .background(client.currentColorState?.backgroundDark.map(Color.init) ?? .black)
+            .foregroundStyle(client.currentColorState?.onDark.map(Color.init) ?? .white)
+    }
+}
+```
+
+`currentColorState` is observable and contains the latest accumulated theme. Each state includes
+`serverTimestamp` and, once clock synchronization is ready, `localDisplayTime` for consumers that
+schedule color changes alongside audio, artwork, or visualizer updates.
 
 ### Continuous Discovery
 

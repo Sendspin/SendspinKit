@@ -18,6 +18,20 @@ struct SendspinClientTests {
     }
 
     @Test
+    func colorRoleIsAdvertisedWithoutASupportObject() throws {
+        let client = try SendspinClient(
+            clientId: "color-test",
+            name: "Color Test",
+            roles: [.colorV1]
+        )
+
+        let payload = client.buildClientHelloPayload()
+
+        #expect(payload.supportedRoles == [.colorV1])
+        #expect(payload.visualizerV1Support == nil)
+    }
+
+    @Test
     func clientHelloUsesConfiguredDeviceInfo() throws {
         let deviceInfo = DeviceInfo(
             productName: "Host Product",

@@ -136,6 +136,9 @@ public enum ClientEvent: Sendable, Equatable {
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
+    case colorStateUpdated(ColorState)
+    /// The server cleared the complete color role state.
+    case colorStateCleared
     case artworkStreamStarted([StreamArtworkChannelConfig])
     /// Server changed the static delay via `server/command`. The host app should
     /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
@@ -234,6 +237,80 @@ public struct TrackMetadata: Sendable, Hashable {
     /// metadata to external systems or for clients that fetch images themselves.
     public let artworkURL: String?
     public let progress: PlaybackProgress?
+}
+
+/// An RGB color from a Sendspin color role update. Components are in the
+/// protocol's 0...255 range.
+public struct RGBColor: Codable, Sendable, Hashable {
+    public let red: Int
+    public let green: Int
+    public let blue: Int
+
+    public init(red: Int, green: Int, blue: Int) {
+        precondition(
+            [red, green, blue].allSatisfy { 0 ... 255 ~= $0 },
+            "RGB color components must be in the range 0...255"
+        )
+        self.red = red
+        self.green = green
+        self.blue = blue
+    }
+
+    public init(from decoder: Decoder) throws {
+        var container = try decoder.unkeyedContainer()
+        let components = try [container.decode(Int.self), container.decode(Int.self), container.decode(Int.self)]
+        guard components.allSatisfy({ 0 ... 255 ~= $0 }), container.isAtEnd else {
+            throw DecodingError.dataCorruptedError(
+                in: container,
+                debugDescription: "RGB colors must contain exactly three components in the range 0...255"
+            )
+        }
+        self.init(red: components[0], green: components[1], blue: components[2])
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.unkeyedContainer()
+        try container.encode(red)
+        try container.encode(green)
+        try container.encode(blue)
+    }
+}
+
+/// Color state derived from the current audio.
+///
+/// Constructed internally by `SendspinClient` — consumers observe these
+/// via ``ClientEvent/colorStateUpdated(_:)``.
+public struct ColorState: Sendable, Hashable {
+    /// Raw server clock time in microseconds for when these colors are valid.
+    public let serverTimestamp: Int64
+    /// Local absolute display time in microseconds, or `nil` when clock sync was not ready.
+    public let localDisplayTime: Int64?
+    public let backgroundDark: RGBColor?
+    public let backgroundLight: RGBColor?
+    public let primary: RGBColor?
+    public let accent: RGBColor?
+    public let onDark: RGBColor?
+    public let onLight: RGBColor?
+
+    public init(
+        serverTimestamp: Int64,
+        localDisplayTime: Int64?,
+        backgroundDark: RGBColor?,
+        backgroundLight: RGBColor?,
+        primary: RGBColor?,
+        accent: RGBColor?,
+        onDark: RGBColor?,
+        onLight: RGBColor?
+    ) {
+        self.serverTimestamp = serverTimestamp
+        self.localDisplayTime = localDisplayTime
+        self.backgroundDark = backgroundDark
+        self.backgroundLight = backgroundLight
+        self.primary = primary
+        self.accent = accent
+        self.onDark = onDark
+        self.onLight = onLight
+    }
 }
 
 /// Controller state from the server.

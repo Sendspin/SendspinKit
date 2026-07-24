@@ -180,6 +180,31 @@ extension SendspinConnection {
             currentControllerState = controllerState
             controlSink.enqueue(.controllerStateUpdated(controllerState))
         }
+
+        // Emit color state if present. Merge with the prior state so a partial
+        // delta preserves absent colors while explicit null clears them.
+        switch message.payload.color {
+        case .absent:
+            break
+        case .null:
+            currentColorState = nil
+            controlSink.enqueue(.colorStateCleared)
+        case let .value(color):
+            let prev = currentColorState
+            let localDisplayTime = isClockSynced ? await clock.serverTimeToLocal(color.timestamp) : nil
+            let colorState = ColorState(
+                serverTimestamp: color.timestamp,
+                localDisplayTime: localDisplayTime,
+                backgroundDark: color.backgroundDark.merge(previous: prev?.backgroundDark),
+                backgroundLight: color.backgroundLight.merge(previous: prev?.backgroundLight),
+                primary: color.primary.merge(previous: prev?.primary),
+                accent: color.accent.merge(previous: prev?.accent),
+                onDark: color.onDark.merge(previous: prev?.onDark),
+                onLight: color.onLight.merge(previous: prev?.onLight)
+            )
+            currentColorState = colorState
+            controlSink.enqueue(.colorStateUpdated(colorState))
+        }
     }
 
     func handleStreamStart(_ message: StreamStartMessage) async {

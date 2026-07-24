@@ -17,6 +17,12 @@ enum ConnectionEvent: Equatable {
     /// Controller state (volume, mute, supported commands, repeat, shuffle)
     case controllerStateUpdated(ControllerState)
 
+    /// Color state derived from the current audio
+    case colorStateUpdated(ColorState)
+
+    /// The server cleared the entire color role state.
+    case colorStateCleared
+
     /// Group membership and playback state
     case groupUpdated(GroupInfo)
 

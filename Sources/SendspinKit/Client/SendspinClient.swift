@@ -69,6 +69,8 @@ public final class SendspinClient {
     public private(set) var currentGroup: GroupInfo?
     /// Current controller state from the server.
     public private(set) var currentControllerState: ControllerState?
+    /// Current colors derived from the audio, accumulated from `server/state` deltas.
+    public private(set) var currentColorState: ColorState?
     /// App-facing playback status derived from the current stream, group, and metadata state.
     ///
     /// Eventually consistent: `playerStreamActive` is a render-applied mirror that
@@ -225,6 +227,10 @@ public final class SendspinClient {
 
     private func updateMetadata(_ metadata: TrackMetadata?) {
         currentMetadata = metadata
+    }
+
+    private func updateColorState(_ state: ColorState?) {
+        currentColorState = state
     }
 
     private func updateGroup(_ group: GroupInfo?) {
@@ -470,6 +476,14 @@ public final class SendspinClient {
             updateControllerState(state)
             emitEvent(.controllerStateUpdated(state))
 
+        case let .colorStateUpdated(state):
+            updateColorState(state)
+            emitEvent(.colorStateUpdated(state))
+
+        case .colorStateCleared:
+            updateColorState(nil)
+            emitEvent(.colorStateCleared)
+
         case let .groupUpdated(group):
             updateGroup(group)
             emitEvent(.groupUpdated(group))
@@ -609,6 +623,7 @@ public final class SendspinClient {
             updateGroup(GroupInfo(groupId: group.groupId, groupName: group.groupName, playbackState: nil))
         }
         updateControllerState(nil)
+        updateColorState(nil)
     }
 
     /// Set playback volume (0–100, perceived loudness per spec).

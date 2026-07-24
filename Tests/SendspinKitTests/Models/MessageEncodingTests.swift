@@ -343,6 +343,109 @@ struct MessageEncodingTests {
     }
 
     @Test
+    func serverState_decodesColorArraysAndNullDeltas() throws {
+        let json = """
+        {
+            "type": "server/state",
+            "payload": {
+                "color": {
+                    "timestamp": 12345678,
+                    "background_dark": [12, 34, 56],
+                    "background_light": null,
+                    "primary": [255, 128, 0]
+                }
+            }
+        }
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        let color = try #require(message.payload.color.merge(previous: nil))
+
+        #expect(color.timestamp == 12_345_678)
+        #expect(color.backgroundDark.merge(previous: nil) == RGBColor(red: 12, green: 34, blue: 56))
+        #expect(color.backgroundLight.merge(previous: RGBColor(red: 1, green: 2, blue: 3)) == nil)
+        #expect(color.primary.merge(previous: nil) == RGBColor(red: 255, green: 128, blue: 0))
+        #expect(color.accent.merge(previous: RGBColor(red: 4, green: 5, blue: 6)) == RGBColor(red: 4, green: 5, blue: 6))
+    }
+
+    @Test(arguments: [
+        "[0, 256, 2]",
+        "[-1, 0, 0]",
+        "[1, 2]",
+        "[1, 2, 3, 4]",
+        "[]",
+        "[null, 0, 0]",
+        "[\"a\", \"b\", \"c\"]",
+        "[1.5, 2, 3]"
+    ])
+    func serverState_rejectsInvalidColorArray(_ components: String) throws {
+        let json = """
+        {"type": "server/state", "payload": {"color": {"timestamp": 1, "primary": \(components)}}}
+        """
+        let data = try #require(json.data(using: .utf8))
+
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        }
+    }
+
+    @Test
+    func serverState_acceptsBlackColorAtLowerBoundary() throws {
+        let json = """
+        {"type": "server/state", "payload": {"color": {"timestamp": 1, "primary": [0, 0, 0]}}}
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        let color = try #require(message.payload.color.merge(previous: nil))
+        #expect(color.primary.merge(previous: nil) == RGBColor(red: 0, green: 0, blue: 0))
+    }
+
+    @Test
+    func serverState_rejectsColorWithoutTimestamp() throws {
+        let json = """
+        {"type": "server/state", "payload": {"color": {"primary": [1, 2, 3]}}}
+        """
+        let data = try #require(json.data(using: .utf8))
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        }
+    }
+
+    @Test
+    func serverState_encodesColorAbsentFieldsWithoutInventingNulls() throws {
+        let message = ServerStateMessage(payload: ServerStatePayload(
+            color: ServerColorState(
+                timestamp: 42,
+                backgroundLight: .value(RGBColor(red: 4, green: 5, blue: 6)),
+                primary: .value(RGBColor(red: 1, green: 2, blue: 3)),
+                accent: .null,
+                onDark: .value(RGBColor(red: 7, green: 8, blue: 9)),
+                onLight: .value(RGBColor(red: 10, green: 11, blue: 12))
+            )
+        ))
+        let data = try JSONEncoder().encode(message)
+        let json = try #require(String(data: data, encoding: .utf8))
+
+        #expect(json.contains("\"timestamp\":42"))
+        #expect(json.contains("\"background_light\":[4,5,6]"))
+        #expect(json.contains("\"primary\":[1,2,3]"))
+        #expect(json.contains("\"accent\":null"))
+        #expect(json.contains("\"on_dark\":[7,8,9]"))
+        #expect(json.contains("\"on_light\":[10,11,12]"))
+        #expect(!json.contains("background_dark"))
+    }
+
+    @Test
+    func serverState_decodesWholeColorNull() throws {
+        let json = """
+        {"type": "server/state", "payload": {"color": null}}
+        """
+        let data = try #require(json.data(using: .utf8))
+        let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
+        #expect(message.payload.color == .null)
+    }
+
+    @Test
     func serverState_decodesCompleteMetadataProgress() throws {
         let json = """
         {

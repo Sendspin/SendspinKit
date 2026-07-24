@@ -6,6 +6,12 @@ import Testing
 struct SessionStateResetTests {
     // MARK: Fixtures
 
+    private func serverStateColorJSON(_ color: ServerColorState) throws -> String {
+        let message = ServerStateMessage(payload: ServerStatePayload(color: color))
+        let data = try JSONEncoder().encode(message)
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
     private func serverStateMetadataJSON(
         title: Nullable<String> = .absent,
         album: Nullable<String> = .absent,
@@ -64,7 +70,141 @@ struct SessionStateResetTests {
         _ = await waitUntil { await MainActor.run { client.connectionState == .disconnected } }
     }
 
+    @Test
+    func colorStateMergesDeltasAndPublishesStateBeforeEvent() async throws {
+        let client = try makeTestClient(roles: [.colorV1])
+        let mock = try await connectClient(client, activeRoles: [.colorV1])
+        let initial = RGBColor(red: 10, green: 20, blue: 30)
+        let accent = RGBColor(red: 200, green: 100, blue: 50)
+
+        let observed = Task { @MainActor () -> ColorState? in
+            for await event in client.events() {
+                if case let .colorStateUpdated(state) = event, state.serverTimestamp == 2 {
+                    return client.currentColorState
+                }
+            }
+            return nil
+        }
+
+        let initialColorJSON = try serverStateColorJSON(ServerColorState(
+            timestamp: 1,
+            backgroundDark: .value(initial),
+            primary: .value(accent)
+        ))
+        await mock.injectText(initialColorJSON)
+        #expect(await waitUntil { await MainActor.run { client.currentColorState?.serverTimestamp == 1 } })
+        #expect(client.currentColorState?.localDisplayTime == nil)
+
+        let deltaColorJSON = try serverStateColorJSON(ServerColorState(
+            timestamp: 2,
+            backgroundDark: .absent,
+            primary: .null
+        ))
+        await mock.injectText(deltaColorJSON)
+        let result = await observeTask(observed, timeout: .seconds(3))
+
+        switch result {
+        case let .completed(state):
+            #expect(state?.backgroundDark == initial)
+            #expect(state?.primary == nil)
+            #expect(state?.accent == nil)
+        case .timedOut:
+            Issue.record("Timed out waiting for colorStateUpdated")
+        }
+
+        await client.disconnect()
+    }
+
     // MARK: Cross-connection bleed
+
+    @Test
+    func colorStateDoesNotBleedAcrossConnectionLostReconnect() async throws {
+        let client = try makeTestClient(roles: [.colorV1])
+        let mock1 = try await connectClient(client, activeRoles: [.colorV1])
+        let oldColor = RGBColor(red: 80, green: 90, blue: 100)
+
+        try await mock1.injectText(serverStateColorJSON(ServerColorState(
+            timestamp: 1,
+            backgroundDark: .value(oldColor),
+            backgroundLight: .value(oldColor),
+            primary: .value(oldColor),
+            accent: .value(oldColor),
+            onDark: .value(oldColor),
+            onLight: .value(oldColor)
+        )))
+        let gotOld = await waitUntil {
+            await MainActor.run {
+                let state = client.currentColorState
+                return state?.backgroundDark == oldColor
+                    && state?.backgroundLight == oldColor
+                    && state?.primary == oldColor
+                    && state?.accent == oldColor
+                    && state?.onDark == oldColor
+                    && state?.onLight == oldColor
+            }
+        }
+        #expect(gotOld)
+
+        await loseConnection(client, mock1)
+
+        let mock2 = try await connectClient(client, activeRoles: [.colorV1])
+        let newColor = RGBColor(red: 1, green: 2, blue: 3)
+        try await mock2.injectText(serverStateColorJSON(ServerColorState(
+            timestamp: 2,
+            backgroundDark: .absent,
+            backgroundLight: .absent,
+            primary: .value(newColor),
+            accent: .absent,
+            onDark: .absent,
+            onLight: .absent
+        )))
+        let gotNew = await waitUntil {
+            await MainActor.run { client.currentColorState?.primary == newColor }
+        }
+        #expect(gotNew)
+        #expect(client.currentColorState?.backgroundDark == nil)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func metadataStateDoesNotChangeExistingColorState() async throws {
+        let client = try makeTestClient(roles: [.colorV1, .metadataV1])
+        let mock = try await connectClient(client, activeRoles: [.colorV1, .metadataV1])
+        let color = RGBColor(red: 10, green: 20, blue: 30)
+
+        try await mock.injectText(serverStateColorJSON(ServerColorState(
+            timestamp: 1,
+            primary: .value(color)
+        )))
+        #expect(await waitUntil { await MainActor.run { client.currentColorState?.primary == color } })
+
+        try await mock.injectText(serverStateMetadataJSON(title: .value("Track")))
+        #expect(await waitUntil { await MainActor.run { client.currentMetadata?.title == "Track" } })
+        #expect(client.currentColorState?.primary == color)
+
+        await client.disconnect()
+    }
+
+    @Test
+    func colorStateClearsWhenServerSendsWholeRoleNull() async throws {
+        let client = try makeTestClient(roles: [.colorV1])
+        let mock = try await connectClient(client, activeRoles: [.colorV1])
+        let color = RGBColor(red: 10, green: 20, blue: 30)
+
+        try await mock.injectText(serverStateColorJSON(ServerColorState(
+            timestamp: 1,
+            primary: .value(color)
+        )))
+        #expect(await waitUntil { await MainActor.run { client.currentColorState?.primary == color } })
+
+        let clear = ServerStateMessage(payload: ServerStatePayload(colorDelta: .null))
+        let clearJSON = try #require(String(data: JSONEncoder().encode(clear), encoding: .utf8))
+        await mock.injectText(clearJSON)
+
+        #expect(await waitUntil { await MainActor.run { client.currentColorState == nil } })
+        await client.disconnect()
+    }
 
     @Test
     func metadataDoesNotBleedAcrossConnectionLostReconnect() async throws {

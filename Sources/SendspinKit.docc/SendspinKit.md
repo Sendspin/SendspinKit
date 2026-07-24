@@ -6,7 +6,7 @@ A Swift client library for the Sendspin Protocol — synchronized multi-room aud
 
 SendspinKit handles the full Sendspin protocol lifecycle: server discovery via mDNS/Bonjour, WebSocket transport, NTP-style clock synchronization, and timestamp-based audio scheduling with microsecond precision.
 
-The library supports multiple client roles (player, controller, metadata, artwork, visualizer) and audio codecs (PCM, Opus, FLAC) including hi-res formats up to 192kHz/24-bit.
+The library supports multiple client roles (player, controller, metadata, artwork, visualizer, and color) and audio codecs (PCM, Opus, FLAC) including hi-res formats up to 192kHz/24-bit.
 
 Built with Swift 6 strict concurrency — all public types are ``Sendable``, mutable state is actor-isolated, and events flow through ``AsyncStream``.
 

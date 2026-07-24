@@ -84,6 +84,10 @@ actor SendspinConnection {
     /// rather than clobber absent fields (e.g. a volume-only delta keeps repeat/shuffle).
     var currentControllerState: ControllerState?
 
+    /// Last color state, retained so partial server/state color deltas merge
+    /// rather than clobber absent fields.
+    var currentColorState: ColorState?
+
     /// Last group state, retained so partial group/update deltas merge rather
     /// than clobber absent fields (e.g. a playback-only delta keeps group id/name).
     var currentGroup: GroupInfo?

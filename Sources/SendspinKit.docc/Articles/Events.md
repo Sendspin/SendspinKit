@@ -20,7 +20,9 @@ SendspinKit provides two complementary ways to observe state: an event stream fo
 | ``ClientEvent/metadataReceived(_:)`` | Track metadata updated |
 | ``ClientEvent/groupUpdated(_:)`` | Group membership or playback state changed |
 | ``ClientEvent/controllerStateUpdated(_:)`` | Supported commands, group volume/mute changed |
-| ``ClientEvent/artworkReceived(channel:data:)`` | Album art data arrived |
+| ``ClientEvent/colorStateUpdated(_:)`` | Audio-derived colors updated |
+| ``ClientEvent/colorStateCleared`` | Server cleared the color role state |
+| ``ClientEvent/artworkStreamStarted(_:)`` | Artwork stream configuration received; image bytes arrive through ``SendspinClient/artwork`` |
 | ``ClientEvent/disconnected(reason:)`` | Connection ended |
 
 The stream is consumed exactly once. Start iterating before connecting:
@@ -43,5 +45,9 @@ try await client.connect(to: serverURL)
 - ``SendspinClient/currentVolume`` — player volume (0-100)
 - ``SendspinClient/currentMuted`` — mute state
 - ``SendspinClient/staticDelayMs`` — static playback delay in milliseconds
+- ``SendspinClient/currentColorState`` — latest audio-derived color state, or `nil` when cleared
 
-These properties update on the main actor and trigger SwiftUI view updates automatically.
+These properties update on the main actor and trigger SwiftUI view updates automatically. A
+``ColorState`` includes both its raw server timestamp and a local absolute display time when clock
+sync is ready. Most UI consumers can apply colors immediately; synchronized consumers can schedule
+the update using ``ColorState/localDisplayTime``.

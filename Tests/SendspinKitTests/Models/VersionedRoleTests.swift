@@ -164,7 +164,8 @@ struct VersionedRoleTests {
         (VersionedRole.controllerV1, "controller", "v1"),
         (VersionedRole.metadataV1, "metadata", "v1"),
         (VersionedRole.artworkV1, "artwork", "v1"),
-        (VersionedRole.visualizerV1, "visualizer", "v1")
+        (VersionedRole.visualizerV1, "visualizer", "v1"),
+        (VersionedRole.colorV1, "color", "v1")
     ])
     func specRoleConstant(role: VersionedRole, expectedName: String, expectedVersion: String) {
         #expect(role.role == expectedName)

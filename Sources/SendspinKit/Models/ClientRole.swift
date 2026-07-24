@@ -88,4 +88,6 @@ public struct VersionedRole: Codable, Sendable, Hashable, ExpressibleByStringLit
     public static let artworkV1 = VersionedRole(role: "artwork", version: "v1")
     /// Visualizer role — visualizes audio.
     public static let visualizerV1 = VersionedRole(role: "visualizer", version: "v1")
+    /// Color role — receives colors derived from the current audio.
+    public static let colorV1 = VersionedRole(role: "color", version: "v1")
 }

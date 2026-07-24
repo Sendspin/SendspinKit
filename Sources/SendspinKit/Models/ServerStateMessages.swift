@@ -2,6 +2,90 @@ import Foundation
 
 // MARK: - Server State
 
+/// Color state within server/state. Each color field distinguishes an absent
+/// key (preserve the previous value) from an explicit null (clear the value).
+struct ServerColorState: Sendable, Equatable {
+    let timestamp: Int64
+    let backgroundDark: Nullable<RGBColor>
+    let backgroundLight: Nullable<RGBColor>
+    let primary: Nullable<RGBColor>
+    let accent: Nullable<RGBColor>
+    let onDark: Nullable<RGBColor>
+    let onLight: Nullable<RGBColor>
+
+    enum CodingKeys: String, CodingKey {
+        case timestamp
+        case backgroundDark = "background_dark"
+        case backgroundLight = "background_light"
+        case primary
+        case accent
+        case onDark = "on_dark"
+        case onLight = "on_light"
+    }
+
+    init(
+        timestamp: Int64,
+        backgroundDark: Nullable<RGBColor> = .absent,
+        backgroundLight: Nullable<RGBColor> = .absent,
+        primary: Nullable<RGBColor> = .absent,
+        accent: Nullable<RGBColor> = .absent,
+        onDark: Nullable<RGBColor> = .absent,
+        onLight: Nullable<RGBColor> = .absent
+    ) {
+        self.timestamp = timestamp
+        self.backgroundDark = backgroundDark
+        self.backgroundLight = backgroundLight
+        self.primary = primary
+        self.accent = accent
+        self.onDark = onDark
+        self.onLight = onLight
+    }
+}
+
+extension ServerColorState: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        timestamp = try container.decode(Int64.self, forKey: .timestamp)
+        backgroundDark = container.contains(.backgroundDark)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .backgroundDark) : .absent
+        backgroundLight = container.contains(.backgroundLight)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .backgroundLight) : .absent
+        primary = container.contains(.primary)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .primary) : .absent
+        accent = container.contains(.accent)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .accent) : .absent
+        onDark = container.contains(.onDark)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .onDark) : .absent
+        onLight = container.contains(.onLight)
+            ? try container.decode(Nullable<RGBColor>.self, forKey: .onLight) : .absent
+    }
+}
+
+extension ServerColorState: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(timestamp, forKey: .timestamp)
+        if !backgroundDark.isAbsent {
+            try container.encode(backgroundDark, forKey: .backgroundDark)
+        }
+        if !backgroundLight.isAbsent {
+            try container.encode(backgroundLight, forKey: .backgroundLight)
+        }
+        if !primary.isAbsent {
+            try container.encode(primary, forKey: .primary)
+        }
+        if !accent.isAbsent {
+            try container.encode(accent, forKey: .accent)
+        }
+        if !onDark.isAbsent {
+            try container.encode(onDark, forKey: .onDark)
+        }
+        if !onLight.isAbsent {
+            try container.encode(onLight, forKey: .onLight)
+        }
+    }
+}
+
 /// Server state message (delta state updates from server to client)
 struct ServerStateMessage: SendspinMessage, Equatable {
     static let typeString = "server/state"
@@ -11,15 +95,53 @@ struct ServerStateMessage: SendspinMessage, Equatable {
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-struct ServerStatePayload: Codable, Equatable {
+struct ServerStatePayload: Equatable {
     /// Metadata state from server
     let metadata: ServerMetadataState?
     /// Controller state from server (group volume, mute, supported commands)
     let controller: ServerControllerState?
+    /// Color state delta from server. `.null` means the whole role state is cleared.
+    let color: Nullable<ServerColorState>
 
-    init(metadata: ServerMetadataState? = nil, controller: ServerControllerState? = nil) {
+    init(
+        metadata: ServerMetadataState? = nil,
+        controller: ServerControllerState? = nil,
+        color: ServerColorState? = nil,
+        colorDelta: Nullable<ServerColorState>? = nil
+    ) {
         self.metadata = metadata
         self.controller = controller
+        self.color = colorDelta ?? color.map(Nullable.value) ?? .absent
+    }
+}
+
+extension ServerStatePayload: Decodable {
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        metadata = try container.decodeIfPresent(ServerMetadataState.self, forKey: .metadata)
+        controller = try container.decodeIfPresent(ServerControllerState.self, forKey: .controller)
+        color = container.contains(.color)
+            ? try container.decode(Nullable<ServerColorState>.self, forKey: .color)
+            : .absent
+    }
+}
+
+extension ServerStatePayload: Encodable {
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(metadata, forKey: .metadata)
+        try container.encodeIfPresent(controller, forKey: .controller)
+        if !color.isAbsent {
+            try container.encode(color, forKey: .color)
+        }
+    }
+}
+
+private extension ServerStatePayload {
+    enum CodingKeys: String, CodingKey {
+        case metadata
+        case controller
+        case color
     }
 }
 
@@ -41,7 +163,11 @@ struct ServerControllerState: Equatable {
     let seekMaxMsDelta: Nullable<Int>
     /// Maximum absolute seek target in milliseconds when this delta carries a concrete value.
     var seekMaxMs: Int? {
-        if case let .value(value) = seekMaxMsDelta { value } else { nil }
+        if case let .value(value) = seekMaxMsDelta {
+            value
+        } else {
+            nil
+        }
     }
 
     enum CodingKeys: String, CodingKey {
@@ -79,9 +205,11 @@ extension ServerControllerState: Decodable {
         muted = try container.decodeIfPresent(Bool.self, forKey: .muted)
         `repeat` = try container.decodeIfPresent(RepeatMode.self, forKey: .repeat)
         shuffle = try container.decodeIfPresent(Bool.self, forKey: .shuffle)
-        seekMaxMsDelta = container.contains(.seekMaxMs)
-            ? try container.decode(Nullable<Int>.self, forKey: .seekMaxMs)
-            : .absent
+        if container.contains(.seekMaxMs) {
+            seekMaxMsDelta = try container.decode(Nullable<Int>.self, forKey: .seekMaxMs)
+        } else {
+            seekMaxMsDelta = .absent
+        }
     }
 }
 
@@ -93,7 +221,9 @@ extension ServerControllerState: Encodable {
         try container.encodeIfPresent(muted, forKey: .muted)
         try container.encodeIfPresent(`repeat`, forKey: .repeat)
         try container.encodeIfPresent(shuffle, forKey: .shuffle)
-        if !seekMaxMsDelta.isAbsent { try container.encode(seekMaxMsDelta, forKey: .seekMaxMs) }
+        if !seekMaxMsDelta.isAbsent {
+            try container.encode(seekMaxMsDelta, forKey: .seekMaxMs)
+        }
     }
 }
 
@@ -116,7 +246,9 @@ enum Nullable<T: Codable & Sendable> {
 
     /// Whether this field was absent from the JSON (key not present).
     var isAbsent: Bool {
-        if case .absent = self { return true }
+        if case .absent = self {
+            return true
+        }
         return false
     }
 
@@ -234,14 +366,30 @@ extension ServerMetadataState: Encodable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encodeIfPresent(timestamp, forKey: .timestamp)
         // Only encode non-absent fields (absent = key not in JSON delta)
-        if !title.isAbsent { try container.encode(title, forKey: .title) }
-        if !artist.isAbsent { try container.encode(artist, forKey: .artist) }
-        if !albumArtist.isAbsent { try container.encode(albumArtist, forKey: .albumArtist) }
-        if !album.isAbsent { try container.encode(album, forKey: .album) }
-        if !artworkUrl.isAbsent { try container.encode(artworkUrl, forKey: .artworkUrl) }
-        if !year.isAbsent { try container.encode(year, forKey: .year) }
-        if !track.isAbsent { try container.encode(track, forKey: .track) }
-        if !progress.isAbsent { try container.encode(progress, forKey: .progress) }
+        if !title.isAbsent {
+            try container.encode(title, forKey: .title)
+        }
+        if !artist.isAbsent {
+            try container.encode(artist, forKey: .artist)
+        }
+        if !albumArtist.isAbsent {
+            try container.encode(albumArtist, forKey: .albumArtist)
+        }
+        if !album.isAbsent {
+            try container.encode(album, forKey: .album)
+        }
+        if !artworkUrl.isAbsent {
+            try container.encode(artworkUrl, forKey: .artworkUrl)
+        }
+        if !year.isAbsent {
+            try container.encode(year, forKey: .year)
+        }
+        if !track.isAbsent {
+            try container.encode(track, forKey: .track)
+        }
+        if !progress.isAbsent {
+            try container.encode(progress, forKey: .progress)
+        }
     }
 }
 
