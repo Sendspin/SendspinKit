@@ -40,7 +40,9 @@ struct FrameInboxTests {
 
         var received: [UInt8] = []
         while let frame = await inbox.next() {
-            if case let .binary(data) = frame, let byte = data.first { received.append(byte) }
+            if case let .binary(data) = frame, let byte = data.first {
+                received.append(byte)
+            }
         }
         #expect(received.count == count)
         #expect(received == (0 ..< count).map { UInt8($0 & 0xFF) })
@@ -167,11 +169,15 @@ struct FrameInboxTests {
 // MARK: - Frame matchers
 
 private func isText(_ frame: TransportFrame?, _ expected: String) -> Bool {
-    if case let .text(value) = frame { return value == expected }
+    if case let .text(value) = frame {
+        return value == expected
+    }
     return false
 }
 
 private func isBinary(_ frame: TransportFrame?, _ expected: Data) -> Bool {
-    if case let .binary(value) = frame { return value == expected }
+    if case let .binary(value) = frame {
+        return value == expected
+    }
     return false
 }

@@ -104,8 +104,12 @@ struct AudioStartupReleaseTests {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
         }
         let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: 3_000) { report in
-            if case .started = report { return true }
-            if case .startFailed = report { return true }
+            if case .started = report {
+                return true
+            }
+            if case .startFailed = report {
+                return true
+            }
             return false
         }
         let callsBeforeShutdown = await output.recordedCalls
@@ -137,8 +141,12 @@ struct AudioStartupReleaseTests {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
         }
         let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: 3_000) { report in
-            if case .started = report { return true }
-            if case .startFailed = report { return true }
+            if case .started = report {
+                return true
+            }
+            if case .startFailed = report {
+                return true
+            }
             return false
         }
         let callsBeforeShutdown = await output.recordedCalls

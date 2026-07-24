@@ -62,7 +62,11 @@ struct SendspinConnectionTests {
         await transport.finishStreams()
 
         let disconnectEvent = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         #expect(disconnectEvent != nil, "Should emit .disconnected")
@@ -144,7 +148,11 @@ struct SendspinConnectionTests {
         await transport.finishStreams()
 
         _ = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         #expect(await transport.disconnectCalled, "runLoop must close the transport to release any parked frame pull")
@@ -191,7 +199,9 @@ struct SendspinConnectionTests {
                 if case .serverConnected = event {
                     await engine.shutdown()
                 }
-                if case .disconnected = event { return true }
+                if case .disconnected = event {
+                    return true
+                }
             }
             return false
         }
@@ -212,11 +222,29 @@ struct SendspinConnectionTests {
         try await transport.injectText(serverHelloJSON(version: 2))
 
         let events = await collectConnectionEvents(from: connection, until: { events in
-            events.contains { if case .disconnected = $0 { true } else { false } }
+            events.contains {
+                if case .disconnected = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
         })
 
-        #expect(!events.contains { if case .serverConnected = $0 { true } else { false } })
-        #expect(events.contains { if case .disconnected(.incompatibleServer) = $0 { true } else { false } })
+        #expect(!events.contains {
+            if case .serverConnected = $0 {
+                true
+            } else {
+                false
+            }
+        })
+        #expect(events.contains {
+            if case .disconnected(.incompatibleServer) = $0 {
+                true
+            } else {
+                false
+            }
+        })
         #expect(await transport.disconnectCalled, "unsupported server/hello version must close the transport")
         #expect(
             await !waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport, attempts: 20),
@@ -240,7 +268,13 @@ struct SendspinConnectionTests {
         // once, so exactly one terminal `.disconnected` is emitted (not one per call)
         // and the session-validity token is invalidated.
         let events = await collectConnectionEvents(from: connection, until: { _ in false })
-        let disconnects = events.count(where: { if case .disconnected = $0 { true } else { false } })
+        let disconnects = events.count(where: {
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
+        })
         #expect(disconnects == 1, "teardown must emit exactly one terminal .disconnected across two shutdowns")
         #expect(!token.isValid, "shutdown must invalidate the session-validity token")
     }
@@ -263,7 +297,13 @@ struct SendspinConnectionTests {
         // and merely awaits the supervisor. Exactly one terminal `.disconnected`
         // (finishTeardown is lifecycle-guarded) proves teardown ran once.
         let events = await collectConnectionEvents(from: connection, until: { _ in false })
-        let disconnects = events.count(where: { if case .disconnected = $0 { true } else { false } })
+        let disconnects = events.count(where: {
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
+        })
         #expect(disconnects == 1, "concurrent shutdowns must run teardown exactly once (one .disconnected)")
         #expect(!token.isValid, "the token must be invalidated by the single teardown")
     }
@@ -338,7 +378,11 @@ struct SendspinConnectionTests {
         await transport.finishStreams()
 
         _ = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         let goodbyes = await transport.sentTextMessages.filter { data in
@@ -375,9 +419,15 @@ struct SendspinConnectionTests {
 
         let disconnectReason: DisconnectReason? = await {
             guard let event = await collectConnectionEvent(from: connection, where: {
-                if case .disconnected = $0 { true } else { false }
+                if case .disconnected = $0 {
+                    true
+                } else {
+                    false
+                }
             }) else { return nil }
-            if case let .disconnected(reason) = event { return reason }
+            if case let .disconnected(reason) = event {
+                return reason
+            }
             return nil
         }()
 
@@ -404,7 +454,11 @@ struct SendspinConnectionTests {
         await connection.disconnect(reason: .userRequest)
 
         _ = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         let goodbyesAfterFirst = await transport.sentTextMessages
@@ -484,15 +538,29 @@ struct SendspinConnectionTests {
         await transport.finishStreams()
 
         let disconnectEvents = await collectConnectionEvents(from: connection, until: { events in
-            events.contains { if case .disconnected = $0 { true } else { false } }
+            events.contains {
+                if case .disconnected = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
         })
         let disconnected = disconnectEvents.compactMap { event -> DisconnectReason? in
-            if case let .disconnected(reason) = event { return reason }
+            if case let .disconnected(reason) = event {
+                return reason
+            }
             return nil
         }
 
         #expect(disconnected.count == 1, "Should emit exactly one .disconnected")
-        #expect(disconnected.contains { if case .connectionLost = $0 { true } else { false } }, "Should be .connectionLost reason")
+        #expect(disconnected.contains {
+            if case .connectionLost = $0 {
+                true
+            } else {
+                false
+            }
+        }, "Should be .connectionLost reason")
     }
 
     // MARK: - Clock synchronization fidelity
@@ -571,7 +639,11 @@ struct SendspinConnectionTests {
         )
 
         let errorEvent = await collectConnectionEvent(from: connection) {
-            if case .streamError(.unsupportedCodec) = $0 { true } else { false }
+            if case .streamError(.unsupportedCodec) = $0 {
+                true
+            } else {
+                false
+            }
         }
         if case let .streamError(.unsupportedCodec(codec)) = errorEvent {
             #expect(codec == "unknownCodec")
@@ -610,7 +682,11 @@ struct SendspinConnectionTests {
 
         // Check that a streamError event was emitted
         let errorEvent = await collectConnectionEvent(from: connection) {
-            if case .streamError(.unsupportedCodec) = $0 { true } else { false }
+            if case .streamError(.unsupportedCodec) = $0 {
+                true
+            } else {
+                false
+            }
         }
         if case let .streamError(.unsupportedCodec(codec)) = errorEvent {
             #expect(codec == "unknownCodec")
@@ -653,7 +729,9 @@ struct SendspinConnectionTests {
         /// Deterministic poll: wait until the count reaches `target` (or time out).
         func waitForClientStateCount(atLeast target: Int) async -> Bool {
             for _ in 0 ..< 100 {
-                if await sentClientStateCount() >= target { return true }
+                if await sentClientStateCount() >= target {
+                    return true
+                }
                 try? await Task.sleep(nanoseconds: 20_000_000)
             }
             return false
@@ -700,7 +778,11 @@ struct SendspinConnectionTests {
             )
 
             let event = await collectConnectionEvent(from: connection) {
-                if case .playerVolumeChanged = $0 { true } else { false }
+                if case .playerVolumeChanged = $0 {
+                    true
+                } else {
+                    false
+                }
             }
             guard case let .playerVolumeChanged(applied)? = event else {
                 Issue.record("server/command volume \(testCase.sent): expected a .playerVolumeChanged event")
@@ -760,7 +842,11 @@ struct SendspinConnectionTests {
 
         await transport.finishStreams()
         _ = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
         // (Raw-emit-regardless-of-sync is covered by the binary-gate tests in
         // FrameOrderingTests; here the focus is the engine-enqueue clock gate.)
@@ -786,7 +872,11 @@ struct SendspinConnectionTests {
 
         await transport.finishStreams()
         _ = await collectConnectionEvent(from: connection) {
-            if case .disconnected = $0 { true } else { false }
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         // Each processed server/time must forward a snapshot to the engine output.
@@ -811,7 +901,11 @@ struct SendspinConnectionTests {
         await transport.injectText(invalidStartJSON)
 
         let invalidFormatEvent = await collectConnectionEvent(from: connection) {
-            if case .streamError(.invalidFormat) = $0 { true } else { false }
+            if case .streamError(.invalidFormat) = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         #expect(invalidFormatEvent != nil, "Should emit .invalidFormat for invalid format spec")
@@ -831,10 +925,28 @@ struct SendspinConnectionTests {
         await transport.injectText(invalidStartJSON)
 
         let events = await collectConnectionEvents(from: connection, until: { events in
-            events.contains { if case .operationalState(.error) = $0 { true } else { false } }
+            events.contains {
+                if case .operationalState(.error) = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
         })
-        let sawError = events.contains { if case .streamError(.invalidFormat) = $0 { true } else { false } }
-        let sawOperationalError = events.contains { if case .operationalState(.error) = $0 { true } else { false } }
+        let sawError = events.contains {
+            if case .streamError(.invalidFormat) = $0 {
+                true
+            } else {
+                false
+            }
+        }
+        let sawOperationalError = events.contains {
+            if case .operationalState(.error) = $0 {
+                true
+            } else {
+                false
+            }
+        }
 
         #expect(sawError, "Should emit streamError(.invalidFormat)")
         #expect(sawOperationalError, "Should emit operationalState(.error)")
@@ -853,7 +965,11 @@ struct SendspinConnectionTests {
         try await transport.injectText(streamStartJSON(codecHeader: "%%%not-valid-base64%%%"))
 
         let errorEvent = await collectConnectionEvent(from: connection) {
-            if case .streamError(.invalidFormat) = $0 { true } else { false }
+            if case .streamError(.invalidFormat) = $0 {
+                true
+            } else {
+                false
+            }
         }
 
         #expect(errorEvent != nil, "Should emit streamError(.invalidFormat) for a non-base64 codec_header")
@@ -883,10 +999,18 @@ struct SendspinConnectionTests {
             var failed = false
             var errored = false
             for await event in connection.events {
-                if case .streamError(.audioStartFailed) = event { failed = true }
-                if case .operationalState(.error) = event { errored = true }
-                if failed, errored { return (true, true) }
-                if case .disconnected = event { break }
+                if case .streamError(.audioStartFailed) = event {
+                    failed = true
+                }
+                if case .operationalState(.error) = event {
+                    errored = true
+                }
+                if failed, errored {
+                    return (true, true)
+                }
+                if case .disconnected = event {
+                    break
+                }
             }
             return (failed, errored)
         }
@@ -915,7 +1039,11 @@ struct SendspinConnectionTests {
         try await transport.injectText(streamStartJSON(codec: "unknownCodec"))
 
         let firstError = await collectConnectionEvent(from: connection) {
-            if case .streamError(.unsupportedCodec) = $0 { true } else { false }
+            if case .streamError(.unsupportedCodec) = $0 {
+                true
+            } else {
+                false
+            }
         }
         #expect(firstError != nil, "Should emit unsupported codec error")
 
@@ -926,8 +1054,12 @@ struct SendspinConnectionTests {
         // clean expectation failure rather than a 90s hang.
         let recoveredResult = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
             for await event in connection.events {
-                if case .operationalState(.synchronized) = event { return true }
-                if case .disconnected = event { return false }
+                if case .operationalState(.synchronized) = event {
+                    return true
+                }
+                if case .disconnected = event {
+                    return false
+                }
             }
             return false
         }
@@ -1012,7 +1144,9 @@ struct SendspinConnectionTests {
         var applied = 0
         for _ in 0 ..< 100 {
             applied = await engine.appliedCommandKinds().count(where: { $0 == .chunk })
-            if applied >= chunkCount { break }
+            if applied >= chunkCount {
+                break
+            }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
 
@@ -1105,9 +1239,21 @@ struct SendspinConnectionTests {
         await transport.finishStreams()
 
         let disconnectEvents = await collectConnectionEvents(from: connection, until: { events in
-            events.contains { if case .disconnected = $0 { true } else { false } }
+            events.contains {
+                if case .disconnected = $0 {
+                    true
+                } else {
+                    false
+                }
+            }
         })
-        let disconnectCount = disconnectEvents.count { if case .disconnected = $0 { true } else { false } }
+        let disconnectCount = disconnectEvents.count {
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
+        }
 
         #expect(disconnectCount == 1, "Should cleanly disconnect without error")
     }

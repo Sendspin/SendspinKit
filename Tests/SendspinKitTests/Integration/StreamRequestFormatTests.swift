@@ -102,7 +102,11 @@ struct StreamRequestFormatTests {
         let stream = client.events()
         return Task {
             await collectClientEvent(from: stream, timeout: .seconds(3)) {
-                if case .streamCleared = $0 { true } else { false }
+                if case .streamCleared = $0 {
+                    true
+                } else {
+                    false
+                }
             } != nil
         }
     }
@@ -113,7 +117,11 @@ struct StreamRequestFormatTests {
         let stream = client.events()
         return Task {
             await collectClientEvent(from: stream, timeout: .seconds(3)) {
-                if case let .streamEnded(roles) = $0, roles == expectedRoles { true } else { false }
+                if case let .streamEnded(roles) = $0, roles == expectedRoles {
+                    true
+                } else {
+                    false
+                }
             } != nil
         }
     }

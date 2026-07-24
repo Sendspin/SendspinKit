@@ -327,7 +327,9 @@ actor AudioPlayer {
         guard let queue = audioQueue, let format = currentFormat else {
             throw AudioPlayerError.notStarted
         }
-        if _isPlaying { return }
+        if _isPlaying {
+            return
+        }
 
         for buffer in pendingStartBuffers {
             fillBuffer(queue: queue, buffer: buffer)
@@ -714,10 +716,14 @@ actor AudioPlayer {
 
         volumeRampTask = Task { [weak self] in
             for step in 1 ... volumeRampStepCount {
-                if Task.isCancelled { return }
+                if Task.isCancelled {
+                    return
+                }
                 if step > 1 {
                     try? await Task.sleep(for: volumeRampStepDuration)
-                    if Task.isCancelled { return }
+                    if Task.isCancelled {
+                        return
+                    }
                 }
                 let progress = Float(step) / Float(volumeRampStepCount)
                 let volume = startVolume + ((targetVolume - startVolume) * progress)

@@ -17,7 +17,9 @@ struct AudioProcessCallbackTests {
     private static func pollUntil(_ condition: () -> Bool) async throws -> Bool {
         let deadline = ContinuousClock.now + pollTimeout
         while ContinuousClock.now < deadline {
-            if condition() { return true }
+            if condition() {
+                return true
+            }
             try await Task.sleep(for: pollInterval)
         }
         return condition()

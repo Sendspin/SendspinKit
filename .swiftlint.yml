@@ -8,30 +8,21 @@ excluded:
   - Examples/*/.build
 
 # Disabled rules
+# File and type length are weak complexity proxies that encouraged arbitrary
+# extension-file splits and conflict with SwiftFormat's multiline wrapping.
 disabled_rules:
   - todo
+  - file_length
+  - type_body_length
 
 # Opt-in rules
 opt_in_rules:
   - trailing_comma
 
-# File and function length - adjusted for protocol implementation needs.
-# SendspinClient.swift is ~1200 lines (protocol orchestrator with many message handlers).
-# SendspinMessage.swift is ~810 lines (one struct per protocol message type).
-file_length:
-  warning: 900
-  error: 1250
-
+# Keep local complexity bounded even though aggregate file/type size is unrestricted.
 function_body_length:
   warning: 100
   error: 150
-
-# SendspinClient is the protocol orchestrator — its class body holds connection
-# lifecycle, message dispatch, handlers, clock sync, and audio chunk processing.
-# Splitting further would require exposing private state across files.
-type_body_length:
-  warning: 850
-  error: 1050
 
 # Cyclomatic complexity - adjusted for real-world protocol handling
 cyclomatic_complexity:

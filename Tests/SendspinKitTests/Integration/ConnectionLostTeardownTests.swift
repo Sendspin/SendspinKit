@@ -254,10 +254,22 @@ private actor EventBox {
     }
 
     var disconnectedCount: Int {
-        events.count(where: { if case .disconnected = $0 { true } else { false } })
+        events.count(where: {
+            if case .disconnected = $0 {
+                true
+            } else {
+                false
+            }
+        })
     }
 
     var disconnectedReasons: [DisconnectReason] {
-        events.compactMap { if case let .disconnected(reason) = $0 { reason } else { nil } }
+        events.compactMap {
+            if case let .disconnected(reason) = $0 {
+                reason
+            } else {
+                nil
+            }
+        }
     }
 }

@@ -130,9 +130,15 @@ struct GroupUpdatePayload: Codable, Equatable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        if hasPlaybackState { try container.encodeIfPresent(playbackState, forKey: .playbackState) }
-        if hasGroupId { try container.encodeIfPresent(groupId, forKey: .groupId) }
-        if hasGroupName { try container.encodeIfPresent(groupName, forKey: .groupName) }
+        if hasPlaybackState {
+            try container.encodeIfPresent(playbackState, forKey: .playbackState)
+        }
+        if hasGroupId {
+            try container.encodeIfPresent(groupId, forKey: .groupId)
+        }
+        if hasGroupName {
+            try container.encodeIfPresent(groupName, forKey: .groupName)
+        }
     }
 }
 

@@ -446,7 +446,9 @@ actor AudioEngine {
     /// the ring before starting AudioQueue, then hands any future chunks back to the scheduler.
     private func releaseStartupBufferIfReady(sequence: UInt64? = nil) async {
         guard var buffer = startupBuffer, !buffer.chunks.isEmpty else { return }
-        if let sequence, buffer.sequence != sequence { return }
+        if let sequence, buffer.sequence != sequence {
+            return
+        }
         buffer.chunks.sort { $0.playTimeMicroseconds < $1.playTimeMicroseconds }
 
         let nowUs = MonotonicClock.absoluteMicroseconds()

@@ -182,7 +182,9 @@ struct FrameOrderingTests {
         let collectTask = Task {
             for await artwork in client.artwork {
                 await received.append(artwork)
-                if await received.count == 2 { break }
+                if await received.count == 2 {
+                    break
+                }
             }
         }
 
@@ -229,7 +231,9 @@ struct FrameOrderingTests {
         let collectTask = Task { @MainActor in
             for await event in stream {
                 events.append(event)
-                if case .disconnected = event { break }
+                if case .disconnected = event {
+                    break
+                }
             }
         }
         let chunks = CollectedValues<AudioChunk>()
@@ -336,7 +340,13 @@ struct FrameOrderingTests {
             "Exactly two artwork payloads: the pre-stream frame is discarded, post-stream frames are accepted"
         )
 
-        let sawArtworkStart = allEvents.contains { if case .artworkStreamStarted = $0 { true } else { false } }
+        let sawArtworkStart = allEvents.contains {
+            if case .artworkStreamStarted = $0 {
+                true
+            } else {
+                false
+            }
+        }
         #expect(sawArtworkStart, "artworkStreamStarted event should be seen")
 
         await client.disconnect()
@@ -409,7 +419,11 @@ struct FrameOrderingTests {
         let stream = client.events()
         let endTask = Task {
             await collectClientEvent(from: stream) {
-                if case .streamEnded = $0 { true } else { false }
+                if case .streamEnded = $0 {
+                    true
+                } else {
+                    false
+                }
             }
         }
 
@@ -453,7 +467,11 @@ struct FrameOrderingTests {
         let stream = client.events()
         let clearTask = Task {
             await collectClientEvent(from: stream) {
-                if case .streamCleared = $0 { true } else { false }
+                if case .streamCleared = $0 {
+                    true
+                } else {
+                    false
+                }
             }
         }
 

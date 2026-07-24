@@ -89,11 +89,15 @@ final class FrameInbox: Sendable {
                     }
                     return .resume(frame)
                 }
-                if state.finished { return .resume(nil) }
+                if state.finished {
+                    return .resume(nil)
+                }
                 state.waiter = continuation
                 return .parked
             }
-            if case let .resume(frame) = action { continuation.resume(returning: frame) }
+            if case let .resume(frame) = action {
+                continuation.resume(returning: frame)
+            }
         }
     }
 }

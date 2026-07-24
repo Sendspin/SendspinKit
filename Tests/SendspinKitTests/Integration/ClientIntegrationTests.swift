@@ -415,7 +415,11 @@ struct ClientIntegrationTests {
         try await mock.injectText(streamEndJSON())
 
         let sawStreamEnded = await collectEvent(from: client) {
-            if case .streamEnded = $0 { true } else { false }
+            if case .streamEnded = $0 {
+                true
+            } else {
+                false
+            }
         }
         #expect(sawStreamEnded != nil, "stream/end should still surface while external_source is active")
         #expect(client.clientOperationalState == .externalSource, "stream/end must not exit external_source")
@@ -799,7 +803,9 @@ struct ClientIntegrationTests {
         // Start collecting events — AsyncStream buffers, so no sleep needed
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .streamCleared = event { return true }
+                if case .streamCleared = event {
+                    return true
+                }
                 return false
             }
         }
@@ -821,7 +827,9 @@ struct ClientIntegrationTests {
 
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .lastPlayedServerChanged = event { return true }
+                if case .lastPlayedServerChanged = event {
+                    return true
+                }
                 return false
             }
         }
@@ -1341,7 +1349,9 @@ struct ClientIntegrationTests {
         // Start collecting events before accepting the connection
         let eventTask = Task {
             await collectEvent(from: client, timeout: .seconds(5)) { event in
-                if case .serverConnected = event { return true }
+                if case .serverConnected = event {
+                    return true
+                }
                 return false
             }
         }
@@ -1353,7 +1363,13 @@ struct ClientIntegrationTests {
 
         let event = await eventTask.value
         let info = try #require(
-            event.flatMap { if case let .serverConnected(i) = $0 { i } else { nil } },
+            event.flatMap {
+                if case let .serverConnected(i) = $0 {
+                    i
+                } else {
+                    nil
+                }
+            },
             "Expected .serverConnected event"
         )
 
@@ -1390,7 +1406,9 @@ struct ClientIntegrationTests {
         let newDelayMs = 250
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event { return true }
+                if case .staticDelayChanged = event {
+                    return true
+                }
                 return false
             }
         }
@@ -1415,7 +1433,9 @@ struct ClientIntegrationTests {
         let maxDelayMs = 5_000
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event { return true }
+                if case .staticDelayChanged = event {
+                    return true
+                }
                 return false
             }
         }

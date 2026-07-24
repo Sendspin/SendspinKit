@@ -26,7 +26,9 @@ func waitUntil(
     let clock = ContinuousClock()
     let deadline = clock.now + timeout
     while clock.now < deadline {
-        if await condition() { return true }
+        if await condition() {
+            return true
+        }
         try? await Task.sleep(for: pollInterval)
     }
     return await condition()

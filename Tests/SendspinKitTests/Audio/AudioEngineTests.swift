@@ -208,7 +208,11 @@ struct AudioEngineTests {
         try? await Task.sleep(for: .milliseconds(100))
 
         let started = await awaitReport(from: engine, timeoutMs: 100) {
-            if case .started = $0 { true } else { false }
+            if case .started = $0 {
+                true
+            } else {
+                false
+            }
         }
         await engine.shutdown()
 
@@ -284,7 +288,11 @@ struct AudioEngineTests {
         try? await Task.sleep(for: .milliseconds(400))
 
         let formatApplied = await awaitReport(from: engine, timeoutMs: 200) {
-            if case let .formatApplied(applied) = $0 { applied == fmt1 } else { false }
+            if case let .formatApplied(applied) = $0 {
+                applied == fmt1
+            } else {
+                false
+            }
         }
         await engine.shutdown()
 
@@ -340,7 +348,11 @@ struct AudioEngineTests {
         try? await Task.sleep(for: .milliseconds(400))
 
         let sawStartFailed = await awaitReport(from: engine, timeoutMs: 200) {
-            if case .startFailed = $0 { true } else { false }
+            if case .startFailed = $0 {
+                true
+            } else {
+                false
+            }
         }
         await engine.shutdown()
 
@@ -408,7 +420,9 @@ struct AudioEngineTests {
         // 2nd chunk. Sized well above scheduler-pipeline latency under parallel suite
         // load (a 700ms bound flaked there — it raced the happy path, not just failures).
         let sawFormatApplied = await awaitReport(from: engine, timeoutMs: 5_000) { report in
-            if case let .formatApplied(applied) = report { return applied == fmt1 }
+            if case let .formatApplied(applied) = report {
+                return applied == fmt1
+            }
             return false
         }
         #expect(sawFormatApplied, ".formatApplied must be reported on the first new-gen chunk, before any 2nd chunk")
@@ -443,7 +457,11 @@ struct AudioEngineTests {
         try? await Task.sleep(for: .milliseconds(150))
 
         let formatApplied = await awaitReport(from: engine, timeoutMs: 100) {
-            if case let .formatApplied(applied) = $0 { applied == fmt1 } else { false }
+            if case let .formatApplied(applied) = $0 {
+                applied == fmt1
+            } else {
+                false
+            }
         }
         await engine.shutdown()
 
@@ -488,7 +506,11 @@ struct AudioEngineTests {
     @Test("Underrun while participating reports .operationalState(.error)")
     func underrunReportsErrorWhileParticipating() async throws {
         let emitted = try await observesUnderrunOperationalStateReport(external: false) {
-            if case .operationalState(.error) = $0 { true } else { false }
+            if case .operationalState(.error) = $0 {
+                true
+            } else {
+                false
+            }
         }
         #expect(emitted)
     }
@@ -535,7 +557,11 @@ struct AudioEngineTests {
     @Test("Underrun while external source emits no operational-state report")
     func underrunSuppressedWhileExternalSource() async throws {
         let emitted = try await observesUnderrunOperationalStateReport(external: true) {
-            if case .operationalState = $0 { true } else { false }
+            if case .operationalState = $0 {
+                true
+            } else {
+                false
+            }
         }
         #expect(!emitted)
     }
@@ -703,8 +729,12 @@ struct AudioEngineTests {
             onTimeout: { await engine.shutdown() },
             operation: {
                 for await report in engine.reports {
-                    if case .startFailed = report { return report }
-                    if case .started = report { return report }
+                    if case .startFailed = report {
+                        return report
+                    }
+                    if case .started = report {
+                        return report
+                    }
                 }
                 return nil
             }
