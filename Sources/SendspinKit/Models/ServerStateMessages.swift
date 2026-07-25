@@ -6,12 +6,12 @@ import Foundation
 /// key (preserve the previous value) from an explicit null (clear the value).
 struct ServerColorState: Sendable, Equatable {
     let timestamp: Int64
-    let backgroundDark: Nullable<RGBColor>
-    let backgroundLight: Nullable<RGBColor>
-    let primary: Nullable<RGBColor>
-    let accent: Nullable<RGBColor>
-    let onDark: Nullable<RGBColor>
-    let onLight: Nullable<RGBColor>
+    let backgroundDark: Nullable<SendspinColor>
+    let backgroundLight: Nullable<SendspinColor>
+    let primary: Nullable<SendspinColor>
+    let accent: Nullable<SendspinColor>
+    let onDark: Nullable<SendspinColor>
+    let onLight: Nullable<SendspinColor>
 
     enum CodingKeys: String, CodingKey {
         case timestamp
@@ -25,12 +25,12 @@ struct ServerColorState: Sendable, Equatable {
 
     init(
         timestamp: Int64,
-        backgroundDark: Nullable<RGBColor> = .absent,
-        backgroundLight: Nullable<RGBColor> = .absent,
-        primary: Nullable<RGBColor> = .absent,
-        accent: Nullable<RGBColor> = .absent,
-        onDark: Nullable<RGBColor> = .absent,
-        onLight: Nullable<RGBColor> = .absent
+        backgroundDark: Nullable<SendspinColor> = .absent,
+        backgroundLight: Nullable<SendspinColor> = .absent,
+        primary: Nullable<SendspinColor> = .absent,
+        accent: Nullable<SendspinColor> = .absent,
+        onDark: Nullable<SendspinColor> = .absent,
+        onLight: Nullable<SendspinColor> = .absent
     ) {
         self.timestamp = timestamp
         self.backgroundDark = backgroundDark
@@ -47,17 +47,17 @@ extension ServerColorState: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         timestamp = try container.decode(Int64.self, forKey: .timestamp)
         backgroundDark = container.contains(.backgroundDark)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .backgroundDark) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .backgroundDark) : .absent
         backgroundLight = container.contains(.backgroundLight)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .backgroundLight) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .backgroundLight) : .absent
         primary = container.contains(.primary)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .primary) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .primary) : .absent
         accent = container.contains(.accent)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .accent) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .accent) : .absent
         onDark = container.contains(.onDark)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .onDark) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .onDark) : .absent
         onLight = container.contains(.onLight)
-            ? try container.decode(Nullable<RGBColor>.self, forKey: .onLight) : .absent
+            ? try container.decode(Nullable<SendspinColor>.self, forKey: .onLight) : .absent
     }
 }
 

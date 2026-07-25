@@ -241,7 +241,7 @@ public struct TrackMetadata: Sendable, Hashable {
 
 /// An RGB color from a Sendspin color role update. Components are in the
 /// protocol's 0...255 range.
-public struct RGBColor: Codable, Sendable, Hashable {
+public struct SendspinColor: Codable, Sendable, Hashable {
     public let red: Int
     public let green: Int
     public let blue: Int
@@ -285,22 +285,22 @@ public struct ColorState: Sendable, Hashable {
     public let serverTimestamp: Int64
     /// Local absolute display time in microseconds, or `nil` when clock sync was not ready.
     public let localDisplayTime: Int64?
-    public let backgroundDark: RGBColor?
-    public let backgroundLight: RGBColor?
-    public let primary: RGBColor?
-    public let accent: RGBColor?
-    public let onDark: RGBColor?
-    public let onLight: RGBColor?
+    public let backgroundDark: SendspinColor?
+    public let backgroundLight: SendspinColor?
+    public let primary: SendspinColor?
+    public let accent: SendspinColor?
+    public let onDark: SendspinColor?
+    public let onLight: SendspinColor?
 
     public init(
         serverTimestamp: Int64,
         localDisplayTime: Int64?,
-        backgroundDark: RGBColor?,
-        backgroundLight: RGBColor?,
-        primary: RGBColor?,
-        accent: RGBColor?,
-        onDark: RGBColor?,
-        onLight: RGBColor?
+        backgroundDark: SendspinColor?,
+        backgroundLight: SendspinColor?,
+        primary: SendspinColor?,
+        accent: SendspinColor?,
+        onDark: SendspinColor?,
+        onLight: SendspinColor?
     ) {
         self.serverTimestamp = serverTimestamp
         self.localDisplayTime = localDisplayTime

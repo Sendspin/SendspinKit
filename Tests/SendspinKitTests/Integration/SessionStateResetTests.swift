@@ -74,8 +74,8 @@ struct SessionStateResetTests {
     func colorStateMergesDeltasAndPublishesStateBeforeEvent() async throws {
         let client = try makeTestClient(roles: [.colorV1])
         let mock = try await connectClient(client, activeRoles: [.colorV1])
-        let initial = RGBColor(red: 10, green: 20, blue: 30)
-        let accent = RGBColor(red: 200, green: 100, blue: 50)
+        let initial = SendspinColor(red: 10, green: 20, blue: 30)
+        let accent = SendspinColor(red: 200, green: 100, blue: 50)
 
         let observed = Task { @MainActor () -> ColorState? in
             for await event in client.events() {
@@ -121,7 +121,7 @@ struct SessionStateResetTests {
     func colorStateDoesNotBleedAcrossConnectionLostReconnect() async throws {
         let client = try makeTestClient(roles: [.colorV1])
         let mock1 = try await connectClient(client, activeRoles: [.colorV1])
-        let oldColor = RGBColor(red: 80, green: 90, blue: 100)
+        let oldColor = SendspinColor(red: 80, green: 90, blue: 100)
 
         try await mock1.injectText(serverStateColorJSON(ServerColorState(
             timestamp: 1,
@@ -148,7 +148,7 @@ struct SessionStateResetTests {
         await loseConnection(client, mock1)
 
         let mock2 = try await connectClient(client, activeRoles: [.colorV1])
-        let newColor = RGBColor(red: 1, green: 2, blue: 3)
+        let newColor = SendspinColor(red: 1, green: 2, blue: 3)
         try await mock2.injectText(serverStateColorJSON(ServerColorState(
             timestamp: 2,
             backgroundDark: .absent,
@@ -171,7 +171,7 @@ struct SessionStateResetTests {
     func metadataStateDoesNotChangeExistingColorState() async throws {
         let client = try makeTestClient(roles: [.colorV1, .metadataV1])
         let mock = try await connectClient(client, activeRoles: [.colorV1, .metadataV1])
-        let color = RGBColor(red: 10, green: 20, blue: 30)
+        let color = SendspinColor(red: 10, green: 20, blue: 30)
 
         try await mock.injectText(serverStateColorJSON(ServerColorState(
             timestamp: 1,
@@ -190,7 +190,7 @@ struct SessionStateResetTests {
     func colorStateClearsWhenServerSendsWholeRoleNull() async throws {
         let client = try makeTestClient(roles: [.colorV1])
         let mock = try await connectClient(client, activeRoles: [.colorV1])
-        let color = RGBColor(red: 10, green: 20, blue: 30)
+        let color = SendspinColor(red: 10, green: 20, blue: 30)
 
         try await mock.injectText(serverStateColorJSON(ServerColorState(
             timestamp: 1,

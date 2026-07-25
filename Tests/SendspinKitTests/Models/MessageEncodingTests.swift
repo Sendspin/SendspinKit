@@ -362,10 +362,10 @@ struct MessageEncodingTests {
         let color = try #require(message.payload.color.merge(previous: nil))
 
         #expect(color.timestamp == 12_345_678)
-        #expect(color.backgroundDark.merge(previous: nil) == RGBColor(red: 12, green: 34, blue: 56))
-        #expect(color.backgroundLight.merge(previous: RGBColor(red: 1, green: 2, blue: 3)) == nil)
-        #expect(color.primary.merge(previous: nil) == RGBColor(red: 255, green: 128, blue: 0))
-        #expect(color.accent.merge(previous: RGBColor(red: 4, green: 5, blue: 6)) == RGBColor(red: 4, green: 5, blue: 6))
+        #expect(color.backgroundDark.merge(previous: nil) == SendspinColor(red: 12, green: 34, blue: 56))
+        #expect(color.backgroundLight.merge(previous: SendspinColor(red: 1, green: 2, blue: 3)) == nil)
+        #expect(color.primary.merge(previous: nil) == SendspinColor(red: 255, green: 128, blue: 0))
+        #expect(color.accent.merge(previous: SendspinColor(red: 4, green: 5, blue: 6)) == SendspinColor(red: 4, green: 5, blue: 6))
     }
 
     @Test(arguments: [
@@ -397,7 +397,7 @@ struct MessageEncodingTests {
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ServerStateMessage.self, from: data)
         let color = try #require(message.payload.color.merge(previous: nil))
-        #expect(color.primary.merge(previous: nil) == RGBColor(red: 0, green: 0, blue: 0))
+        #expect(color.primary.merge(previous: nil) == SendspinColor(red: 0, green: 0, blue: 0))
     }
 
     @Test
@@ -416,11 +416,11 @@ struct MessageEncodingTests {
         let message = ServerStateMessage(payload: ServerStatePayload(
             color: ServerColorState(
                 timestamp: 42,
-                backgroundLight: .value(RGBColor(red: 4, green: 5, blue: 6)),
-                primary: .value(RGBColor(red: 1, green: 2, blue: 3)),
+                backgroundLight: .value(SendspinColor(red: 4, green: 5, blue: 6)),
+                primary: .value(SendspinColor(red: 1, green: 2, blue: 3)),
                 accent: .null,
-                onDark: .value(RGBColor(red: 7, green: 8, blue: 9)),
-                onLight: .value(RGBColor(red: 10, green: 11, blue: 12))
+                onDark: .value(SendspinColor(red: 7, green: 8, blue: 9)),
+                onLight: .value(SendspinColor(red: 10, green: 11, blue: 12))
             )
         ))
         let data = try JSONEncoder().encode(message)
