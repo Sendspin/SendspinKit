@@ -110,6 +110,13 @@ private final class OpusPacketInput: @unchecked Sendable {
 ///
 /// Not thread-safe; `AVAudioConverter` is stateful and must remain actor-confined.
 final class OpusDecoder: AudioDecoder {
+    /// Bounds the per-chunk allocation driven by `maximumPacketSize`.
+    ///
+    /// RFC 6716's 1275 bytes is a per-*frame* ceiling, not per packet — a multi-frame
+    /// packet may legitimately exceed it, so do not tighten this to 1275. At Opus's
+    /// 510 kbps ceiling a 120 ms packet is ~7.6 KB, which this comfortably clears.
+    static let maximumOpusPacketBytes = 16_384
+
     private let sampleRate: Int
     private let channels: Int
     private let compressedFormat: AVAudioFormat
@@ -155,6 +162,11 @@ final class OpusDecoder: AudioDecoder {
 
     func decode(_ data: Data) throws -> Data {
         guard !data.isEmpty else { return Data() }
+
+        // The buffer below is sized from `data.count`, so bound it before allocating.
+        guard data.count <= Self.maximumOpusPacketBytes else {
+            throw AudioDecoderError.inputTooLarge(bytes: data.count, limit: Self.maximumOpusPacketBytes)
+        }
 
         let compressedBuffer = AVAudioCompressedBuffer(
             format: compressedFormat,
@@ -243,6 +255,13 @@ final class OpusDecoder: AudioDecoder {
 /// requires `self` to be alive. If this class ever becomes failable after the
 /// `Unmanaged` call in `init`, this assumption would break.
 class FLACDecoder: AudioDecoder {
+    /// `FLAC__MAX_CHANNELS` from libFLAC's `format.h`.
+    static let maxFLACChannels = 8
+
+    /// A backlog this large means the stream is unparseable; generous enough that
+    /// legitimate frame fragmentation still works.
+    static let maximumPendingBytes = 1 << 20
+
     private var decoder: UnsafeMutablePointer<FLAC__StreamDecoder>?
     private let channels: Int
 
@@ -255,7 +274,17 @@ class FLACDecoder: AudioDecoder {
     private var readOffset: Int = 0
     private var lastError: FLAC__StreamDecoderErrorStatus?
 
+    /// Set by `writeCallback` on an announced-vs-stream channel mismatch, so the abort
+    /// surfaces as a diagnosable error rather than silent failure.
+    private var channelMismatch: (announced: Int, actual: Int)?
+
     init(sampleRate _: Int, channels: Int, bitDepth _: Int, header: Data? = nil) throws {
+        // An announced count above the FLAC maximum can never match the stream.
+        guard channels > 0, channels <= Self.maxFLACChannels else {
+            throw AudioDecoderError.formatCreationFailed(
+                "FLAC supports 1...\(Self.maxFLACChannels) channels, got \(channels)"
+            )
+        }
         self.channels = channels
 
         // Create FLAC stream decoder
@@ -316,10 +345,30 @@ class FLACDecoder: AudioDecoder {
     }
 
     func decode(_ data: Data) throws -> Data {
+        // Compaction only fires once libFLAC consumes half the buffer, so an unparseable
+        // stream would grow it without bound. Reset and resync instead.
+        //
+        // Tested against the *combined* size: checking only what is already buffered lets a
+        // single oversized payload allocate past the cap before anyone notices.
+        let unconsumed = pendingData.count - readOffset
+        if unconsumed.saturatingAdding(data.count) > Self.maximumPendingBytes {
+            Log.audio.warning("FLAC pending buffer exceeded its limit without progress; resetting decoder state")
+            pendingData.removeAll(keepingCapacity: false)
+            readOffset = 0
+            if let decoder {
+                FLAC__stream_decoder_flush(decoder)
+            }
+            throw AudioDecoderError.inputTooLarge(
+                bytes: unconsumed.saturatingAdding(data.count),
+                limit: Self.maximumPendingBytes
+            )
+        }
+
         // Append new data to pending buffer
         pendingData.append(data)
         decodedSamples.removeAll(keepingCapacity: true)
         lastError = nil
+        channelMismatch = nil
 
         // Process single frame
         guard let decoder else {
@@ -341,6 +390,13 @@ class FLACDecoder: AudioDecoder {
             let state = FLAC__stream_decoder_get_state(decoder)
 
             guard success != 0 else {
+                // A channel mismatch aborts the callback and lands here; report the cause.
+                if let mismatch = channelMismatch {
+                    throw AudioDecoderError.channelCountMismatch(
+                        announced: mismatch.announced,
+                        actual: mismatch.actual
+                    )
+                }
                 throw AudioDecoderError.conversionFailed("FLAC frame processing failed: state=\(state)")
             }
 
@@ -376,8 +432,16 @@ class FLACDecoder: AudioDecoder {
             }
         }
 
-        // Check for errors reported via error callback
-        if let error = lastError {
+        if let mismatch = channelMismatch {
+            throw AudioDecoderError.channelCountMismatch(
+                announced: mismatch.announced,
+                actual: mismatch.actual
+            )
+        }
+
+        // Several libFLAC statuses (LOST_SYNC, BAD_HEADER, …) are recoverable — it resyncs
+        // and still returns a frame. Only fail when the error actually cost us the audio.
+        if let error = lastError, decodedSamples.isEmpty {
             throw AudioDecoderError.conversionFailed("FLAC decoder error: \(error)")
         }
 
@@ -439,21 +503,30 @@ class FLACDecoder: AudioDecoder {
         let frameBitsPerSample = Int(frame.pointee.header.bits_per_sample)
         let shift = 32 - frameBitsPerSample
 
-        // FLAC outputs int32 samples per channel — interleave for AudioQueue.
-        // We use `channels` from init (not the frame header) because FLAC
-        // encodes channel count in STREAMINFO, which is fixed for the entire
-        // stream. Unlike bit depth, channel count can't vary per frame.
-        decodedSamples.reserveCapacity(decodedSamples.count + blocksize * channels)
+        // Interleave for AudioQueue. The bound MUST come from the frame header: `buffer`
+        // has exactly that many entries, and indexing past the end IS the out-of-bounds
+        // read, so the `guard let` below cannot catch it.
+        let frameChannels = Int(frame.pointee.header.channels)
+        guard frameChannels > 0 else {
+            return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
+        }
+        guard frameChannels == channels else {
+            channelMismatch = (announced: channels, actual: frameChannels)
+            return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
+        }
+
+        decodedSamples.reserveCapacity(decodedSamples.count + blocksize * frameChannels)
         for i in 0 ..< blocksize {
-            for channel in 0 ..< channels {
+            for channel in 0 ..< frameChannels {
                 guard let channelBuffer = buffer[channel] else {
                     return FLAC__STREAM_DECODER_WRITE_STATUS_ABORT
                 }
                 let sample = channelBuffer[i]
 
-                // FLAC outputs right-aligned samples in Int32.
-                // Shift left to fill the full 32-bit range for AudioQueue.
-                let normalizedSample = shift > 0 ? sample << Int32(shift) : sample
+                // FLAC outputs right-aligned Int32; shift left to fill the 32-bit range.
+                // Clamped so a bad `bits_per_sample` can't trap or shift out of range.
+                let safeShift = Int32(max(0, min(31, shift)))
+                let normalizedSample = safeShift > 0 ? sample << safeShift : sample
 
                 decodedSamples.append(normalizedSample)
             }
@@ -496,6 +569,11 @@ enum AudioDecoderError: Error, LocalizedError {
     case invalidDataSize(expected: String, actual: Int)
     case formatCreationFailed(String)
     case conversionFailed(String)
+    /// A wire payload exceeded the decoder's input bound. Structured rather than folded
+    /// into `conversionFailed` so callers and tests can match the cause, not its prose.
+    case inputTooLarge(bytes: Int, limit: Int)
+    /// The stream's own channel count disagrees with what `stream/start` announced.
+    case channelCountMismatch(announced: Int, actual: Int)
 
     var errorDescription: String? {
         switch self {
@@ -507,6 +585,10 @@ enum AudioDecoderError: Error, LocalizedError {
             "Audio format creation failed: \(detail)"
         case let .conversionFailed(detail):
             "Audio conversion failed: \(detail)"
+        case let .inputTooLarge(bytes, limit):
+            "Encoded payload of \(bytes) bytes exceeds the \(limit)-byte limit"
+        case let .channelCountMismatch(announced, actual):
+            "Channel count mismatch: stream/start announced \(announced) but the stream carries \(actual)"
         }
     }
 }
