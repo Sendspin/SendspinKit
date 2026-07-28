@@ -143,60 +143,56 @@ struct VolumeControlTests {
         #expect(volumes.contains { $0 > 0.0 && $0 < 0.75 })
     }
 
-    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
-    func audioPlayer_usesProvidedVolumeControlForVolume() async throws {
+    @Test
+    func audioPlayer_usesProvidedVolumeControlForVolume() async {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
             volumeControl: recorder
         )
-
-        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        try await player.start(format: format, codecHeader: nil)
 
         await player.setVolume(0.75)
         #expect(
             await waitUntil { recorder.volumeValues.contains(0.75) },
             "volume ramp must eventually apply the requested target"
         )
-
-        await player.stop()
     }
 
-    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
-    func audioPlayer_usesProvidedVolumeControlForMute() async throws {
+    @Test
+    func audioPlayer_usesProvidedVolumeControlForMute() async {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
             volumeControl: recorder
         )
-
-        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        try await player.start(format: format, codecHeader: nil)
 
         await player.setMute(true)
         let calls = recorder.calls
         #expect(calls.contains { $0.starts(with: "setMute(true") })
-
-        await player.stop()
     }
 
-    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
-    func audioPlayer_doesNotCallSetVolumeWhenMuted() async throws {
+    @Test
+    func audioPlayer_doesNotCallSetVolumeWhenMuted() async {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
             volumeControl: recorder
         )
 
-        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        try await player.start(format: format, codecHeader: nil)
-
         await player.setMute(true)
         recorder.calls.removeAll()
 
-        // Setting volume while muted should NOT call setVolume on the control
+        // The ramp lands asynchronously, so asserting right after the call would pass
+        // either way. Prove absence over a window instead.
         await player.setVolume(0.5)
-        #expect(!recorder.calls.contains { $0.starts(with: "setVolume") })
+        let rampLeaked = await waitUntil(timeout: .milliseconds(500)) {
+            recorder.calls.contains { $0.starts(with: "setVolume") }
+        }
+        #expect(!rampLeaked, "a muted player must not ramp volume to the control")
 
-        await player.stop()
+        // Unmuting is what releases the pending target to the control.
+        await player.setMute(false)
+        #expect(
+            await waitUntil { recorder.volumeValues.last == 0.5 },
+            "unmute must ramp to the volume requested while muted"
+        )
     }
 
     #if os(macOS)

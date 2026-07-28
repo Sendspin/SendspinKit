@@ -821,24 +821,31 @@ struct SendspinConnectionTests {
         try await transport.injectText(serverHelloJSON())
         try await transport.injectText(streamStartJSON())
 
-        // PRE-SYNC: inject a chunk before any server/time.
+        // PRE-SYNC: inject a chunk before any server/time, then a marker behind it. The
+        // message loop is ordered, so once the marker is applied the chunk has provably
+        // been routed — an absence assertion after a fixed sleep would instead pass
+        // whenever the loop simply hadn't got there yet.
         await transport.injectBinary(audioChunkFrame(index: 0))
-        try await Task.sleep(nanoseconds: 80_000_000)
+        try await transport.injectText(
+            String(bytes: JSONEncoder().encode(StreamClearMessage(payload: StreamClearPayload())), encoding: .utf8) ?? ""
+        )
 
-        let kindsBeforeSync = await engine.appliedCommandKinds()
-        let chunksEnqueuedPreSync = kindsBeforeSync.count(where: { $0 == .chunk })
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().contains(.streamClear) },
+            "the marker queued behind the pre-sync chunk must reach the engine"
+        )
+        let chunksEnqueuedPreSync = await engine.appliedCommandKinds().count(where: { $0 == .chunk })
         #expect(chunksEnqueuedPreSync == 0, "Pre-sync chunk must NOT be enqueued to the engine")
 
         // Sync the clock, then inject a post-sync chunk.
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000)
         try await transport.injectText(serverTimeJSON(clientTransmitted: now, serverReceived: now + 100, serverTransmitted: now + 200))
-        try await Task.sleep(nanoseconds: 80_000_000)
         await transport.injectBinary(audioChunkFrame(index: 1))
-        try await Task.sleep(nanoseconds: 80_000_000)
 
-        let kindsAfterSync = await engine.appliedCommandKinds()
-        let chunksEnqueuedPostSync = kindsAfterSync.count(where: { $0 == .chunk })
-        #expect(chunksEnqueuedPostSync >= 1, "Post-sync chunk MUST be enqueued to the engine")
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().contains(where: { $0 == .chunk }) },
+            "Post-sync chunk MUST be enqueued to the engine"
+        )
 
         await transport.finishStreams()
         _ = await collectConnectionEvent(from: connection) {
@@ -868,7 +875,16 @@ struct SendspinConnectionTests {
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000)
         try await transport.injectText(serverTimeJSON(clientTransmitted: now, serverReceived: now + 100, serverTransmitted: now + 200))
         try await transport.injectText(serverTimeJSON(clientTransmitted: now + 1_000, serverReceived: now + 1_100, serverTransmitted: now + 1_200))
-        try await Task.sleep(nanoseconds: 100_000_000)
+
+        // Poll for both snapshots instead of assuming a fixed span is enough; under
+        // parallel load the second can land well after 100ms.
+        let expectedSnapshots = 2
+        #expect(
+            await waitUntil {
+                await output.recordedCalls.count(where: { $0 == "updateTimeSnapshot()" }) >= expectedSnapshots
+            },
+            "each server/time should push a snapshot to the engine"
+        )
 
         await transport.finishStreams()
         _ = await collectConnectionEvent(from: connection) {
@@ -882,7 +898,10 @@ struct SendspinConnectionTests {
         // Each processed server/time must forward a snapshot to the engine output.
         // Mutation: removing `engine.updateClockSnapshot` in handleServerTime → zero calls → fails.
         let snapshotCalls = await output.recordedCalls.count(where: { $0 == "updateTimeSnapshot()" })
-        #expect(snapshotCalls >= 2, "Each server/time should push a snapshot to the engine (got \(snapshotCalls))")
+        #expect(
+            snapshotCalls >= expectedSnapshots,
+            "Each server/time should push a snapshot to the engine (got \(snapshotCalls))"
+        )
     }
 
     // MARK: - Invalid stream/start format
@@ -1193,8 +1212,14 @@ struct SendspinConnectionTests {
             await connection.shutdown()
         }
 
-        // After exiting scope, both should be deallocated
-        try await Task.sleep(nanoseconds: 100_000_000)
+        // Poll rather than sleep a fixed span: teardown tasks release their references at
+        // a scheduler-dependent moment, so a fixed wait is a load-sensitive flake. Polled
+        // inline because a `weak var` local cannot cross into a @Sendable closure.
+        var attempts = 0
+        while connectionRef != nil || engineRef != nil, attempts < 200 {
+            try await Task.sleep(nanoseconds: 10_000_000)
+            attempts += 1
+        }
 
         #expect(connectionRef == nil, "Connection should be deallocated (no retain cycle)")
         #expect(engineRef == nil, "Engine should be deallocated (no retain cycle)")
@@ -1258,7 +1283,7 @@ struct SendspinConnectionTests {
         #expect(disconnectCount == 1, "Should cleanly disconnect without error")
     }
 
-    // MARK: - Handshake ordering (spec §103/§104)
+    // MARK: - Handshake ordering
 
     @Test("client/hello is the first message and client/time is gated on server/hello")
     func helloIsFirstAndClockSyncGatedOnServerHello() async throws {
@@ -1266,7 +1291,7 @@ struct SendspinConnectionTests {
         let connection = try makeConnectionWithTransport(transport)
         await connection.start()
 
-        // Spec §103: client/hello must be sent, and first.
+        // client/hello must be sent, and first.
         #expect(
             await waitForSentMessage(ofType: ClientHelloMessage.typeString, on: transport),
             "client/hello must be sent on connect"
@@ -1277,7 +1302,7 @@ struct SendspinConnectionTests {
                 == ClientHelloMessage.typeString,
             "client/hello must be the FIRST message"
         )
-        // Spec §104: no other client messages before the handshake completes.
+        // No other client messages before the handshake completes.
         let clientTimeType = ClientTimeMessage.typeString
         #expect(
             !beforeServerHello.contains { SendspinEncoding.messageType(of: $0) == clientTimeType },
