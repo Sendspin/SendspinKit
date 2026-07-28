@@ -31,11 +31,12 @@ struct TimeFilterSnapshot: Equatable {
         let denominator = 1.0 + effectiveDrift
         // Crash-safety (runs on the audio thread): a non-finite/out-of-range result
         // would trap in the Int64 conversion. Fall back to the uncorrected timestamp
-        // rather than crash.
+        // rather than crash. The anchor add saturates for the same reason — a
+        // wire-derived `serverTime` near the Int64 bounds must not trap here.
         guard let clientRelative = Int64(exactly: (numerator / denominator).rounded()) else {
-            return clientProcessStartAbsolute + serverTime
+            return clientProcessStartAbsolute.saturatingAdding(serverTime)
         }
-        return clientProcessStartAbsolute + clientRelative
+        return clientProcessStartAbsolute.saturatingAdding(clientRelative)
     }
 
     /// Convert a local absolute time (Unix epoch μs) to a server timestamp.
@@ -43,12 +44,14 @@ struct TimeFilterSnapshot: Equatable {
     /// Replicates `ClockSynchronizer.localTimeToServer` /
     /// `SendspinTimeFilter.computeServerTime` without actor isolation.
     func localTimeToServer(_ localTime: Int64) -> Int64 {
-        let clientRelative = localTime - clientProcessStartAbsolute
+        let clientRelative = localTime.saturatingSubtracting(clientProcessStartAbsolute)
         let effectiveDrift = useDrift ? drift : 0.0
-        let currentOffset = offset + effectiveDrift * Double(clientRelative - lastUpdate)
+        // Take the elapsed term in the Double domain; the Int64 difference of two
+        // far-apart timestamps would trap on this real-time path.
+        let currentOffset = offset + effectiveDrift * (Double(clientRelative) - Double(lastUpdate))
         // Crash-safety: fall back to the uncorrected client-relative time rather than
         // trap in the Int64 conversion if the snapshot carries a diverged offset/drift.
         guard let roundedOffset = Int64(exactly: currentOffset.rounded()) else { return clientRelative }
-        return clientRelative + roundedOffset
+        return clientRelative.saturatingAdding(roundedOffset)
     }
 }

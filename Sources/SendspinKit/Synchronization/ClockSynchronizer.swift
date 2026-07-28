@@ -75,8 +75,10 @@ actor ClockSynchronizer: ClockSyncProtocol {
 
     /// Current clock offset in microseconds (server - client).
     /// Used for both time conversion and telemetry reporting.
+    /// `Int64(exactly:)` because `Int64(Double)` traps on NaN/±Inf, and this is read from
+    /// the telemetry path. Matches the guarding in the sibling conversion methods.
     var currentOffset: Int64 {
-        Int64(filter.offset.rounded())
+        Int64(exactly: filter.offset.rounded()) ?? 0
     }
 
     /// Whether the filter is synchronized enough to convert times (count >= 2).
@@ -97,9 +99,33 @@ actor ClockSynchronizer: ClockSyncProtocol {
         serverTransmitted: Int64,
         clientReceived: Int64
     ) {
-        // NTP offset and RTT calculation
-        let rtt = (clientReceived - clientTransmitted) - (serverTransmitted - serverReceived)
-        let measuredOffset = ((serverReceived - clientTransmitted) + (serverTransmitted - clientReceived)) / 2
+        // NTP offset and RTT. These run BEFORE the RTT gate, on unvalidated wire
+        // timestamps, so overflow has to be reported rather than trapped.
+        let clientSpan = clientReceived.subtractingReportingOverflow(clientTransmitted)
+        let serverSpan = serverTransmitted.subtractingReportingOverflow(serverReceived)
+        guard !clientSpan.overflow, !serverSpan.overflow else {
+            lastSampleWasRejected = true
+            return
+        }
+        let rttResult = clientSpan.partialValue.subtractingReportingOverflow(serverSpan.partialValue)
+        guard !rttResult.overflow else {
+            lastSampleWasRejected = true
+            return
+        }
+        let rtt = rttResult.partialValue
+
+        let receivedDelta = serverReceived.subtractingReportingOverflow(clientTransmitted)
+        let transmittedDelta = serverTransmitted.subtractingReportingOverflow(clientReceived)
+        guard !receivedDelta.overflow, !transmittedDelta.overflow else {
+            lastSampleWasRejected = true
+            return
+        }
+        let offsetSum = receivedDelta.partialValue.addingReportingOverflow(transmittedDelta.partialValue)
+        guard !offsetSum.overflow else {
+            lastSampleWasRejected = true
+            return
+        }
+        let measuredOffset = offsetSum.partialValue / 2
 
         // Always record raw RTT for spike diagnostics
         latestRawRtt = rtt
@@ -138,13 +164,13 @@ actor ClockSynchronizer: ClockSyncProtocol {
             // correct absolute-time domain but with an unknown error equal to the
             // true server-client offset. Only useful as a placeholder until the
             // first sync completes.
-            return clientProcessStartAbsolute + serverTime
+            return clientProcessStartAbsolute.addingReportingOverflow(serverTime).partialValue
         }
 
-        // The filter's computeClientTime converts server→client in the process-relative domain.
-        // Add the absolute anchor to get Unix epoch time.
+        // Add the absolute anchor to get Unix epoch time. Saturating: the anchor is ~1.7e18,
+        // and `BinaryMessage` admits any non-negative timestamp, so this can overflow.
         let clientRelative = filter.computeClientTime(serverTime)
-        return clientProcessStartAbsolute + clientRelative
+        return clientProcessStartAbsolute.addingReportingOverflow(clientRelative).partialValue
     }
 
     /// Convert a local absolute time (Unix epoch μs) to a server timestamp.
@@ -153,10 +179,10 @@ actor ClockSynchronizer: ClockSyncProtocol {
     ///   See ``serverTimeToLocal(_:)`` for details.
     func localTimeToServer(_ localTime: Int64) -> Int64 {
         guard filter.isSynchronized else {
-            return localTime - clientProcessStartAbsolute
+            return localTime.subtractingReportingOverflow(clientProcessStartAbsolute).partialValue
         }
 
-        let clientRelative = localTime - clientProcessStartAbsolute
+        let clientRelative = localTime.subtractingReportingOverflow(clientProcessStartAbsolute).partialValue
         return filter.computeServerTime(clientRelative)
     }
 

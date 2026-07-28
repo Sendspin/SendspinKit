@@ -138,7 +138,9 @@ struct SendspinTimeFilter {
         let updateStdDev = clampedMaxError * maxErrorScale
         let measurementVariance = updateStdDev * updateStdDev
 
-        let dt = Double(timeAdded - lastUpdate)
+        // Subtract in `Double`: the `Int64` difference traps for far-apart timestamps.
+        // Defensive — `timeAdded` is our own monotonic clock, not wire data.
+        let dt = Double(timeAdded) - Double(lastUpdate)
 
         // --- First measurement: initialize offset, no drift yet ---
         if count == 0 {
