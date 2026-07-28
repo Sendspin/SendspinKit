@@ -1,11 +1,11 @@
 /// Default required lead time in milliseconds for audio buffering.
 /// Accounts for AudioQueue setup latency and codec warmup (typically 50-100ms).
-/// This is sent to the server in client/state per spec §485.
+/// Sent to the server in the `client/state` player object.
 public let defaultRequiredLeadTimeMs: Int = 100
 
 /// Default minimum buffer size in milliseconds for smooth playback.
 /// Accounts for scheduler jitter and prebuffering (typically 200-500ms).
-/// This is sent to the server in client/state per spec §486.
+/// Sent to the server in the `client/state` player object.
 public let defaultMinBufferMs: Int = 500
 
 /// Maximum static delay in milliseconds. Server-provided and local `setStaticDelay`
@@ -29,6 +29,12 @@ public enum VolumeMode: Sendable, Hashable {
     /// `volume` or `mute` in `supported_commands`.
     case none
 }
+
+/// Bound on `server/hello` arrival after a transport opens.
+///
+/// The spec sets no bound. This matches the budget multi-server arbitration applies to
+/// its own handshake, so both paths give a server the same grace.
+let defaultHandshakeTimeout: Duration = .seconds(5)
 
 /// Configuration for player role
 public struct PlayerConfiguration: Sendable {
@@ -73,12 +79,12 @@ public struct PlayerConfiguration: Sendable {
     /// Defaults to `false` to avoid unnecessary work in normal playback scenarios.
     public let emitRawAudioEvents: Bool
 
-    /// Required lead time in milliseconds (spec §485).
+    /// Required lead time in milliseconds.
     /// Accounts for AudioQueue setup and codec warmup latency.
     /// Defaults to 100ms. Must be >= 0.
     public let requiredLeadTimeMs: Int
 
-    /// Minimum buffer size in milliseconds (spec §486).
+    /// Minimum buffer size in milliseconds.
     /// Accounts for scheduler jitter and prebuffering to avoid underruns.
     /// Defaults to 500ms. Must be >= 0.
     public let minBufferMs: Int

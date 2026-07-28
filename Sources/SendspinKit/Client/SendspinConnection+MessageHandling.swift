@@ -50,6 +50,15 @@ extension SendspinConnection {
             }
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
+
+            // Swallowing is right for ordinary messages, but `server/hello` is the
+            // handshake gate: nothing times it out, so a failure here would leave the
+            // client in `.connecting` forever with the socket open. Fail loudly.
+            if msgType == ServerHelloMessage.typeString, handshakePhase == .awaitingServerHello {
+                Log.client.error("Undecodable server/hello — rejecting the connection rather than wedging")
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+            }
         }
     }
 
@@ -87,6 +96,7 @@ extension SendspinConnection {
         currentServerId = message.payload.serverId
         activeRoles = Set(message.payload.activeRoles)
         handshakePhase = .complete
+        cancelHandshakeDeadline()
         let info = ServerInfo(
             serverId: message.payload.serverId,
             name: message.payload.name,
@@ -101,7 +111,7 @@ extension SendspinConnection {
         lastSentClientState = nil
         try? await sendClientStateIfChanged()
 
-        // Handshake is complete: now start client/time sampling (spec §104). Start-once.
+        // Handshake is complete: now start client/time sampling. Start-once.
         if clockSyncTask == nil {
             clockSyncTask = Task { [weak self] in
                 await self?.clockSyncLoop()

@@ -30,6 +30,23 @@ actor NWWebSocketTransport: SendspinTransport {
     /// Continuation for outbound connect awaiting `.ready` state.
     private var connectionContinuation: CheckedContinuation<Void, Error>?
 
+    /// Guards against a second concurrent `receiveMessage` chain. See `startReceiving()`.
+    private var receivingStarted = false
+
+    /// First writer wins — see `recordCloseReason`.
+    private var observedCloseReason: TransportCloseReason?
+
+    /// Nonisolated mirror of `connection` for `deinit`, which cannot touch actor state on
+    /// this deployment target (`isolated deinit` needs macOS 15.4). Same pattern as
+    /// `AudioPlayer.audioQueueForDeinit`; kept in sync wherever `connection` is assigned.
+    private nonisolated(unsafe) var connectionForDeinit: NWConnection?
+
+    /// Cancels the `NWConnection` for a transport dropped without `disconnect()`, e.g. a
+    /// failed dial whose error propagates.
+    deinit {
+        connectionForDeinit?.cancel()
+    }
+
     /// Initialize with an already-established NWConnection that has WebSocket framing.
     /// The connection should be in the `.ready` state.
     /// - Parameter sendTimeout: per-send deadline (see ``sendTimeout``). Tests
@@ -37,6 +54,7 @@ actor NWWebSocketTransport: SendspinTransport {
     ///   waiting the production default.
     init(connection: NWConnection, sendTimeout: Duration = defaultSendTimeout) {
         self.connection = connection
+        connectionForDeinit = connection
         self.sendTimeout = sendTimeout
     }
 
@@ -48,7 +66,9 @@ actor NWWebSocketTransport: SendspinTransport {
     init(url: URL, sendTimeout: Duration = defaultSendTimeout) {
         let endpoint = Self.endpoint(for: url)
         let parameters = Self.parameters(tls: Self.usesTLS(for: url))
-        connection = NWConnection(to: endpoint, using: parameters)
+        let newConnection = NWConnection(to: endpoint, using: parameters)
+        connection = newConnection
+        connectionForDeinit = newConnection
         self.sendTimeout = sendTimeout
     }
 
@@ -108,6 +128,13 @@ actor NWWebSocketTransport: SendspinTransport {
     /// Must be called after init to begin pumping messages into the async streams.
     func startReceiving() {
         guard let connection else { return }
+        // Wire ordering depends on exactly one outstanding `receiveMessage`; a second chain
+        // would interleave undefined. `FrameInbox` guards the consumer, not the producer.
+        guard !receivingStarted else {
+            Log.transport.warning("startReceiving() called twice; ignoring to preserve frame ordering")
+            return
+        }
+        receivingStarted = true
         // Own state observation from here (inbound path: replaces the advertiser's
         // post-ready handler, which only logs/cancels). The receive-error callback
         // surfaces death promptly in the common case, but the outbound path needed
@@ -121,6 +148,17 @@ actor NWWebSocketTransport: SendspinTransport {
 
     var isConnected: Bool {
         connection?.state == .ready
+    }
+
+    var closeReason: TransportCloseReason? {
+        observedCloseReason
+    }
+
+    /// Keep the first cause observed: a peer close is followed by a receive error and a
+    /// `.cancelled` transition, and only the first describes why the stream ended.
+    private func recordCloseReason(_ reason: TransportCloseReason) {
+        guard observedCloseReason == nil else { return }
+        observedCloseReason = reason
     }
 
     func nextFrame() async -> TransportFrame? {
@@ -222,11 +260,13 @@ actor NWWebSocketTransport: SendspinTransport {
     }
 
     func disconnect() async {
+        recordCloseReason(.cancelled)
         // Finish the stream before cancelling the connection so parked nextFrame()
         // callers are unblocked — cancellation alone doesn't release them.
         finishStreams()
         connection?.cancel()
         connection = nil
+        connectionForDeinit = nil
     }
 
     // MARK: - Private
@@ -271,9 +311,10 @@ actor NWWebSocketTransport: SendspinTransport {
                         inbox.yield(.binary(data))
                     }
                 case .close:
-                    // Note the close but keep receiving — data frames may be queued
-                    // behind it. Streams finish when the receive loop terminates.
-                    Task { await self.handleClose() }
+                    // Note the close but keep receiving — data frames may be queued behind
+                    // it. The RFC 6455 code is diagnostic only; the spec doesn't define one.
+                    let code = Self.closeCodeValue(metadata.closeCode)
+                    Task { await self.handleClose(code: code) }
                 case .ping, .pong, .cont:
                     break
                 @unknown default:
@@ -289,8 +330,21 @@ actor NWWebSocketTransport: SendspinTransport {
     /// continuations yet — data frames may still be queued behind the close in the
     /// NWConnection buffer. The streams are finished when the receive loop terminates
     /// naturally (error or connection teardown) via `finishStreams()`.
-    private func handleClose() {
+    private func handleClose(code: Int?) {
         closeReceived = true
+        recordCloseReason(.peerClosed(code: code))
+    }
+
+    /// Flatten `NWProtocolWebSocket.CloseCode` to its numeric RFC 6455 value.
+    private nonisolated static func closeCodeValue(_ closeCode: NWProtocolWebSocket.CloseCode) -> Int? {
+        switch closeCode {
+        case let .protocolCode(code):
+            Int(code.rawValue)
+        case let .applicationCode(code), let .privateCode(code):
+            Int(code)
+        @unknown default:
+            nil
+        }
     }
 
     /// Handle connection state changes (outbound path).
@@ -302,7 +356,15 @@ actor NWWebSocketTransport: SendspinTransport {
             connectionContinuation = nil
             continuation?.resume()
 
-        case .cancelled, .failed:
+        case let .failed(error):
+            recordCloseReason(.failed(description: String(describing: error)))
+            finishStreams()
+            let continuation = connectionContinuation
+            connectionContinuation = nil
+            continuation?.resume(throwing: TransportError.connectionFailed)
+
+        case .cancelled:
+            recordCloseReason(.cancelled)
             finishStreams()
             let continuation = connectionContinuation
             connectionContinuation = nil
@@ -321,6 +383,7 @@ actor NWWebSocketTransport: SendspinTransport {
             connectionContinuation = nil
             connection?.cancel()
             connection = nil
+            connectionForDeinit = nil
             continuation?.resume(throwing: TransportError.connectionFailed)
 
         case .preparing, .setup:
@@ -336,6 +399,7 @@ actor NWWebSocketTransport: SendspinTransport {
     private func handleReceiveError(_ error: NWError) {
         if !closeReceived {
             Log.transport.error("Receive error: \(error)")
+            recordCloseReason(.failed(description: String(describing: error)))
         }
         finishStreams()
     }
@@ -345,6 +409,8 @@ actor NWWebSocketTransport: SendspinTransport {
     /// no error to log — this is an orderly read-side EOF. Finishing unblocks any
     /// parked `nextFrame()` callers; the loop is not re-armed.
     private func handleReceiveEnd() {
+        // Orderly EOF with no close frame: peer ended the stream without the handshake.
+        recordCloseReason(.peerClosed(code: nil))
         finishStreams()
     }
 

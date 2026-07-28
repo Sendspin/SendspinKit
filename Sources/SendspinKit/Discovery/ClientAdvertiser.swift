@@ -182,7 +182,9 @@ public actor ClientAdvertiser {
                 Log.discovery.error("Connection from \(String(describing: connection.endpoint)) failed: \(error)")
                 connection.cancel()
             case .cancelled:
-                break
+                // Break the connection → handler → connection cycle for a connection that
+                // dies before `connectionReady` wraps it.
+                connection.stateUpdateHandler = nil
             case .setup, .preparing, .waiting:
                 break
             @unknown default:

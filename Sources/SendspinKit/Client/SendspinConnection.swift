@@ -42,18 +42,26 @@ actor SendspinConnection {
     var shuttingDown = false
     var disconnectReason: DisconnectReason?
     var supervisorTask: Task<Void, Never>?
+    private var handshakeDeadlineTask: Task<Void, Never>?
+
+    /// Bound on `server/hello` arrival after the transport opens.
+    ///
+    /// The spec sets no bound; without one, a server that completes the WebSocket upgrade
+    /// and then says nothing parks the message loop in `nextFrame()` and leaves the facade
+    /// `.connecting` for the life of the process.
+    let handshakeTimeout: Duration
     private(set) var supervisorSpawnCount: Int = 0
 
     /// Pre-read hello (for multi-server handoff)
     let parsedHello: ServerHelloMessage?
 
-    /// Client/hello payload, sent as the first message on the normal connect path
-    /// (spec §103). Skipped when `parsedHello` is set — the facade already sent it
-    /// during competing-connection arbitration.
+    /// Client/hello payload, sent as the first message on the normal connect path.
+    /// Skipped when `parsedHello` is set — the facade already sent it during
+    /// competing-connection arbitration.
     let clientHelloPayload: ClientHelloPayload
 
-    /// Clock-sync sender task. Started on `server/hello` (spec §104: no client
-    /// messages before the handshake completes), cancelled on teardown.
+    /// Clock-sync sender task. Started on `server/hello` — no client messages may
+    /// precede handshake completion — and cancelled on teardown.
     var clockSyncTask: Task<Void, Never>?
 
     // Protocol-intent gates for inbound stream data. Internal so same-module
@@ -145,8 +153,10 @@ actor SendspinConnection {
         requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
         minBufferMs: Int = defaultMinBufferMs,
         clock: any ClockSyncProtocol = ClockSynchronizer(),
+        handshakeTimeout: Duration = defaultHandshakeTimeout,
         engine: AudioEngine
     ) {
+        self.handshakeTimeout = handshakeTimeout
         self.transport = transport
         self.parsedHello = parsedHello
         self.clientHelloPayload = clientHelloPayload
@@ -266,11 +276,41 @@ actor SendspinConnection {
         guard lifecycle == .idle else { return }
         lifecycle = .running
         supervisorSpawnCount += 1
+        armHandshakeDeadline()
 
         supervisorTask = Task {
             await runLoop()
-            await finishTeardown(disconnectReason ?? .connectionLost)
+            // An explicit local disconnect still wins; it is recorded before its first
+            // suspension precisely so it beats the loss path.
+            let observed = await transport.closeReason
+            await finishTeardown(disconnectReason ?? .connectionLost(observed))
         }
+    }
+
+    /// Fail the connection if `server/hello` has not arrived within
+    /// `handshakeTimeout`. Cancelled by ``cancelHandshakeDeadline()`` on completion.
+    private func armHandshakeDeadline() {
+        let budget = handshakeTimeout
+        handshakeDeadlineTask = Task { [weak self] in
+            try? await Task.sleep(for: budget)
+            guard !Task.isCancelled else { return }
+            await self?.failHandshakeIfIncomplete()
+        }
+    }
+
+    /// Cancel the handshake deadline once the handshake has completed.
+    func cancelHandshakeDeadline() {
+        handshakeDeadlineTask?.cancel()
+        handshakeDeadlineTask = nil
+    }
+
+    private func failHandshakeIfIncomplete() async {
+        guard lifecycle == .running, handshakePhase != .complete, !shuttingDown else { return }
+        Log.client.warning("server/hello did not arrive within the handshake budget; closing")
+        // Record before the suspension so it beats the transport-loss path, exactly as
+        // `disconnect(reason:)` does.
+        disconnectReason = .handshakeTimeout
+        await transport.disconnect()
     }
 
     /// Graceful disconnect: send goodbye and close.

@@ -190,6 +190,10 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
                     switch reason {
                     case .connectionLost:
                         print("\n[Disconnected: connection lost]")
+                    case .incompatibleServer:
+                        print("\n[Disconnected: server rejected as incompatible]")
+                    case .handshakeTimeout:
+                        print("\n[Disconnected: server/hello never arrived]")
                     case .explicit:
                         break // SIGINT path — we already printed a message
                     }
