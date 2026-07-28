@@ -10,6 +10,9 @@ go-working-code.txt
 output.txt
 /test-logs/
 scripts/smoke-test.sh
+scripts/*.flac
+scripts/*.ogg
+scripts/*.wav
 /test.*
 Examples/*/.build
 SENDSPIN_SPEC.md
