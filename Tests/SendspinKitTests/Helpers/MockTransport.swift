@@ -19,6 +19,12 @@ actor MockTransport: SendspinTransport {
     private(set) var shouldFailOnSend = false
 
     private(set) var isConnected = true
+
+    /// Mirrors `NWWebSocketTransport`'s first-writer-wins semantics so tests exercise the
+    /// same contract: `disconnect()` records `.cancelled`, and a test can simulate a peer
+    /// close or a network failure via ``simulateClose(_:)`` before finishing the stream.
+    private(set) var closeReason: TransportCloseReason?
+
     private(set) var disconnectCalled = false
     /// Number of times `disconnect()` was invoked. Lets tests prove teardown ran
     /// exactly once across idempotent/concurrent shutdown paths (not just "did not hang").
@@ -61,10 +67,24 @@ actor MockTransport: SendspinTransport {
 
     /// Full teardown: marks disconnected and finishes both streams.
     func disconnect() async {
+        recordCloseReason(.cancelled)
         isConnected = false
         disconnectCalled = true
         disconnectCallCount += 1
         finishStreams()
+    }
+
+    /// Simulate a terminal condition observed on the wire (peer close, network failure)
+    /// before the stream finishes, so tests can drive the non-`.cancelled` paths.
+    func simulateClose(_ reason: TransportCloseReason) {
+        recordCloseReason(reason)
+        isConnected = false
+        finishStreams()
+    }
+
+    private func recordCloseReason(_ reason: TransportCloseReason) {
+        guard closeReason == nil else { return }
+        closeReason = reason
     }
 
     // MARK: - Test helpers

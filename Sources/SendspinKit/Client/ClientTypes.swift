@@ -69,10 +69,19 @@ public enum ControllerCommandType: String, Codable, Sendable, Hashable {
 public enum DisconnectReason: Sendable, Equatable {
     /// Client explicitly disconnected (via `disconnect()`)
     case explicit(GoodbyeReason)
-    /// Connection was lost (WebSocket dropped, network error)
-    case connectionLost
+    /// Connection ended without a local `disconnect()` — peer closed, or the network failed.
+    ///
+    /// The reason is a best-effort socket observation, useful for backoff and diagnostics
+    /// but not protocol state (see ``TransportCloseReason``). Treat `nil` as "lost".
+    case connectionLost(TransportCloseReason?)
     /// Server was rejected (e.g. unsupported core protocol version in `server/hello`)
     case incompatibleServer
+    /// The transport opened but `server/hello` never arrived within the handshake budget.
+    ///
+    /// Distinct from ``incompatibleServer``: nothing was learned about the server's
+    /// protocol support, so this is usually transient (a slow or overloaded server) and
+    /// is a reasonable candidate for reconnect, whereas an incompatible server is not.
+    case handshakeTimeout
 }
 
 /// Raw player audio bytes exactly as received from the server.

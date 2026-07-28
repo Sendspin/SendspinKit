@@ -11,6 +11,25 @@ public enum TransportFrame: Sendable {
     case binary(Data)
 }
 
+/// Why a transport's frame stream ended.
+///
+/// - Important: a best-effort observation of the socket, not protocol state. The Sendspin
+///   spec defines no server goodbye message and no close-code semantics, so a compliant
+///   server need not distinguish these. Use for diagnostics and reconnect backoff only;
+///   per spec, reconnect intent flows the other way via `client/goodbye.reason`.
+public enum TransportCloseReason: Sendable, Equatable {
+    /// The peer initiated the WebSocket close handshake.
+    /// `code` is the RFC 6455 close code when the peer supplied one.
+    case peerClosed(code: Int?)
+
+    /// The connection failed — network error, unexpected teardown, or a receive error.
+    /// `description` is the underlying `NWError`'s description, for diagnostics only.
+    case failed(description: String)
+
+    /// The transport was closed locally, via `disconnect()`.
+    case cancelled
+}
+
 /// Protocol for WebSocket transports used by SendspinClient.
 /// Both outbound (client connects to server) and inbound (server connects to client)
 /// connections conform to this protocol.
@@ -38,6 +57,11 @@ public protocol SendspinTransport: Actor, Sendable {
 
     /// Whether the transport is currently connected
     var isConnected: Bool { get }
+
+    /// Why the frame stream ended; `nil` until ``nextFrame()`` has returned `nil`.
+    ///
+    /// Separate from the frame type so the pull loop stays a plain `while let`.
+    var closeReason: TransportCloseReason? { get }
 
     /// Send a JSON-encoded message
     func send(_ message: some Codable & Sendable) async throws

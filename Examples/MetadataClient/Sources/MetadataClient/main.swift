@@ -158,6 +158,10 @@ struct MetadataClient: AsyncParsableCommand {
                 switch reason {
                 case .connectionLost:
                     print("--- Disconnected (connection lost) ---")
+                case .incompatibleServer:
+                    print("--- Disconnected (incompatible server) ---")
+                case .handshakeTimeout:
+                    print("--- Disconnected (handshake timed out) ---")
                 case .explicit(let goodbye):
                     print("--- Disconnected (\(goodbye.rawValue)) ---")
                 }

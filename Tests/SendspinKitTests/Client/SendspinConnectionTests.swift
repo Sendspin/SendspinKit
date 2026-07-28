@@ -506,7 +506,7 @@ struct SendspinConnectionTests {
         }
 
         // Create a test event
-        let testEvent = ClientEvent.disconnected(reason: .connectionLost)
+        let testEvent = ClientEvent.disconnected(reason: .connectionLost(nil))
 
         // Yield while valid
         token.yieldIfValid(testEvent, to: continuation)

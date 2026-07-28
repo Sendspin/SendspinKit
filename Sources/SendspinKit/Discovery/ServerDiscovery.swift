@@ -184,6 +184,9 @@ public actor ServerDiscovery {
                 // Terminal state for all paths (.ready → cancel, .failed → cancel,
                 // timeout cancel, or external cancel from stopDiscovery).
                 // Single cleanup point.
+                // Break the connection → handler → connection cycle; whether NW releases
+                // the handler itself after `.cancelled` is unspecified.
+                connection.stateUpdateHandler = nil
                 Task { await self?.resolveCompleted(connection, id: connectionID) }
             case .setup, .preparing, .waiting:
                 break

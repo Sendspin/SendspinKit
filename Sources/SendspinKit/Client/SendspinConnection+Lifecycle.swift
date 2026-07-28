@@ -27,11 +27,13 @@ extension SendspinConnection {
             // this server/hello during arbitration. Process it; do not re-send hello.
             await handleServerHello(hello)
         } else {
-            // Normal path: client/hello must be the first message (spec §103).
+            // Normal path: client/hello opens the handshake.
             do {
                 try await sendWrapped(ClientHelloMessage(payload: clientHelloPayload))
             } catch {
-                disconnectReason = disconnectReason ?? .connectionLost
+                // Bound first: `??`'s right side is a non-async autoclosure.
+                let observed = await transport.closeReason
+                disconnectReason = disconnectReason ?? .connectionLost(observed)
                 return
             }
         }
@@ -117,7 +119,7 @@ extension SendspinConnection {
     func runLoop() async {
         await withTaskGroup(of: Void.self) { group in
             // The message loop owns the handshake; clock sync is started from
-            // handleServerHello once server/hello arrives (spec §104), not here.
+            // handleServerHello once server/hello arrives, not here.
             group.addTask { await self.messageLoop() }
             group.addTask { await self.reportDrain() }
 
@@ -151,6 +153,9 @@ extension SendspinConnection {
     func finishTeardown(_ reason: DisconnectReason) async {
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
+
+        // Release the deadline task so it cannot outlive the connection it guards.
+        cancelHandshakeDeadline()
 
         // Invalidate the token
         validity.invalidate()

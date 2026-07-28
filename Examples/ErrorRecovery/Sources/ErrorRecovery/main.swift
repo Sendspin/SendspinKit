@@ -77,12 +77,12 @@ private func isRetryableError(_ error: any Error) -> Bool {
             // attempts. Shouldn't happen in this loop, but if it does, retry
             // won't help.
             return false
-        case .notConnected, .sendFailed:
+        case .notConnected, .sendFailed, .handshakeIncomplete:
             // `sendFailed` surfaces after the transport has already dropped —
             // by the time we see it, the connection is dead. A fresh
             // `connect()` starts a new transport, so retrying is the right
-            // move. `notConnected` is likewise fine to retry — connect()
-            // rebuilds from scratch.
+            // move. `notConnected` and `handshakeIncomplete` are likewise fine
+            // to retry — connect() rebuilds from scratch.
             return true
         case .roleNotActive, .streamNotActive, .invalidServerURL, .noDiscoveredServers, .serverURLRequired:
             // Logic/configuration errors are not transient connection failures —
@@ -234,6 +234,14 @@ struct ErrorRecovery: AsyncParsableCommand {
                         switch reason {
                         case .connectionLost:
                             print("[\(timestamp())] Connection lost.")
+                        case .incompatibleServer:
+                            print("[\(timestamp())] Server rejected as incompatible.")
+                            // Not transient — reconnecting to the same server cannot help.
+                            state.shouldQuit = true
+                        case .handshakeTimeout:
+                            // Unlike an incompatible server, this says nothing about
+                            // protocol support: retry.
+                            print("[\(timestamp())] Handshake timed out; will retry.")
                         case .explicit(let goodbye):
                             print("[\(timestamp())] Disconnected: \(goodbye.rawValue)")
                             // An explicit disconnect from SIGINT — we're done.
