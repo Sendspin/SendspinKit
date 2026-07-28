@@ -156,14 +156,20 @@ struct AudioPlayerTests {
     // MARK: - Perceptual volume
 
     @Test
-    func graceExpiryRebaselineCursorAbsorbsStartupBias() {
+    func graceExpiryRebaselineCursorAbsorbsStartupBias() throws {
         let formatSampleRate = 44_100
         let formatChannels = 2
-        let formatBytesPerSample = MemoryLayout<Int16>.size
-        let bytesPerFrame = formatChannels * formatBytesPerSample
         let expectedServerTime: Int64 = 10_000_000
-        let audioQueueLatencyUs = Int64(audioQueueEstimatedInFlightBuffers) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(formatSampleRate * bytesPerFrame)
+        // Use the production helper rather than re-deriving the formula here: a test that
+        // re-implements the code it guards cannot catch a change to that code.
+        let audioQueueLatencyUs = try AudioEngine.outputLatencyUs(
+            format: AudioFormatSpec(
+                codec: .pcm,
+                channels: formatChannels,
+                sampleRate: formatSampleRate,
+                bitDepth: 16
+            )
+        )
         let biasedRawCursor = expectedServerTime
 
         let biasedSyncError = (expectedServerTime - biasedRawCursor) - audioQueueLatencyUs

@@ -37,9 +37,12 @@ private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 /// Shared with startup latency estimation so priming and correction use the same model.
 let audioQueueBufferByteSize: UInt32 = 16_384
 
-/// Approximate number of AudioQueue buffers audible/in flight.
-/// The sync-error formula treats one buffer as playing and one as queued.
-let audioQueueEstimatedInFlightBuffers = 2
+/// Buffers allocated and primed by `prepare()`, and so the pipeline depth once running.
+///
+/// Must stay the single source of truth for both the allocation loop and the latency
+/// model: a mismatch is a constant offset that `graceExpiryRebaselineCursor` bakes in
+/// permanently at grace expiry (~85ms per buffer at 48kHz/stereo/16-bit).
+let audioQueueBufferCount = 3
 
 private let volumeRampStepCount = 5
 private let volumeRampStepDuration: Duration = .milliseconds(10)
@@ -307,7 +310,7 @@ actor AudioPlayer {
         // has to audibly insert its way out of the initial empty-ring offset.
         pendingStartBuffers.removeAll(keepingCapacity: true)
         preparedStartCursorAnchor = nil
-        for _ in 0 ..< 3 {
+        for _ in 0 ..< audioQueueBufferCount {
             var buffer: AudioQueueBufferRef?
             let allocStatus = AudioQueueAllocateBuffer(queue, audioQueueBufferByteSize, &buffer)
             guard allocStatus == noErr, let buffer else {
@@ -523,10 +526,8 @@ actor AudioPlayer {
         let nowAbsolute = MonotonicClock.absoluteMicroseconds()
         let expectedServerTime = snapshot.localTimeToServer(nowAbsolute)
 
-        // AQ pipeline latency estimate: ~2 buffers in flight (1 playing + 1 queued).
-        // Actual depth can vary slightly, but this is sufficient for the continuous
-        // sync correction loop which converges regardless of a small constant bias.
-        let aqLatencyUs = Int64(2 * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+        // Depth is every primed buffer, so this must use the same constant `prepare()` does.
+        let aqLatencyUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
 
         let syncErrorUs = (expectedServerTime - state.cursorMicroseconds) - aqLatencyUs
         state.lastSyncErrorUs = syncErrorUs

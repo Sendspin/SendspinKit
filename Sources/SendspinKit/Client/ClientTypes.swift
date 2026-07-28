@@ -212,13 +212,20 @@ public struct PlaybackProgress: Sendable, Hashable {
     /// - Parameter currentTimeMicros: Current time in microseconds
     ///   (same clock domain as `timestamp`)
     public func currentPositionMs(at currentTimeMicros: Int64) -> Int64 {
-        let elapsed = currentTimeMicros - timestamp
-        let calculated = Int64(trackProgressMs)
-            + elapsed * Int64(playbackSpeedX1000) / 1_000_000
+        // Every input is an unvalidated server value. Overflow at any step means the
+        // interpolation is meaningless, so report the last known position rather than a
+        // wrapped one — with `trackDurationMs == 0` (live radio) there is no upper clamp
+        // below to disguise a wrapped result.
+        let elapsed = currentTimeMicros.subtractingReportingOverflow(timestamp)
+        guard !elapsed.overflow else { return max(Int64(trackProgressMs), 0) }
+        let scaled = elapsed.partialValue.multipliedReportingOverflow(by: Int64(playbackSpeedX1000))
+        guard !scaled.overflow else { return max(Int64(trackProgressMs), 0) }
+        let sum = Int64(trackProgressMs).addingReportingOverflow(scaled.partialValue / 1_000_000)
+        guard !sum.overflow else { return max(Int64(trackProgressMs), 0) }
         if trackDurationMs != 0 {
-            return max(min(calculated, Int64(trackDurationMs)), 0)
+            return max(min(sum.partialValue, Int64(trackDurationMs)), 0)
         }
-        return max(calculated, 0)
+        return max(sum.partialValue, 0)
     }
 }
 

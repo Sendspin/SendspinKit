@@ -41,8 +41,41 @@ actor AudioEngine {
     private var running = false
     private var shuttingDown = false
 
-    // Diagnostics: record command kinds for processing-order test assertions.
+    // Diagnostics: command kinds for processing-order test assertions. Bounded because
+    // this is appended on the production drain path (~50/s of `.chunk` alone).
     private var appliedKinds: [DataPlaneCommandKind] = []
+
+    static let appliedKindsRetentionLimit = 512
+
+    /// How long a pending startup release may sleep before re-evaluating.
+    ///
+    /// A re-check interval, not a deadline: a chunk due further out than this sleeps
+    /// again, so a legitimately distant schedule still plays on time and to the
+    /// microsecond (the final sleep is the exact remaining time). The bound exists only
+    /// so a saturated play time — which clears the overflow guards in
+    /// ``startupReleaseCandidate`` yet names an instant millennia away — cannot commit
+    /// the startup path for the life of the process.
+    ///
+    /// Matches `AudioScheduler`'s default playback window, which bounds its own
+    /// per-chunk sleep for the same reason. That path re-checks at this rate for the
+    /// whole of playback, so it is comfortably cheap for a once-per-stream path.
+    static let startupRecheckIntervalUs: Int64 = 50_000
+
+    /// Ceiling on chunks retained while waiting to release. Waiting is legitimate
+    /// (joining a stream in progress), and `applyChunk` appends on every arrival, so
+    /// a stream that never becomes releasable would otherwise grow this unbounded.
+    static let startupChunkRetentionLimit = 2_048
+
+    /// How long to sleep before re-evaluating a pending startup release.
+    ///
+    /// Returns the exact time remaining when that is within
+    /// ``startupRecheckIntervalUs``, and the interval otherwise — so a distant or
+    /// unrepresentable schedule yields a wait that ends and gets re-examined.
+    static func startupWaitMicroseconds(releaseTimeUs: Int64, nowUs: Int64) -> Int64 {
+        let remaining = releaseTimeUs.subtractingReportingOverflow(nowUs)
+        guard !remaining.overflow else { return startupRecheckIntervalUs }
+        return min(max(remaining.partialValue, 0), startupRecheckIntervalUs)
+    }
 
     /// Whether to use the prepared-start path. Test-injected engines default this
     /// off to preserve direct scheduler observability; production engines use it
@@ -95,35 +128,38 @@ actor AudioEngine {
     private var underrunGraceDeadline: ContinuousClock.Instant?
     private static let underrunGraceWindow: Duration = .milliseconds(3_000)
 
-    static func startupReleaseTimeMicroseconds(
-        firstPlayTime: Int64,
-        lastPlayTime: Int64,
-        outputLatencyUs: Int64,
-        minBufferUs: Int64
-    ) -> Int64? {
-        guard lastPlayTime >= firstPlayTime + minBufferUs else { return nil }
-        return firstPlayTime - outputLatencyUs
-    }
-
+    /// Pick the first buffered chunk we can still start on, and when to start it.
+    ///
+    /// Startup is governed by the server's schedule, not by a local accumulation target:
+    /// the server already schedules the first chunk at least `min_buffer_ms +
+    /// static_delay_ms` ahead, and `min_buffer_ms` is a request for *ongoing* buffer depth
+    /// during playback, not a precondition for starting. Our job is to be ready when the
+    /// first playable chunk is due.
+    ///
+    /// Gating on accumulated span instead would wedge two legitimate cases forever: a
+    /// stream shorter than the requested buffer, and any stream whose `buffer_capacity`
+    /// caps queued duration below `min_buffer_ms` (which the spec explicitly permits for
+    /// high byte-rate codecs).
+    ///
+    /// Chunks whose start moment has already passed beyond `latenessToleranceUs` are
+    /// skipped — joining a stream in progress, they can no longer be played in full.
     static func startupReleaseCandidate(
         playTimes: [Int64],
         nowUs: Int64,
         outputLatencyUs: Int64,
-        minBufferUs: Int64,
         latenessToleranceUs: Int64 = CorrectionPlanner.defaultEngageUs
     ) -> (index: Int, releaseTimeUs: Int64)? {
-        guard let lastPlayTime = playTimes.last else { return nil }
         for (index, playTime) in playTimes.enumerated() {
-            guard let releaseTime = startupReleaseTimeMicroseconds(
-                firstPlayTime: playTime,
-                lastPlayTime: lastPlayTime,
-                outputLatencyUs: outputLatencyUs,
-                minBufferUs: minBufferUs
-            ) else {
-                continue
-            }
-            if nowUs - releaseTime <= latenessToleranceUs {
-                return (index, releaseTime)
+            // `playTime` derives from `serverTimeToLocal`, which saturates instead of
+            // trapping, so a malformed wire timestamp reaches this loop sitting near the
+            // Int64 bounds. Overflow here means the value is not a schedule at all —
+            // skip it rather than trap or hand back a nonsense release instant.
+            let releaseTime = playTime.subtractingReportingOverflow(outputLatencyUs)
+            guard !releaseTime.overflow else { continue }
+            let lateness = nowUs.subtractingReportingOverflow(releaseTime.partialValue)
+            guard !lateness.overflow else { continue }
+            if lateness.partialValue <= latenessToleranceUs {
+                return (index, releaseTime.partialValue)
             }
         }
         return nil
@@ -248,6 +284,10 @@ actor AudioEngine {
         drainTask = Task {
             for await command in _commandStream {
                 appliedKinds.append(command.kind)
+                if appliedKinds.count > Self.appliedKindsRetentionLimit {
+                    // Trim in batches; removeFirst(1) on an Array is O(n).
+                    appliedKinds.removeFirst(appliedKinds.count - Self.appliedKindsRetentionLimit / 2)
+                }
                 await apply(command)
                 _commandsSink.decrementDepth()
             }
@@ -413,10 +453,23 @@ actor AudioEngine {
     private func applyChunk(data: Data, ts: Int64) async {
         do {
             let pcm = try await output.decode(data)
-            let adjustedTs = ts - Int64(staticDelayMs) * 1_000
+            // `ts` is unvalidated wire data; a hostile or buggy server can put it near
+            // the Int64 bounds where the delay adjustment would trap.
+            let delayed = ts.subtractingReportingOverflow(Int64(staticDelayMs) * 1_000)
+            guard !delayed.overflow else {
+                Log.audio.warning("Dropping chunk with an unrepresentable timestamp")
+                return
+            }
+            let adjustedTs = delayed.partialValue
             if startupBuffer != nil {
                 let playTime = await clock.serverTimeToLocal(adjustedTs)
                 if startupBuffer != nil {
+                    if let depth = startupBuffer?.chunks.count, depth >= Self.startupChunkRetentionLimit {
+                        // Drop the oldest instead of the newest: the oldest is the most
+                        // likely to already be unplayable, and the newest is what lets a
+                        // stalled startup finally find a viable release point.
+                        startupBuffer?.chunks.removeFirst()
+                    }
                     startupBuffer?.chunks.append(StartupBufferedChunk(
                         pcmData: pcm,
                         playTimeMicroseconds: playTime,
@@ -453,19 +506,23 @@ actor AudioEngine {
 
         let nowUs = MonotonicClock.absoluteMicroseconds()
         let playTimes = buffer.chunks.map(\.playTimeMicroseconds)
-        guard let candidate = Self.startupReleaseCandidate(
+        let candidate = Self.startupReleaseCandidate(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: buffer.outputLatencyUs,
-            minBufferUs: startupMinBufferUs
-        ) else {
+            outputLatencyUs: buffer.outputLatencyUs
+        )
+
+        // Nil when every buffered chunk is already too late to start on. The spec permits
+        // chunks to arrive past-dated after network delay or buffering (a compliant server
+        // sends late joiners future timestamps only, so this is not the join case).
+        //
+        // Deliberately no timer here: re-evaluating cannot change the answer, because
+        // advancing `nowUs` only makes these chunks staler. Only a newly arrived,
+        // future-dated chunk can, and `applyChunk` re-enters this method on every append.
+        guard let candidate else {
             startupBuffer = buffer
             startupDeadlineTask?.cancel()
-            let sequence = buffer.sequence
-            startupDeadlineTask = Task { [weak self] in
-                try? await Task.sleep(for: .milliseconds(10))
-                await self?.releaseStartupBufferIfReady(sequence: sequence)
-            }
+            startupDeadlineTask = nil
             return
         }
         if candidate.index > 0 {
@@ -477,7 +534,7 @@ actor AudioEngine {
         guard nowUs >= startTime else {
             startupBuffer = buffer
             startupDeadlineTask?.cancel()
-            let delayUs = startTime - nowUs
+            let delayUs = Self.startupWaitMicroseconds(releaseTimeUs: startTime, nowUs: nowUs)
             let sequence = buffer.sequence
             startupDeadlineTask = Task { [weak self] in
                 try? await Task.sleep(for: .microseconds(delayUs))
@@ -490,11 +547,14 @@ actor AudioEngine {
         startupDeadlineTask = nil
         startupBuffer = nil
 
-        let releaseHorizon = firstPlayTime + startupMinBufferUs
+        // Saturate rather than trap: `firstPlayTime` is wire-derived, and a horizon
+        // pinned at Int64.max simply primes every buffered chunk, which is correct.
+        let horizonSum = firstPlayTime.addingReportingOverflow(startupMinBufferUs)
+        let releaseHorizon = horizonSum.overflow ? Int64.max : horizonSum.partialValue
         let startupTelemetry = "startup release chunks=\(buffer.chunks.count)"
-            + " span=\(lastPlayTime - firstPlayTime)us"
+            + " span=\(lastPlayTime.subtractingReportingOverflow(firstPlayTime).partialValue)us"
             + " min=\(startupMinBufferUs)us"
-            + " lateness=\(nowUs - startTime)us"
+            + " lateness=\(nowUs.subtractingReportingOverflow(startTime).partialValue)us"
         Log.audio.debug("\(startupTelemetry, privacy: .public)")
 
         do {
@@ -529,13 +589,14 @@ actor AudioEngine {
         }
     }
 
-    private static func outputLatencyUs(format: AudioFormatSpec) -> Int64 {
+    /// Estimated AudioQueue pipeline latency, in microseconds.
+    ///
+    /// Internal so a test can pin it against `AudioPlayer`'s copy of the same formula.
+    static func outputLatencyUs(format: AudioFormatSpec) -> Int64 {
         let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
         guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
-        // Match AudioPlayer's sync-error model: one AudioQueue buffer playing and
-        // one queued. Keeping the constants shared prevents startup release timing
-        // from drifting if the backend buffer size changes.
-        return Int64(audioQueueEstimatedInFlightBuffers) * Int64(audioQueueBufferByteSize) * 1_000_000
+        // Must match AudioPlayer's sync-error model; both read `audioQueueBufferCount`.
+        return Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
             / Int64(format.sampleRate * bytesPerFrame)
     }
 
