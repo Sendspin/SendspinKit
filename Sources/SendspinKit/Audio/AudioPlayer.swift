@@ -437,7 +437,8 @@ actor AudioPlayer {
             if state.framesConsumed == 0, state.cursorMicroseconds == 0 {
                 state.cursorMicroseconds = serverTimestamp
             }
-            let written = state.pcmRingBuffer.write(pcmData)
+            // Frame-aligned: a byte-truncated write would misalign every later frame read.
+            let written = state.pcmRingBuffer.writeFrames(pcmData, frameSize: state.frameSize)
             let dropped = pcmData.count - written
             if dropped > 0 {
                 state.pcmBytesDropped += Int64(dropped)

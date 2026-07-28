@@ -89,6 +89,28 @@ struct PCMRingBuffer: @unchecked Sendable {
         }
     }
 
+    /// Write from `Data`, truncating only on a whole-frame boundary.
+    ///
+    /// Use this for interleaved PCM. Plain `write` truncates mid-frame when the ring is
+    /// full, and since the reader always consumes whole frames, the leftover partial frame
+    /// misaligns every subsequent read until `reset()`. Overflow here is routine, not rare.
+    ///
+    /// - Returns: bytes written, always a multiple of `frameSize`.
+    @discardableResult
+    mutating func writeFrames(_ data: Data, frameSize: Int) -> Int {
+        guard frameSize > 0 else { return write(data) }
+
+        let room = (availableToWrite / frameSize) * frameSize
+        let wholeFrameBytes = (data.count / frameSize) * frameSize
+        let toWrite = min(room, wholeFrameBytes)
+        guard toWrite > 0 else { return 0 }
+
+        return data.withUnsafeBytes { ptr in
+            guard let base = ptr.baseAddress else { return 0 }
+            return write(from: base, count: toWrite)
+        }
+    }
+
     /// Read bytes from the buffer into a destination pointer.
     /// Returns the number of bytes actually read.
     @discardableResult
