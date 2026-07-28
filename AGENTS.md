@@ -12,6 +12,11 @@ Swift client library for the Sendspin Protocol — synchronized multi-room audio
 Run on changed files before every commit: `swiftformat --lint .` and `swiftlint lint --strict`.
 `swiftformat <files>` (no `--lint`) auto-fixes most violations.
 
+After a public API change also run `./scripts/build-examples.sh` (~20s). Each package
+under `Examples/` depends on `path: "../.."`, so `swift build`/`swift test` never compile
+them and drift ships green; CI enforces this in the `Examples` job. Some examples switch
+exhaustively over `ClientEvent` on purpose — add the missing case, not a `default:`.
+
 ## Project Structure
 - `Sources/SendspinKit/Client/` — facade, connection actor, message handling. See its AGENTS.md.
 - `Sources/SendspinKit/Audio/` — `AudioEngine` actor, data-plane channel, scheduler, decoders.
@@ -29,6 +34,20 @@ Run on changed files before every commit: `swiftformat --lint .` and `swiftlint 
   seconds cold, and 4 seconds warm. Anything taking longer than that is a immediate red flag.
   Another recurring failure mode is *not* setting timeouts, leaving tests running in the background
   that then hold locks, and then you waste many minutes kicking off tests that will never return.
+- **Never cite line numbers** — not spec line numbers (`spec §485`), not source line numbers
+  (`AudioPlayer.swift:38`), not in code, comments, docs, or these AGENTS files. They rot the moment
+  anything above them shifts, and the spec is moving fast. Reference by stable name instead: the
+  symbol, the message type, or the spec's section heading (e.g. "the player role's `client/state`
+  player object").
+- Comments explain the non-obvious *why*, not the bug's history. A fix's narrative belongs in the
+  commit message or CHANGELOG; the comment should be what a maintainer needs to avoid
+  reintroducing the problem. Two filters that catch most bad comments:
+  - **Past tense is a smell.** "They disagreed 3 vs 2", "this used to spin forever" describe code
+    that no longer exists. State the invariant in the present: "both must use the count
+    `prepare()` primes".
+  - **Would it go on every declaration of this kind?** If the comment explains why something is
+    *normal* (a test that needs no hardware, a function that returns what it says), it is noise.
+    Comment the exception, not the default.
 
 ## Sendspin Spec
 - We aim to be a 100%-compliant Sendspin client, which means conforming to the spec at https://www.sendspin-audio.com/spec/

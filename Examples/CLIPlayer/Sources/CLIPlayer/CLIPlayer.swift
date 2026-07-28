@@ -187,6 +187,8 @@ final class CLIPlayer {
         // so adding a new case is a compiler error, not a silent drop.
         case .groupUpdated,
              .controllerStateUpdated,
+             .colorStateUpdated,
+             .colorStateCleared,
              .artworkStreamStarted,
              .streamCleared,
              .staticDelayChanged,
@@ -242,6 +244,18 @@ final class CLIPlayer {
         case let .lastPlayedServerChanged(serverId):
             print("[EVENT] Last played server: \(serverId)")
 
+        case let .colorStateUpdated(colors):
+            let swatches = [
+                colors.backgroundDark.map { "bgDark=\(Self.hex($0))" },
+                colors.backgroundLight.map { "bgLight=\(Self.hex($0))" },
+                colors.primary.map { "primary=\(Self.hex($0))" },
+                colors.accent.map { "accent=\(Self.hex($0))" }
+            ].compactMap(\.self).joined(separator: " ")
+            print("[COLOR] \(swatches.isEmpty ? "(no colors)" : swatches)")
+
+        case .colorStateCleared:
+            print("[COLOR] Cleared")
+
         case let .disconnected(reason):
             print("[EVENT] Disconnected: \(reason)")
         }
@@ -251,6 +265,11 @@ final class CLIPlayer {
     /// and log modes — static + nonisolated so it can be called from either.
     nonisolated static func formatString(_ format: AudioFormatSpec) -> String {
         "\(format.codec.rawValue) \(format.sampleRate)Hz \(format.channels)ch \(format.bitDepth)bit"
+    }
+
+    /// Render a colour as `#rrggbb` for single-line logging.
+    nonisolated static func hex(_ color: SendspinColor) -> String {
+        String(format: "#%02x%02x%02x", color.red, color.green, color.blue)
     }
 
     /// Run a throwing async body and log the error to stderr if it fails.

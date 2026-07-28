@@ -1,33 +1,33 @@
 {
-  "originHash" : "456050d6f97e8e46f8cbbcba58dd31f33382328a8a85b33abc3f00fe13037a35",
-  "pins" : [
+  "originHash": "456050d6f97e8e46f8cbbcba58dd31f33382328a8a85b33abc3f00fe13037a35",
+  "pins": [
     {
-      "identity" : "flac-binary-xcframework",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/sbooth/flac-binary-xcframework.git",
-      "state" : {
-        "revision" : "9005dc2cd455765fb6824eb215c9703429bbe8ff",
-        "version" : "0.2.0"
+      "identity": "flac-binary-xcframework",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/sbooth/flac-binary-xcframework.git",
+      "state": {
+        "revision": "9005dc2cd455765fb6824eb215c9703429bbe8ff",
+        "version": "0.2.0"
       }
     },
     {
-      "identity" : "ogg-binary-xcframework",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/sbooth/ogg-binary-xcframework.git",
-      "state" : {
-        "revision" : "48cbf24e7fb5d329b1f5e24cd2e5b048585ff770",
-        "version" : "0.1.3"
+      "identity": "ogg-binary-xcframework",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/sbooth/ogg-binary-xcframework.git",
+      "state": {
+        "revision": "c0e822e18738ad913864e98d9614927ac1e9337c",
+        "version": "0.1.2"
       }
     },
     {
-      "identity" : "swift-argument-parser",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/apple/swift-argument-parser.git",
-      "state" : {
-        "revision" : "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
-        "version" : "1.7.1"
+      "identity": "swift-argument-parser",
+      "kind": "remoteSourceControl",
+      "location": "https://github.com/apple/swift-argument-parser.git",
+      "state": {
+        "revision": "626b5b7b2f45e1b0b1c6f4a309296d1d21d7311b",
+        "version": "1.7.1"
       }
     }
   ],
-  "version" : 3
+  "version": 3
 }

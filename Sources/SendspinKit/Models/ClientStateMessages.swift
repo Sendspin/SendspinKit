@@ -55,10 +55,10 @@ struct PlayerStateObject: Codable, Equatable {
     /// Supported commands that can change at runtime (e.g. when audio output changes).
     /// Per spec, currently only `set_static_delay` is valid here.
     let supportedCommands: [PlayerCommand]?
-    /// Required lead time in milliseconds (spec §485). Present in the initial full state;
+    /// Required lead time in milliseconds. Present in the initial full state;
     /// omitted from a delta when unchanged. Accounts for AudioQueue setup and codec warmup.
     let requiredLeadTimeMs: Int?
-    /// Minimum buffer size in milliseconds (spec §486). Present in the initial full state;
+    /// Minimum buffer size in milliseconds. Present in the initial full state;
     /// omitted from a delta when unchanged. Accounts for scheduler jitter and prebuffering.
     let minBufferMs: Int?
 
@@ -71,7 +71,7 @@ struct PlayerStateObject: Codable, Equatable {
         case minBufferMs = "min_buffer_ms"
     }
 
-    /// Commands valid in the `client/state` player object. Per spec §489 this is a
+    /// Commands valid in the `client/state` player object. Per the player role this is a
     /// subset of `{set_static_delay}` only — volume/mute are advertised solely in
     /// `client/hello` (`player@v1_support`), never at the state level. Canonical home
     /// for the invariant; the connection's state builder reads from here.
