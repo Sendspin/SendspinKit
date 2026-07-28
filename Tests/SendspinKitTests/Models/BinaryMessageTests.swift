@@ -199,4 +199,31 @@ struct BinaryMessageTests {
         // Spec anchor: documents that headerSize is intentionally 9.
         #expect(BinaryMessage.headerSize == 9)
     }
+
+    /// Every other test here uses these symbolically, which is right — but it means
+    /// renumbering a case keeps the suite green while breaking interop. Exactly one test
+    /// must pin the literals, as `headerSize` is pinned above.
+    @Test
+    func binaryTypeBytesMatchSpecValues() {
+        #expect(BinaryMessageType.audioChunk.rawValue == 4)
+        #expect(BinaryMessageType.artworkChannel0.rawValue == 8)
+        #expect(BinaryMessageType.artworkChannel1.rawValue == 9)
+        #expect(BinaryMessageType.artworkChannel2.rawValue == 10)
+        #expect(BinaryMessageType.artworkChannel3.rawValue == 11)
+        #expect(BinaryMessageType.visualizerData.rawValue == 16)
+    }
+
+    /// The routing code maps a channel index onto these, so they must stay contiguous.
+    @Test
+    func artworkChannelTypeBytesAreContiguous() {
+        let artworkTypes: [BinaryMessageType] = [
+            .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3
+        ]
+        for (index, type) in artworkTypes.enumerated() {
+            #expect(
+                type.rawValue == BinaryMessageType.artworkChannel0.rawValue + UInt8(index),
+                "artwork channel \(index) must be contiguous with channel 0"
+            )
+        }
+    }
 }

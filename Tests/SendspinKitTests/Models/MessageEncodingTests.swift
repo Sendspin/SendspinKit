@@ -147,7 +147,7 @@ struct MessageEncodingTests {
 
     @Test
     func playerStateObject_rejectsVolumeMuteInSupportedCommands() {
-        // Spec §489: client/state supported_commands is a subset of {set_static_delay}.
+        // client/state supported_commands is a subset of {set_static_delay}.
         #expect(throws: ConfigurationError.invalidStateCommands(["volume"])) {
             try PlayerStateObject(supportedCommands: [.volume])
         }

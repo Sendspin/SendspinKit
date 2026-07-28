@@ -32,7 +32,7 @@ struct ClientStateDeltaTests {
         #expect(player.requiredLeadTimeMs == defaultRequiredLeadTimeMs, "Should send default required_lead_time_ms")
         #expect(player.minBufferMs == defaultMinBufferMs, "Should send default min_buffer_ms")
 
-        // Per spec §489 the client/state supported_commands is a subset of
+        // Per the player role, client/state supported_commands is a subset of
         // {set_static_delay} only — volume/mute are advertised in client/hello, never here.
         #expect(
             Set(player.supportedCommands ?? []) == [.setStaticDelay],
@@ -56,7 +56,7 @@ struct ClientStateDeltaTests {
 
     @Test
     func initialPayloadIncludesTimingFields() async throws {
-        // Test with custom timing values (spec §485-487)
+        // Test with custom timing values
         let playerConfig = try PlayerConfiguration(
             bufferCapacity: 16_384,
             supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)],

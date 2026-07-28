@@ -35,6 +35,30 @@ struct MessageRoundTripTests {
         let encoder = JSONEncoder()
         let jsonData = try encoder.encode(message)
 
+        // Pin the wire contract first: encode and decode share `CodingKeys`, so the
+        // mapping cancels out and every assertion below would hold under a key rename.
+        let json = try #require(JSONSerialization.jsonObject(with: jsonData) as? [String: Any])
+        #expect(json["type"] as? String == ClientHelloMessage.typeString)
+        let payloadJSON = try #require(json["payload"] as? [String: Any])
+        #expect(payloadJSON["client_id"] as? String == "test-client-123")
+        #expect(payloadJSON["name"] as? String == "Test Speaker")
+        #expect(payloadJSON["version"] as? Int == 1)
+        #expect(payloadJSON["supported_roles"] as? [String] == ["player@v1", "controller@v1", "metadata@v1"])
+        #expect(payloadJSON["client_id"] != nil, "the spec key is snake_case, not camelCase")
+        #expect(payloadJSON["clientId"] == nil, "a camelCase key would not be understood by a server")
+
+        let playerJSON = try #require(payloadJSON["player@v1_support"] as? [String: Any])
+        #expect(playerJSON["buffer_capacity"] as? Int == 1_048_576)
+        #expect(playerJSON["supported_commands"] as? [String] == ["volume", "mute"])
+        let firstFormatJSON = try #require((playerJSON["supported_formats"] as? [[String: Any]])?.first)
+        #expect(firstFormatJSON["codec"] as? String == "opus")
+        #expect(firstFormatJSON["sample_rate"] as? Int == 48_000)
+        #expect(firstFormatJSON["bit_depth"] as? Int == 16)
+
+        let deviceJSON = try #require(payloadJSON["device_info"] as? [String: Any])
+        #expect(deviceJSON["product_name"] as? String == "HomePod")
+        #expect(deviceJSON["software_version"] as? String == "17.0")
+
         // Decode back
         let decoder = JSONDecoder()
         let decodedMessage = try decoder.decode(ClientHelloMessage.self, from: jsonData)

@@ -177,8 +177,9 @@ struct AudioProcessCallbackTests {
         #expect(fired)
 
         let byteCounts = invoked.byteCounts
-        // AudioPlayer uses 16384-byte buffers
-        let expectedBufferSize = 16_384
+        // Import the source constant rather than duplicating it, so retuning the
+        // buffer size cannot silently decouple this assertion from production.
+        let expectedBufferSize = Int(audioQueueBufferByteSize)
         for byteCount in byteCounts {
             #expect(
                 byteCount == expectedBufferSize,
