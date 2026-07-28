@@ -65,7 +65,14 @@ actor SendspinConnection {
     var visualizerStreamActive = false
     var isClockSynced = false
     var announcedPlayerStream: (format: AudioFormatSpec, codecHeader: Data?)?
-    var clientOperationalState: ClientOperationalState = .synchronized
+    /// Written from several places (this method, the engine report drain, stream-start
+    /// validation). `operationalStateEpoch` stamps every one of them so a rollback can
+    /// tell "nothing moved" from "something moved to the same value".
+    var clientOperationalState: ClientOperationalState = .synchronized {
+        didSet { operationalStateEpoch += 1 }
+    }
+
+    private(set) var operationalStateEpoch = 0
 
     /// Client state tracking for delta computation
     var lastSentClientState: SentClientState?
@@ -239,10 +246,16 @@ actor SendspinConnection {
     func setOperationalState(_ newState: ClientOperationalState) async throws {
         let previous = clientOperationalState
         clientOperationalState = newState
+        let stamp = operationalStateEpoch
         do {
             try await sendClientStateIfChanged()
         } catch {
-            clientOperationalState = previous
+            // Roll back only if no other writer touched the state during the send. A value
+            // comparison is not enough: the engine drain can independently set the same
+            // state we requested, and rolling that back discards an authoritative write.
+            if operationalStateEpoch == stamp {
+                clientOperationalState = previous
+            }
             throw error
         }
     }

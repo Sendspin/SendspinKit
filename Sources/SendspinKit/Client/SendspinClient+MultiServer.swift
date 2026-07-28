@@ -54,6 +54,22 @@ extension SendspinClient {
     /// new one; otherwise we send the new (losing) server `another_server` and drop it.
     @MainActor
     func handleCompetingConnection(_ newTransport: any SendspinTransport) async throws {
+        // One at a time: `performHandshake` suspends for up to 5s and the incumbent is only
+        // read after it, so overlapping candidates would each arbitrate against a stale
+        // incumbent and both switch. Dropped like a loser — silent close, no goodbye.
+        guard !arbitrationInProgress else {
+            Log.client.warning("An arbitration is already in flight; dropping the competing connection")
+            await newTransport.disconnect()
+            return
+        }
+        arbitrationInProgress = true
+        defer { arbitrationInProgress = false }
+
+        // Snapshot the incumbent before suspending. Reading it afterwards would
+        // arbitrate against whatever the state happens to be up to 5s later.
+        let incumbentReason = currentConnectionReason
+        let arbitrationEpoch = sessionEpoch
+
         let hello: ServerHelloMessage
         do {
             hello = try await performHandshake(on: newTransport)
@@ -69,10 +85,28 @@ extension SendspinClient {
             return
         }
 
+        // An explicit `disconnect()` (or a fresh dial) during the handshake bumps the
+        // epoch. The caller no longer wants a session, so drop the candidate.
+        guard sessionEpoch == arbitrationEpoch else {
+            Log.client.warning("The session changed during arbitration; dropping the competing connection")
+            await newTransport.disconnect()
+            return
+        }
+
+        // The incumbent died on its own while we were handshaking (epoch unchanged, so
+        // this was not the caller's doing). There is nothing left to arbitrate against —
+        // adopt the candidate rather than measuring it against a corpse and concluding
+        // `.keepExisting`, which would leave us with no connection at all.
+        guard connection != nil else {
+            updateConnectionState(.connecting)
+            await setupConnection(with: newTransport, preReadHello: hello)
+            return
+        }
+
         let lastPlayed = await persistenceProvider?.loadLastPlayedServerId()
         let decision = Self.arbitrate(
             newReason: hello.payload.connectionReason,
-            existingReason: currentConnectionReason ?? .discovery,
+            existingReason: incumbentReason ?? .discovery,
             newServerId: hello.payload.serverId,
             lastPlayedServerId: lastPlayed
         )
@@ -127,10 +161,13 @@ extension SendspinClient {
             }
 
             let result = try await group.next() ?? .ended
-            if case .timedOut = result {
-                // The reader child may be parked in nextFrame(), which is intentionally
-                // unblocked by transport closure rather than by task cancellation. A
-                // timed-out candidate is rejected, so close it before draining children.
+
+            // The reader parks in `nextFrame()`, which only closure releases — not
+            // cancellation — so every outcome that leaves it parked must close the
+            // transport or the drain below never returns. Only `.hello` is safe to skip:
+            // it came from the reader itself, and the transport goes on to be promoted.
+            // `.ended` covers external cancellation, where the reader IS still parked.
+            if case .hello = result {} else {
                 await transport.disconnect()
             }
             group.cancelAll()
@@ -140,6 +177,8 @@ extension SendspinClient {
             case let .hello(hello):
                 return hello
             case .ended, .timedOut:
+                // Don't misreport cancellation as "server was unresponsive".
+                try Task.checkCancellation()
                 throw HandshakeIncomplete()
             }
         }

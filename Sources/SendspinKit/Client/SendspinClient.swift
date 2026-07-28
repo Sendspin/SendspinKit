@@ -35,7 +35,14 @@ public final class SendspinClient {
     public private(set) var connectionState: ConnectionState = .disconnected
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
-    var clientOperationalState: ClientOperationalState = .synchronized
+    /// Written both here and by the control drain's `.operationalState` case, so
+    /// `operationalStateEpoch` stamps every write for the rollback in
+    /// `transitionOperationalState(to:)`.
+    var clientOperationalState: ClientOperationalState = .synchronized {
+        didSet { operationalStateEpoch += 1 }
+    }
+
+    private(set) var operationalStateEpoch = 0
     var isClockSynced = false
     /// Format announced by the most recent player `stream/start`, tracked
     /// synchronously for seamless-change classification. Distinct from the public
@@ -107,6 +114,20 @@ public final class SendspinClient {
 
     /// Task draining control events from the connection and re-emitting them to the public events stream.
     var drainConnectionEventsTask: Task<Void, Never>?
+
+    /// Serializes `handleCompetingConnection`; see the guard there for why.
+    /// Not `private` — that method lives in the +MultiServer extension.
+    var arbitrationInProgress = false
+
+    /// Incremented by every session-transition intent (`connect`, `disconnect`, and
+    /// arbitration promotion).
+    ///
+    /// `connection` is nil for the whole dial/handshake window, so a nil check cannot
+    /// tell "no session yet" from "the caller abandoned this one". Capturing the epoch
+    /// before a suspension and re-reading it after distinguishes them, which is what
+    /// stops a completed dial from promoting a session the caller already cancelled.
+    /// Not `private` — arbitration lives in the +MultiServer extension.
+    var sessionEpoch = 0
 
     /// Event streams
     private var eventSubscribers: [UUID: AsyncStream<ClientEvent>.Continuation] = [:]
@@ -258,16 +279,29 @@ public final class SendspinClient {
         }
 
         connectionState = .connecting
+        sessionEpoch += 1
+        let dialEpoch = sessionEpoch
 
         let transport = NWWebSocketTransport(url: url)
         do {
             try await transport.connect()
         } catch {
             await transport.disconnect()
-            if connectionState == .connecting {
+            // Only surrender the state if this dial still owns it.
+            if sessionEpoch == dialEpoch, connectionState == .connecting {
                 updateConnectionState(.disconnected)
             }
             throw error
+        }
+
+        // Re-validate: the guard above ran before a network-length suspension, during
+        // which an inbound server can win arbitration and be promoted, or the caller can
+        // call `disconnect()`. Either bumps the epoch, and neither is visible in
+        // `connection` — a cancelled dial leaves it nil, exactly as an untouched one does.
+        guard sessionEpoch == dialEpoch else {
+            Log.client.warning("The session changed while dialing \(url); abandoning this dial")
+            await transport.disconnect()
+            throw SendspinClientError.alreadyConnected
         }
 
         await setupConnection(with: transport)
@@ -335,6 +369,10 @@ public final class SendspinClient {
 
         // Retire the old session synchronously (token + identity guards both
         // reject its late events from this point), then await its teardown.
+        //
+        // `oldConnection` is nil for every current caller, so this await does not run. If
+        // that changes, the nil-`connection` window makes `disconnect()` a silent no-op and
+        // can orphan a live connection. Keep the rest of this suspension-free.
         let oldConnection = retireSession()
         if let oldConnection {
             await oldConnection.shutdown()
@@ -449,7 +487,18 @@ public final class SendspinClient {
     ///   server not to auto-reconnect.
     @MainActor
     public func disconnect(reason: GoodbyeReason = .restart) async {
-        guard let conn = connection else { return }
+        // Invalidate any in-flight dial or arbitration before the first suspension, so
+        // whichever one resumes sees a changed epoch and abandons its transport.
+        sessionEpoch += 1
+
+        guard let conn = connection else {
+            // Mid-dial: there is no connection to say goodbye to, but the caller's
+            // intent must still land, or `connectionState` stays `.connecting` forever.
+            if connectionState != .disconnected {
+                applyDisconnected(reason: .explicit(reason))
+            }
+            return
+        }
         await conn.disconnect(reason: reason)
         if connection === conn {
             applyDisconnected(reason: .explicit(reason))
@@ -721,13 +770,21 @@ public final class SendspinClient {
         // connection (the single writer of client/state). Roll back on send failure.
         let previous = clientOperationalState
         clientOperationalState = newState
+        let stamp = operationalStateEpoch
+        func rollBackIfUntouched() {
+            // Skip the rollback if the drain applied an authoritative state during the
+            // await; clobbering it is the split-brain the rollback exists to prevent.
+            if operationalStateEpoch == stamp {
+                clientOperationalState = previous
+            }
+        }
         do {
             try await conn.setOperationalState(newState)
         } catch let error as SendspinClientError {
-            clientOperationalState = previous
+            rollBackIfUntouched()
             throw error
         } catch {
-            clientOperationalState = previous
+            rollBackIfUntouched()
             throw SendspinClientError.sendFailed(error.localizedDescription)
         }
     }
