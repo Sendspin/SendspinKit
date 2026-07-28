@@ -33,6 +33,18 @@ jobs:
       - name: SwiftLint
         run: swiftlint lint --strict
 
+  examples:
+    name: Examples
+    runs-on: macos-26
+
+    # The test job cannot see these — separate packages. See AGENTS.md.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build all examples
+        run: ./scripts/build-examples.sh
+
   test:
     name: Test
     runs-on: macos-26
