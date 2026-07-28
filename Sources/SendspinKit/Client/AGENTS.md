@@ -66,7 +66,7 @@ for SwiftUI.
 - `SendspinConnection.swift` — message loop, gates, supervisor, `reportDrain`, binary emission.
 - `ConnectionEvent.swift` — control-plane event enum + `ConnectionLifecycle`.
 - `SessionValidityToken.swift` — atomic check-and-yield guard for stale binary events.
-- `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` (spec §485) / `minBufferMs` (§486).
+- `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` / `minBufferMs` (player role, `client/state` player object).
 - `../Audio/{AudioEngine,DataPlaneCommand,DataPlaneSink}.swift` — the engine and its channel.
 
 ## Gotchas

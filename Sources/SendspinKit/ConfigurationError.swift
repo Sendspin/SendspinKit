@@ -46,7 +46,7 @@ public enum ConfigurationError: SendspinError, Hashable {
 
     /// Volume must be between 0 and 100.
     case volumeOutOfRange(Int)
-    /// `client/state` supported_commands may only contain `set_static_delay` (spec §489).
+    /// `client/state` supported_commands may only contain `set_static_delay`.
     /// Carries the offending wire command strings.
     case invalidStateCommands([String])
 
