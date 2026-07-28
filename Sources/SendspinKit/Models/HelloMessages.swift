@@ -184,7 +184,23 @@ struct ServerHelloPayload: Codable, Equatable {
         serverId = try container.decode(String.self, forKey: .serverId)
         name = try container.decode(String.self, forKey: .name)
         version = try container.decode(Int.self, forKey: .version)
-        activeRoles = try container.decode([VersionedRole].self, forKey: .activeRoles)
-        connectionReason = try container.decodeIfPresent(ConnectionReason.self, forKey: .connectionReason) ?? .playback
+        // Skip unparseable entries instead of failing the whole payload: an undecodable
+        // `server/hello` is a hard handshake failure, so one malformed or future-shaped
+        // role string would cost us every role we *do* understand. Same forward-compat
+        // rationale as `connection_reason` below.
+        let rawRoles = try container.decode([String].self, forKey: .activeRoles)
+        activeRoles = rawRoles.compactMap(VersionedRole.init(identifier:))
+        if activeRoles.count != rawRoles.count {
+            let skipped = rawRoles.filter { VersionedRole(identifier: $0) == nil }
+            Log.client.warning("Ignoring malformed active_roles entries: \(skipped.joined(separator: ", "))")
+        }
+        // `decodeIfPresent` returns nil only for an absent/null key — a present but
+        // unrecognized value throws. Fall back so a future spec value can't fail the whole
+        // handshake decode.
+        if let reason = try? container.decodeIfPresent(ConnectionReason.self, forKey: .connectionReason) {
+            connectionReason = reason
+        } else {
+            connectionReason = .playback
+        }
     }
 }

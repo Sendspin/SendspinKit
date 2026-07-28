@@ -52,6 +52,16 @@ public struct VersionedRole: Codable, Sendable, Hashable, ExpressibleByStringLit
         }
     }
 
+    /// Parse a wire `"role@version"` string, returning nil when malformed.
+    ///
+    /// Unlike `init(stringLiteral:)`, which traps, this is for untrusted wire data where a
+    /// malformed entry must be survivable.
+    init?(identifier: String) {
+        guard let parsed = Self.parse(identifier) else { return nil }
+        role = parsed.role
+        version = parsed.version
+    }
+
     /// Decodes a versioned role from a JSON string.
     ///
     /// Requires the `"role@version"` format per spec. Unlike `init(stringLiteral:)`,
