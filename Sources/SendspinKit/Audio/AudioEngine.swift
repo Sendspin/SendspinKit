@@ -142,7 +142,7 @@ actor AudioEngine {
     private struct StartupBuffer {
         let sequence: UInt64
         let format: AudioFormatSpec
-        let outputLatencyUs: Int64
+        let startupLeadUs: Int64
         var chunks: [StartupBufferedChunk] = []
     }
 
@@ -204,7 +204,7 @@ actor AudioEngine {
     static func startupReleaseCandidate(
         playTimes: [Int64],
         nowUs: Int64,
-        outputLatencyUs: Int64,
+        startupLeadUs: Int64,
         latenessToleranceUs: Int64 = CorrectionPlanner.defaultEngageUs
     ) -> (index: Int, releaseTimeUs: Int64)? {
         for (index, playTime) in playTimes.enumerated() {
@@ -212,7 +212,7 @@ actor AudioEngine {
             // trapping, so a malformed wire timestamp reaches this loop sitting near the
             // Int64 bounds. Overflow here means the value is not a schedule at all —
             // skip it rather than trap or hand back a nonsense release instant.
-            let releaseTime = playTime.subtractingReportingOverflow(outputLatencyUs)
+            let releaseTime = playTime.subtractingReportingOverflow(startupLeadUs)
             guard !releaseTime.overflow else { continue }
             let lateness = nowUs.subtractingReportingOverflow(releaseTime.partialValue)
             guard !lateness.overflow else { continue }
@@ -242,12 +242,12 @@ actor AudioEngine {
     static func releaseSelection(
         playTimes: [Int64],
         nowUs: Int64,
-        outputLatencyUs: Int64,
+        startupLeadUs: Int64,
         awaitedReleaseTimeUs: Int64?
     ) -> (index: Int, releaseTimeUs: Int64)? {
         if let awaited = awaitedReleaseTimeUs, nowUs >= awaited {
             for (index, playTime) in playTimes.enumerated() {
-                let releaseTime = playTime.subtractingReportingOverflow(outputLatencyUs)
+                let releaseTime = playTime.subtractingReportingOverflow(startupLeadUs)
                 guard !releaseTime.overflow else { continue }
                 if releaseTime.partialValue == awaited {
                     return (index, awaited)
@@ -257,7 +257,7 @@ actor AudioEngine {
         return startupReleaseCandidate(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
     }
 
@@ -524,10 +524,10 @@ actor AudioEngine {
             if startupBufferingEnabled {
                 try await output.prepare(format: format, codecHeader: codecHeader)
                 outputHasStarted = false
-                startupBuffer = StartupBuffer(
+                startupBuffer = await StartupBuffer(
                     sequence: startupSequence,
                     format: format,
-                    outputLatencyUs: Self.outputLatencyUs(format: format)
+                    startupLeadUs: output.startupLeadMicroseconds()
                 )
                 await audioScheduler.stop()
                 await audioScheduler.clear()
@@ -612,7 +612,7 @@ actor AudioEngine {
         let candidate = Self.releaseSelection(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: buffer.outputLatencyUs,
+            startupLeadUs: buffer.startupLeadUs,
             awaitedReleaseTimeUs: arm?.releaseTimeUs
         )
 
@@ -676,15 +676,10 @@ actor AudioEngine {
         Log.audio.debug("\(startupTelemetry, privacy: .public)")
 
         do {
-            var firstPrimedTimestamp: Int64?
             for chunk in buffer.chunks where chunk.playTimeMicroseconds <= releaseHorizon {
-                firstPrimedTimestamp = firstPrimedTimestamp ?? chunk.originalTimestamp
                 try await output.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
             }
 
-            if let firstPrimedTimestamp {
-                await output.alignPreparedStartCursor(firstServerTimestamp: firstPrimedTimestamp)
-            }
             try await output.startPrepared()
             outputHasStarted = true
             armUnderrunGrace()
@@ -705,17 +700,6 @@ actor AudioEngine {
                 generation: chunk.generation
             )
         }
-    }
-
-    /// Estimated AudioQueue pipeline latency, in microseconds.
-    ///
-    /// Internal so a test can pin it against `AudioPlayer`'s copy of the same formula.
-    static func outputLatencyUs(format: AudioFormatSpec) -> Int64 {
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
-        // Must match AudioPlayer's sync-error model; both read `audioQueueBufferCount`.
-        return Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * bytesPerFrame)
     }
 
     /// Apply a seamless format change (engine-internal, no MainActor.run).
@@ -970,6 +954,12 @@ actor AudioEngine {
                     // outrunning playback). A climbing `underrun` is the signal an app
                     // owner needs to diagnose stutter/pauses.
                     + " underrun=\(tSnap.underrunCount) pcmDrop=\(tSnap.pcmBytesDropped)"
+                    // `sync` reads ~0 from grace expiry onward regardless of how far out
+                    // playback actually started, because the rebaseline assigns the
+                    // equilibrium. `startOffset` is that start error, and `spinUp` is the
+                    // device's own delay before its first callback — the dominant term in it.
+                    + " startOffset=\(tSnap.startupOffsetUs.map(String.init) ?? "pending")us"
+                    + " spinUp=\(tSnap.spinUpUs)us"
                 Log.audio.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats

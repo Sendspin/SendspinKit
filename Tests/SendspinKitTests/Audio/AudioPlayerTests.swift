@@ -90,7 +90,6 @@ struct AudioPlayerTests {
 
         let frameBytes = format.channels * format.effectiveOutputBitDepth / 8
         try await player.playPCM(Data(repeating: 0, count: format.sampleRate * frameBytes / 10), serverTimestamp: 123_000)
-        await player.alignPreparedStartCursor(firstServerTimestamp: 123_000)
         try await player.startPrepared()
         #expect(await player.isPlaying)
 
@@ -153,42 +152,75 @@ struct AudioPlayerTests {
         }
     }
 
+    /// The pipeline latency both the engine and the sync corrector read must be the depth of the
+    /// buffers `prepare()` primes *plus* the device path beyond them. Counting only our own
+    /// buffers understates how far ahead of the speaker the cursor runs — measured at ~15ms on a
+    /// USB DAC — and the grace-expiry rebaseline then freezes that error for the stream.
+    ///
+    /// Mutation proof: dropping the device term from `pipelineLatencyMicroseconds` leaves the
+    /// value equal to the depth alone, failing the second expectation wherever the platform can
+    /// report a latency.
+    @Test("pipeline latency counts the device path, not just our buffers")
+    func pipelineLatencyIncludesDeviceLatency() async throws {
+        let player = AudioPlayer(pcmBufferCapacity: 1 << 18)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        try await player.prepare(format: format, codecHeader: nil)
+        defer { Task { await player.stop() } }
+
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
+            / Int64(format.sampleRate * bytesPerFrame)
+        let reported = await player.pipelineLatencyMicroseconds()
+
+        #expect(reported >= depth, "latency must at least cover the buffers we prime")
+
+        // Zero where the platform exposes no route (or no audio device is present), so the
+        // device-term assertion only applies when there is one to report.
+        let deviceLatency = OutputDeviceLatency.currentMicroseconds()
+        if deviceLatency > 0 {
+            #expect(
+                reported == depth + deviceLatency,
+                "expected depth \(depth) + device \(deviceLatency), got \(reported)"
+            )
+        }
+    }
+
     // MARK: - Perceptual volume
 
     @Test
-    func graceExpiryRebaselineCursorAbsorbsStartupBias() throws {
+    func graceExpiryRebaselineCursorAbsorbsStartupBias() {
         let formatSampleRate = 44_100
         let formatChannels = 2
         let expectedServerTime: Int64 = 10_000_000
-        // Use the production helper rather than re-deriving the formula here: a test that
-        // re-implements the code it guards cannot catch a change to that code.
-        let audioQueueLatencyUs = try AudioEngine.outputLatencyUs(
-            format: AudioFormatSpec(
-                codec: .pcm,
-                channels: formatChannels,
-                sampleRate: formatSampleRate,
-                bitDepth: 16
-            )
-        )
+        // Only an input to the helper under test, not the thing being guarded — built from the
+        // primed buffer count so it stays a representative depth if that count changes.
+        let audioQueueLatencyUs = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize)
+            * 1_000_000 / Int64(formatSampleRate * formatChannels * 2)
         let biasedRawCursor = expectedServerTime
 
-        let biasedSyncError = (expectedServerTime - biasedRawCursor) - audioQueueLatencyUs
-        #expect(biasedSyncError < -CorrectionPlanner.defaultEngageUs)
+        /// The error a frame handed over now reports: it becomes audible one pipeline latency
+        /// from now, so in equilibrium the cursor must LEAD by that latency.
+        func syncError(cursor: Int64) -> Int64 {
+            (expectedServerTime + audioQueueLatencyUs) - cursor
+        }
+
+        let biasedSyncError = syncError(cursor: biasedRawCursor)
+        #expect(biasedSyncError > CorrectionPlanner.defaultEngageUs)
         #expect(CorrectionPlanner().plan(
             errorMicroseconds: biasedSyncError,
             sampleRate: UInt32(formatSampleRate),
             currentlyCorrecting: false
-        ).insertEveryNFrames > 0)
+        ).dropEveryNFrames > 0)
 
         let rebaselinedCursor = AudioPlayer.graceExpiryRebaselineCursor(
             expectedServerTime: expectedServerTime,
             audioQueueLatencyUs: audioQueueLatencyUs
         )
-        #expect(rebaselinedCursor == expectedServerTime - audioQueueLatencyUs)
+        #expect(rebaselinedCursor == expectedServerTime + audioQueueLatencyUs)
 
-        let rebaselinedSyncError = (expectedServerTime - rebaselinedCursor) - audioQueueLatencyUs
+        #expect(syncError(cursor: rebaselinedCursor) == 0)
         #expect(CorrectionPlanner().plan(
-            errorMicroseconds: rebaselinedSyncError,
+            errorMicroseconds: syncError(cursor: rebaselinedCursor),
             sampleRate: UInt32(formatSampleRate),
             currentlyCorrecting: false
         ) == CorrectionSchedule())

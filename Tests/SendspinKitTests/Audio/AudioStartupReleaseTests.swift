@@ -12,23 +12,23 @@ struct AudioStartupReleaseTests {
     @Test("startup releases on the first chunk's play time regardless of buffered span")
     func startupReleasesOnFirstChunkPlayTime() {
         let firstPlayTime: Int64 = 1_000_000
-        let outputLatencyUs: Int64 = 92_000
+        let startupLeadUs: Int64 = 92_000
         let nowUs = firstPlayTime - 5_000_000 // well before playback is due
 
         // A single chunk — the shortest possible stream, far under any min-buffer.
         let single = AudioEngine.startupReleaseCandidate(
             playTimes: [firstPlayTime],
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
         #expect(single?.index == 0)
-        #expect(single?.releaseTimeUs == firstPlayTime - outputLatencyUs)
+        #expect(single?.releaseTimeUs == firstPlayTime - startupLeadUs)
 
         // Adding more content does not change when we start.
         let longer = AudioEngine.startupReleaseCandidate(
             playTimes: [firstPlayTime, firstPlayTime + 20_000, firstPlayTime + 40_000],
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
         #expect(longer?.releaseTimeUs == single?.releaseTimeUs)
     }
@@ -39,7 +39,7 @@ struct AudioStartupReleaseTests {
     @Test("a stream whose queued duration stays under min-buffer still starts")
     func capacityBoundStreamStillStarts() {
         let firstPlayTime: Int64 = 1_000_000
-        let outputLatencyUs: Int64 = 92_000
+        let startupLeadUs: Int64 = 92_000
         let minBufferUs = Int64(defaultMinBufferMs) * 1_000
         // Queued duration permanently below the requested minimum.
         let playTimes = [firstPlayTime, firstPlayTime + minBufferUs / 4]
@@ -47,11 +47,11 @@ struct AudioStartupReleaseTests {
         let candidate = AudioEngine.startupReleaseCandidate(
             playTimes: playTimes,
             nowUs: firstPlayTime - 1_000_000,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
 
         #expect(candidate?.index == 0)
-        #expect(candidate?.releaseTimeUs == firstPlayTime - outputLatencyUs)
+        #expect(candidate?.releaseTimeUs == firstPlayTime - startupLeadUs)
     }
 
     @Test("startup release candidate skips stale join-in-progress chunks")
@@ -59,16 +59,16 @@ struct AudioStartupReleaseTests {
         let firstPlayTime: Int64 = 1_000_000
         let chunkStepUs: Int64 = 100_000
         let playTimes = (0 ... 7).map { firstPlayTime + Int64($0) * chunkStepUs }
-        let outputLatencyUs: Int64 = 90_000
-        let nowUs = playTimes[0] - outputLatencyUs + CorrectionPlanner.defaultEngageUs + 1
+        let startupLeadUs: Int64 = 90_000
+        let nowUs = playTimes[0] - startupLeadUs + CorrectionPlanner.defaultEngageUs + 1
 
         let candidate = AudioEngine.startupReleaseCandidate(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
         #expect(candidate?.index == 1)
-        #expect(candidate?.releaseTimeUs == playTimes[1] - outputLatencyUs)
+        #expect(candidate?.releaseTimeUs == playTimes[1] - startupLeadUs)
     }
 
     /// Every buffered chunk is already too late to start on, so there is nothing to start:
@@ -76,36 +76,36 @@ struct AudioStartupReleaseTests {
     @Test("startup release candidate waits when every buffered chunk is stale")
     func startupReleaseCandidateWaitsWhenAllChunksAreStale() {
         let firstPlayTime: Int64 = 1_000_000
-        let outputLatencyUs: Int64 = 92_000
+        let startupLeadUs: Int64 = 92_000
         let playTimes = [firstPlayTime, firstPlayTime + 20_000]
         // Past the last chunk's start moment, beyond the lateness tolerance.
-        let nowUs = playTimes[1] - outputLatencyUs + CorrectionPlanner.defaultEngageUs + 1
+        let nowUs = playTimes[1] - startupLeadUs + CorrectionPlanner.defaultEngageUs + 1
 
         let candidate = AudioEngine.startupReleaseCandidate(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
         #expect(candidate == nil)
     }
 
     /// `serverTimeToLocal` saturates rather than trapping, so a malformed wire timestamp
     /// reaches this helper sitting at the `Int64` bounds. Unguarded, `playTime -
-    /// outputLatencyUs` traps at `Int64.min` and kills the engine actor.
+    /// startupLeadUs` traps at `Int64.min` and kills the engine actor.
     @Test("startup release candidate skips unrepresentable play times")
     func startupReleaseCandidateSkipsUnrepresentablePlayTimes() {
-        let outputLatencyUs: Int64 = 92_000
+        let startupLeadUs: Int64 = 92_000
         let nowUs: Int64 = 1_700_000_000_000_000
         let viable = nowUs + 500_000
 
         let candidate = AudioEngine.startupReleaseCandidate(
             playTimes: [.min, Int64.min + 1, viable],
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs
+            startupLeadUs: startupLeadUs
         )
 
         #expect(candidate?.index == 2, "the saturated entries must be skipped, not selected")
-        #expect(candidate?.releaseTimeUs == viable - outputLatencyUs)
+        #expect(candidate?.releaseTimeUs == viable - startupLeadUs)
     }
 
     /// A play time saturated at `Int64.max` does not overflow, so it is selected — and the
@@ -117,7 +117,7 @@ struct AudioStartupReleaseTests {
         let candidate = AudioEngine.startupReleaseCandidate(
             playTimes: [.max],
             nowUs: nowUs,
-            outputLatencyUs: 92_000
+            startupLeadUs: 92_000
         )
         let releaseTime = try #require(candidate?.releaseTimeUs)
 
@@ -184,16 +184,16 @@ struct AudioStartupReleaseTests {
     /// second chunk instead of the first.
     @Test("a release the wait was armed for survives a late wake")
     func awaitedReleaseSurvivesLateWake() {
-        let outputLatencyUs: Int64 = 100_000
+        let startupLeadUs: Int64 = 100_000
         let playTimes: [Int64] = [1_000_000, 1_100_000]
-        let awaited = playTimes[0] - outputLatencyUs
+        let awaited = playTimes[0] - startupLeadUs
         // Woken an order of magnitude later than the tolerance permits.
         let nowUs = awaited + CorrectionPlanner.defaultEngageUs * 10
 
         let honoured = AudioEngine.releaseSelection(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs,
+            startupLeadUs: startupLeadUs,
             awaitedReleaseTimeUs: awaited
         )
         #expect(honoured?.index == 0, "the awaited chunk must be released, not skipped")
@@ -203,7 +203,7 @@ struct AudioStartupReleaseTests {
         let unawaited = AudioEngine.releaseSelection(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: outputLatencyUs,
+            startupLeadUs: startupLeadUs,
             awaitedReleaseTimeUs: nil
         )
         #expect(unawaited?.index == 1, "a chunk nobody waited for stays subject to the tolerance")
@@ -334,8 +334,9 @@ struct AudioStartupReleaseTests {
         let prepare = try #require(calls.firstIndex { $0.hasPrefix("prepare(") })
         let play = try #require(calls.firstIndex { $0.hasPrefix("playPCM(") })
         let start = try #require(calls.firstIndex(of: "startPrepared()"))
-        let align = try #require(calls.firstIndex { $0.hasPrefix("alignPreparedStartCursor(") })
-        #expect(prepare < play && play < align && align < start)
+        // The pre-fill inside startPrepared() reads the ring, so PCM must already be in it:
+        // priming after the start is silence, and the corrector has to insert its way out.
+        #expect(prepare < play && play < start)
     }
 
     /// End-to-end counterpart to `startupReleasesOnFirstChunkPlayTime`: a stream whose
@@ -393,23 +394,6 @@ struct AudioStartupReleaseTests {
             calls.contains { $0.hasPrefix("playPCM(") },
             "the buffered chunks must be primed into the ring, not discarded"
         )
-    }
-
-    /// Both copies of the latency model (`AudioEngine` and `AudioPlayer`) must use the
-    /// count `prepare()` primes. A mismatch is a constant offset that the grace-expiry
-    /// rebaseline makes permanent — ~85ms per buffer at 48kHz/stereo/16-bit.
-    @Test("the pipeline latency model matches the number of buffers actually primed")
-    func latencyModelMatchesPrimedBufferCount() throws {
-        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-
-        // Derived from the primed buffer count, independently of the production helper.
-        let expected = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * bytesPerFrame)
-
-        #expect(AudioEngine.outputLatencyUs(format: format) == expected)
-
-        #expect(audioQueueBufferCount == 3, "prepare() allocates this many AudioQueue buffers")
     }
 
     @Test("startup buffering does not report started if prepared output fails")

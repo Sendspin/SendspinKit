@@ -18,8 +18,14 @@ protocol AudioOutput: Actor, Sendable {
     /// Start a previously prepared output after initial PCM has been queued.
     func startPrepared() throws
 
-    /// Align the playback cursor after synchronous pre-start AudioQueue priming.
-    func alignPreparedStartCursor(firstServerTimestamp: Int64)
+    /// Delay between handing a frame to the output and hearing it — buffer depth plus the
+    /// device path. Valid once `prepare(format:codecHeader:)` has run.
+    func pipelineLatencyMicroseconds() -> Int64
+
+    /// How far ahead of a frame's due time `startPrepared()` must be called for that frame
+    /// to be audible on time. Covers only the path beyond the primed buffers, which the
+    /// pre-fill has already filled. Valid once `prepare(format:codecHeader:)` has run.
+    func startupLeadMicroseconds() -> Int64
 
     /// Start playback with the given format and optional codec header.
     /// Throws if the AudioQueue cannot be initialized or audio playback cannot begin.
