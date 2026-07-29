@@ -120,16 +120,28 @@ disown "${LOGGER_PID}" 2>/dev/null || true
 echo -e "${BLUE}Running until $(date -v +"${DURATION}"S '+%H:%M:%S' 2>/dev/null || echo "+${DURATION}s")...${NC}"
 # `script` gives the player a pty. Without it stdout is block-buffered and the
 # events we assert on are lost when the timeout kills the process.
+#
+# `script` must not inherit a TTY on stdin: `timeout` runs it in its own process group, so
+# the tcsetattr it does on a controlling terminal raises SIGTTOU and kills the player
+# before it connects. Only reproducible from an interactive shell.
 timeout "${DURATION}s" script -q /dev/null \
     "${CLI_PLAYER}" --no-tui "${SERVER_URL}" "${CLIENT_NAME}" \
-    > "${PLAYER_LOG}" 2>&1 || true
+    < /dev/null > "${PLAYER_LOG}" 2>&1 || true
 
 cleanup
 sleep 1
 echo ""
 
+[ -s "${PLAYER_LOG}" ] || {
+    echo -e "${RED}FAIL${NC}: the player produced no output at all — it died before starting"
+    echo "  (check the timeout/pty invocation, not the library)"
+    exit 1
+}
+
 grep -q "Server connected" "${PLAYER_LOG}" || {
-    sed 's/\r//' "${PLAYER_LOG}" | grep -iE 'fatal|error' | head -3
+    # `|| true`: under `set -o pipefail` a grep that matches nothing fails the pipeline,
+    # and `set -e` would then kill the script here — silently, before reporting anything.
+    sed 's/\r//' "${PLAYER_LOG}" | grep -iE 'fatal|error' | head -3 || true
     echo -e "${RED}FAIL${NC}: never connected to ${SERVER_URL}"
     exit 1
 }
