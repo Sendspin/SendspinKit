@@ -99,6 +99,11 @@ private struct LockedState: @unchecked Sendable {
     /// Absolute time `AudioQueueStart` was called, or 0 before it has been.
     var queueStartAbsoluteUs: Int64 = 0
 
+    /// True from `prepare()` until the first real PCM reaches the ring. The queue is running
+    /// on silence in that window so the device pays its spin-up before audio depends on it,
+    /// and an empty ring there is the intent rather than a dropout.
+    var prewarming: Bool = true
+
     /// Absolute-time gap between `AudioQueueStart` and the device's first callback,
     /// or -1 until that callback lands. An idle USB DAC takes far longer to begin
     /// producing than the primed depth predicts, and the gap varies run to run, so it
@@ -157,7 +162,6 @@ actor AudioPlayer {
     private nonisolated(unsafe) var audioQueueForDeinit: AudioQueueRef?
     private var decoder: AudioDecoder?
     private var currentFormat: AudioFormatSpec?
-    private var pendingStartBuffers: [AudioQueueBufferRef] = []
 
     private var _isPlaying: Bool = false
 
@@ -305,6 +309,7 @@ actor AudioPlayer {
             state.deviceLatencyUs = deviceLatencyUs
             state.queueStartAbsoluteUs = 0
             state.spinUpUs = -1
+            state.prewarming = true
             state.startupOffsetUs = nil
             state.frameSize = computedFrameSize
             state.processCallbackFormat = effectiveFormat
@@ -329,11 +334,7 @@ actor AudioPlayer {
             state.correctionGraceFrames = Int64(format.sampleRate)
         }
 
-        // Buffers are allocated here but intentionally not enqueued yet. Enqueuing
-        // calls `fillBuffer`, and startup must first put decoded PCM into the ring;
-        // otherwise the primed AudioQueue buffers are silence and the sync corrector
-        // has to audibly insert its way out of the initial empty-ring offset.
-        pendingStartBuffers.removeAll(keepingCapacity: true)
+        var allocated: [AudioQueueBufferRef] = []
         for _ in 0 ..< audioQueueBufferCount {
             var buffer: AudioQueueBufferRef?
             let allocStatus = AudioQueueAllocateBuffer(queue, audioQueueBufferByteSize, &buffer)
@@ -342,10 +343,29 @@ actor AudioPlayer {
                 audioQueue = nil
                 currentFormat = nil
                 decoder = nil
-                pendingStartBuffers.removeAll()
                 throw AudioPlayerError.queueAllocationFailed(allocStatus)
             }
-            pendingStartBuffers.append(buffer)
+            allocated.append(buffer)
+        }
+
+        // Start on silence now rather than at the release instant. An idle DAC takes
+        // 300-400ms to begin producing and the figure varies by ~100ms between starts, so
+        // it cannot be led by an estimate — but paid here, during the buffering window, it
+        // is spent before any audio depends on it. The ring is empty, so every buffer
+        // enqueued below is silence.
+        for buffer in allocated {
+            fillBuffer(queue: queue, buffer: buffer)
+        }
+        // Stamped after the fill loop: those calls run on this thread, and timing them would
+        // measure our own enqueue rather than how long the device takes to answer.
+        lockedState.withLock { $0.queueStartAbsoluteUs = MonotonicClock.absoluteMicroseconds() }
+        let prewarmStatus = AudioQueueStart(queue, nil)
+        guard prewarmStatus == noErr else {
+            AudioQueueDispose(queue, true)
+            audioQueue = nil
+            currentFormat = nil
+            decoder = nil
+            throw AudioPlayerError.queueStartFailed(prewarmStatus)
         }
     }
 
@@ -367,48 +387,27 @@ actor AudioPlayer {
         return queueDepthUs + lockedState.withLock { $0.deviceLatencyUs }
     }
 
-    /// How far before a frame should be audible the queue must be started for it to be
-    /// audible on time.
+    /// How far before a frame should be audible it must be written to the ring.
     ///
-    /// Deliberately NOT ``pipelineLatencyMicroseconds()``. The frames primed before
-    /// `AudioQueueStart` are already in the queue, so they do not wait out its depth — only
-    /// the path beyond it. Leading by the full depth starts playback that much early.
+    /// The queue is already running on silence by then, so a released frame enters behind
+    /// whatever silence is in flight and waits out the full depth — unlike a pre-start
+    /// prime, which sits at the head and waits out only the device path.
     func startupLeadMicroseconds() -> Int64 {
-        lockedState.withLock { $0.deviceLatencyUs }
+        pipelineLatencyMicroseconds()
     }
 
     /// Start a prepared queue after decoded PCM has been written to the ring.
     func startPrepared() throws {
-        guard let queue = audioQueue, let format = currentFormat else {
+        guard audioQueue != nil, let format = currentFormat else {
             throw AudioPlayerError.notStarted
         }
         if _isPlaying {
             return
         }
 
-        for buffer in pendingStartBuffers {
-            fillBuffer(queue: queue, buffer: buffer)
-        }
-        pendingStartBuffers.removeAll(keepingCapacity: true)
-
-        // The pre-fill above advanced the cursor over every frame it handed to the queue,
-        // which is exactly what the cursor means. Re-seating it at the first primed frame
-        // would understate the handover by the primed depth, and that understatement
-        // happens to cancel the same term in the engine's release instant — two errors that
-        // hide each other. A short pre-fill (ring not yet full) is likewise self-describing:
-        // the cursor advanced only over the frames that really went in.
-        lockedState.withLock { $0.queueStartAbsoluteUs = MonotonicClock.absoluteMicroseconds() }
-
-        let startStatus = AudioQueueStart(queue, nil)
-        if startStatus != noErr {
-            // Clean up the allocated-but-not-started queue to prevent resource leak
-            AudioQueueDispose(queue, true)
-            audioQueue = nil
-            currentFormat = nil
-            decoder = nil
-            pendingStartBuffers.removeAll()
-            throw AudioPlayerError.queueStartFailed(startStatus)
-        }
+        // `prepare()` already started the queue on silence, so there is nothing to start
+        // here: the callback picks up whatever PCM the release put in the ring. The cursor
+        // advances only over frames really handed over, which is exactly what it means.
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(format.effectiveOutputBitDepth)-bit)"
         Log.audio.info("AudioQueue started: \(desc, privacy: .public)")
@@ -441,7 +440,6 @@ actor AudioPlayer {
             state.framesConsumed = 0
             state.timeSnapshot = nil
         }
-        pendingStartBuffers.removeAll()
     }
 
     /// Replace the decoder without stopping playback.
@@ -478,6 +476,7 @@ actor AudioPlayer {
             if state.framesConsumed == 0, state.cursorMicroseconds == 0 {
                 state.cursorMicroseconds = serverTimestamp
             }
+            state.prewarming = false
             // Frame-aligned: a byte-truncated write would misalign every later frame read.
             let written = state.pcmRingBuffer.writeFrames(pcmData, frameSize: state.frameSize)
             let dropped = pcmData.count - written
@@ -716,7 +715,9 @@ actor AudioPlayer {
                     state.advanceCursor()
                     outOffset += fs
                 } else {
-                    state.underrunCount += 1
+                    if !state.prewarming {
+                        state.underrunCount += 1
+                    }
                     break
                 }
             }
