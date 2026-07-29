@@ -73,6 +73,11 @@ actor StubClock: ClockSyncProtocol {
 /// Mock audio output that records all calls and allows control over behavior.
 actor SpyAudioOutput: AudioOutput {
     var recordedCalls: [String] = []
+    /// Set at `prepare`, so `pipelineLatencyMicroseconds` can answer the way a real player does.
+    var preparedFormat: AudioFormatSpec?
+    /// Stands in for the device path a real output would measure. Zero keeps engine timing
+    /// dependent only on buffer depth, which is what the startup-release tests reason about.
+    var stubDeviceLatencyUs: Int64 = 0
     var forcedStartThrow: Error?
     var forcedStartPreparedThrow: Error?
     var forcedSwapThrow: Error?
@@ -93,15 +98,32 @@ actor SpyAudioOutput: AudioOutput {
             syncErrorUs: 0,
             correctionSchedule: CorrectionSchedule(),
             underrunCount: underrunCountValue,
-            pcmBytesDropped: 0
+            pcmBytesDropped: 0,
+            startupOffsetUs: nil,
+            spinUpUs: -1
         )
     }
 
     func prepare(format: AudioFormatSpec, codecHeader _: Data?) throws {
         recordedCalls.append("prepare(\(format.codec))")
+        preparedFormat = format
         if let error = forcedStartThrow {
             throw error
         }
+    }
+
+    func pipelineLatencyMicroseconds() -> Int64 {
+        guard let format = preparedFormat else { return 0 }
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
+        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
+            / Int64(format.sampleRate * bytesPerFrame)
+        return depth + stubDeviceLatencyUs
+    }
+
+    /// Mirrors the real player: only the path beyond the primed buffers.
+    func startupLeadMicroseconds() -> Int64 {
+        preparedFormat == nil ? 0 : stubDeviceLatencyUs
     }
 
     func startPrepared() throws {
@@ -110,10 +132,6 @@ actor SpyAudioOutput: AudioOutput {
             throw error
         }
         playbackState = true
-    }
-
-    func alignPreparedStartCursor(firstServerTimestamp: Int64) {
-        recordedCalls.append("alignPreparedStartCursor(\(firstServerTimestamp))")
     }
 
     func start(format: AudioFormatSpec, codecHeader _: Data?) throws {

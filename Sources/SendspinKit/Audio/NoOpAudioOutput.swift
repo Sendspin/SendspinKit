@@ -15,7 +15,9 @@ actor NoOpAudioOutput: AudioOutput {
             syncErrorUs: 0,
             correctionSchedule: CorrectionSchedule(),
             underrunCount: 0,
-            pcmBytesDropped: 0
+            pcmBytesDropped: 0,
+            startupOffsetUs: nil,
+            spinUpUs: -1
         )
     }
 
@@ -23,7 +25,13 @@ actor NoOpAudioOutput: AudioOutput {
 
     func startPrepared() throws {}
 
-    func alignPreparedStartCursor(firstServerTimestamp _: Int64) {}
+    func pipelineLatencyMicroseconds() -> Int64 {
+        0
+    }
+
+    func startupLeadMicroseconds() -> Int64 {
+        0
+    }
 
     func start(format _: AudioFormatSpec, codecHeader _: Data?) throws {}
 

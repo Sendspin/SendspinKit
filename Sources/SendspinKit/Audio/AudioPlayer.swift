@@ -92,6 +92,24 @@ private struct LockedState: @unchecked Sendable {
     var sampleRate: Int = 0
     var framesConsumed: Int64 = 0
 
+    /// Latency beyond our own buffers — HAL, transport and DAC — captured at `prepare()`.
+    /// The audio thread cannot query the HAL, so the value is read once and stored here.
+    var deviceLatencyUs: Int64 = 0
+
+    /// Absolute time `AudioQueueStart` was called, or 0 before it has been.
+    var queueStartAbsoluteUs: Int64 = 0
+
+    /// Absolute-time gap between `AudioQueueStart` and the device's first callback,
+    /// or -1 until that callback lands. An idle USB DAC takes far longer to begin
+    /// producing than the primed depth predicts, and the gap varies run to run, so it
+    /// is measured rather than modelled.
+    var spinUpUs: Int64 = -1
+
+    /// Sync error at the instant grace expired, before the rebaseline absorbed it, or
+    /// `nil` until then. This is the offset playback actually starts at; without it the
+    /// post-rebaseline error reads ~0 no matter how far out the start was.
+    var startupOffsetUs: Int64?
+
     // Diagnostics
     var underrunCount: Int64 = 0
     var pcmBytesDropped: Int64 = 0
@@ -140,7 +158,6 @@ actor AudioPlayer {
     private var decoder: AudioDecoder?
     private var currentFormat: AudioFormatSpec?
     private var pendingStartBuffers: [AudioQueueBufferRef] = []
-    private var preparedStartCursorAnchor: Int64?
 
     private var _isPlaying: Bool = false
 
@@ -280,7 +297,15 @@ actor AudioPlayer {
             throw AudioPlayerError.frameSizeExceedsCapacity(computed: computedFrameSize, maximum: maxFrameBytes)
         }
 
+        // Read once per prepared queue: querying the HAL is not possible from the audio thread,
+        // and the dominant term is the route's IO buffer rather than a constant.
+        let deviceLatencyUs = OutputDeviceLatency.currentMicroseconds()
+
         lockedState.withLock { state in
+            state.deviceLatencyUs = deviceLatencyUs
+            state.queueStartAbsoluteUs = 0
+            state.spinUpUs = -1
+            state.startupOffsetUs = nil
             state.frameSize = computedFrameSize
             state.processCallbackFormat = effectiveFormat
             state.lastFrameValid = false
@@ -309,7 +334,6 @@ actor AudioPlayer {
         // otherwise the primed AudioQueue buffers are silence and the sync corrector
         // has to audibly insert its way out of the initial empty-ring offset.
         pendingStartBuffers.removeAll(keepingCapacity: true)
-        preparedStartCursorAnchor = nil
         for _ in 0 ..< audioQueueBufferCount {
             var buffer: AudioQueueBufferRef?
             let allocStatus = AudioQueueAllocateBuffer(queue, audioQueueBufferByteSize, &buffer)
@@ -325,6 +349,34 @@ actor AudioPlayer {
         }
     }
 
+    /// Delay between handing a frame to the output and hearing it: the depth of the AudioQueue
+    /// buffers this player primes, plus the device path beyond them.
+    ///
+    /// Single source for both consumers of that quantity — the engine, deciding when to hand
+    /// the first chunk over, and the sync corrector, deciding how far the cursor should lead
+    /// the speaker. They describe the same physical span, and two formulas for it drift.
+    ///
+    /// Zero before `prepare()`, which is the only point at which the format and the device are
+    /// both known.
+    func pipelineLatencyMicroseconds() -> Int64 {
+        guard let format = currentFormat else { return 0 }
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
+        let queueDepthUs = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
+            / Int64(format.sampleRate * bytesPerFrame)
+        return queueDepthUs + lockedState.withLock { $0.deviceLatencyUs }
+    }
+
+    /// How far before a frame should be audible the queue must be started for it to be
+    /// audible on time.
+    ///
+    /// Deliberately NOT ``pipelineLatencyMicroseconds()``. The frames primed before
+    /// `AudioQueueStart` are already in the queue, so they do not wait out its depth — only
+    /// the path beyond it. Leading by the full depth starts playback that much early.
+    func startupLeadMicroseconds() -> Int64 {
+        lockedState.withLock { $0.deviceLatencyUs }
+    }
+
     /// Start a prepared queue after decoded PCM has been written to the ring.
     func startPrepared() throws {
         guard let queue = audioQueue, let format = currentFormat else {
@@ -338,17 +390,14 @@ actor AudioPlayer {
             fillBuffer(queue: queue, buffer: buffer)
         }
         pendingStartBuffers.removeAll(keepingCapacity: true)
-        if let preparedStartCursorAnchor {
-            lockedState.withLock { state in
-                // `startPrepared()` pre-fills AudioQueue buffers synchronously before
-                // any samples are audible. Reset the cursor to the first primed sample;
-                // the startup correction-grace handoff rebaselines any transient
-                // callback/bookkeeping bias when correction is enabled.
-                state.cursorMicroseconds = preparedStartCursorAnchor
-                state.cursorRemainder = 0
-            }
-            self.preparedStartCursorAnchor = nil
-        }
+
+        // The pre-fill above advanced the cursor over every frame it handed to the queue,
+        // which is exactly what the cursor means. Re-seating it at the first primed frame
+        // would understate the handover by the primed depth, and that understatement
+        // happens to cancel the same term in the engine's release instant — two errors that
+        // hide each other. A short pre-fill (ring not yet full) is likewise self-describing:
+        // the cursor advanced only over the frames that really went in.
+        lockedState.withLock { $0.queueStartAbsoluteUs = MonotonicClock.absoluteMicroseconds() }
 
         let startStatus = AudioQueueStart(queue, nil)
         if startStatus != noErr {
@@ -393,7 +442,6 @@ actor AudioPlayer {
             state.timeSnapshot = nil
         }
         pendingStartBuffers.removeAll()
-        preparedStartCursorAnchor = nil
     }
 
     /// Replace the decoder without stopping playback.
@@ -417,13 +465,6 @@ actor AudioPlayer {
             throw AudioPlayerError.notStarted
         }
         return try decoder.decode(data)
-    }
-
-    /// Configure the startup cursor anchor that will be applied after
-    /// `startPrepared()` synchronously fills the initial AudioQueue buffers, but
-    /// before `AudioQueueStart` lets the render callback race with actor state.
-    func alignPreparedStartCursor(firstServerTimestamp: Int64) {
-        preparedStartCursorAnchor = firstServerTimestamp
     }
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
@@ -486,6 +527,10 @@ actor AudioPlayer {
         let correctionSchedule: CorrectionSchedule
         let underrunCount: Int64
         let pcmBytesDropped: Int64
+        /// Sync error at grace expiry, before the rebaseline froze it. `nil` until then.
+        let startupOffsetUs: Int64?
+        /// `AudioQueueStart` to first device callback. -1 until that callback lands.
+        let spinUpUs: Int64
     }
 
     /// Capture telemetry state atomically for the logging loop.
@@ -497,7 +542,9 @@ actor AudioPlayer {
                 syncErrorUs: state.lastSyncErrorUs,
                 correctionSchedule: state.correctionSchedule,
                 underrunCount: state.underrunCount,
-                pcmBytesDropped: state.pcmBytesDropped
+                pcmBytesDropped: state.pcmBytesDropped,
+                startupOffsetUs: state.startupOffsetUs,
+                spinUpUs: state.spinUpUs
             )
         }
     }
@@ -527,10 +574,17 @@ actor AudioPlayer {
         let nowAbsolute = MonotonicClock.absoluteMicroseconds()
         let expectedServerTime = snapshot.localTimeToServer(nowAbsolute)
 
-        // Depth is every primed buffer, so this must use the same constant `prepare()` does.
-        let aqLatencyUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+        // Everything between pulling a frame here and hearing it: every primed buffer — so this
+        // must use the same count `prepare()` primes — plus the device path beyond them.
+        let queueDepthUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+        let aqLatencyUs = queueDepthUs + state.deviceLatencyUs
 
-        let syncErrorUs = (expectedServerTime - state.cursorMicroseconds) - aqLatencyUs
+        // A frame pulled here is audible `aqLatencyUs` from now, and must be audible at
+        // `local(cursor)` — so in equilibrium the cursor LEADS `expectedServerTime` by that
+        // latency. Subtracting it instead of adding puts the reported error `2 * aqLatencyUs`
+        // from the truth, which makes every change to the latency model move the equilibrium
+        // by twice the change. Positive means late: the cursor is behind where it should be.
+        let syncErrorUs = (expectedServerTime + aqLatencyUs) - state.cursorMicroseconds
         state.lastSyncErrorUs = syncErrorUs
 
         let framesInBuffer = capacity / frameSize
@@ -545,6 +599,7 @@ actor AudioPlayer {
                 // insert/drop ramp at ~1s. Instead, rebaseline the cursor to the same
                 // equilibrium used by the sync-error formula, then let the next
                 // callback correct only real drift.
+                state.startupOffsetUs = syncErrorUs
                 state.cursorMicroseconds = graceExpiryRebaselineCursor(
                     expectedServerTime: expectedServerTime,
                     audioQueueLatencyUs: aqLatencyUs
@@ -571,7 +626,13 @@ actor AudioPlayer {
         if newSchedule.reanchor {
             // Can't reset the ring buffer and cursor here safely while iterating,
             // so signal the actor to handle it on the next poll.
-            state.pendingReanchorServerTime = expectedServerTime
+            // The cursor leads by the pipeline latency in equilibrium, so a reanchor must
+            // target that, not bare `expectedServerTime` — which would leave the very next
+            // callback reporting the latency itself as error.
+            state.pendingReanchorServerTime = graceExpiryRebaselineCursor(
+                expectedServerTime: expectedServerTime,
+                audioQueueLatencyUs: aqLatencyUs
+            )
             state.reanchorRequested = true
             state.correctionSchedule = CorrectionSchedule()
             state.dropCounter = 0
@@ -608,6 +669,12 @@ actor AudioPlayer {
             let sr = state.sampleRate
             let cb = processCallback // nonisolated let, not in locked state
             let cbFormat = state.processCallbackFormat
+
+            // `prepare()` fills every buffer through this path before the queue is started,
+            // so the first callback with a start time recorded is the device's own.
+            if state.spinUpUs < 0, state.queueStartAbsoluteUs > 0 {
+                state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
+            }
 
             Self.updateCorrectionSchedule(state: &state, capacity: capacity, frameSize: fs, sampleRate: sr)
 
@@ -746,15 +813,19 @@ actor AudioPlayer {
     /// Cursor position that makes the sync-error formula evaluate to equilibrium
     /// at the startup correction-grace handoff.
     ///
-    /// `fillBuffer` computes sync error as `(expectedServerTime - cursor) - aqLatency`.
+    /// Cursor position at which the sync-error formula reads zero — the equilibrium in
+    /// which the cursor leads `expectedServerTime` by the pipeline latency.
+    ///
     /// While startup grace is open, correction is intentionally disabled so AudioQueue
     /// callback/cursor bookkeeping can settle without pitch-shifting output. On the
     /// expiry callback, the measured error can include that grace-era bookkeeping
     /// bias; feeding it directly to the corrector creates an audible max-rate ramp.
-    /// Rebaselining to this cursor absorbs the grace-era bias while preserving future
-    /// drift correction.
+    ///
+    /// This *asserts* the equilibrium rather than measuring it, so whatever misalignment
+    /// exists at grace expiry becomes permanent and subsequently reads as perfect sync.
+    /// `TelemetrySnapshot.startupOffsetUs` is the only place that misalignment is visible.
     static func graceExpiryRebaselineCursor(expectedServerTime: Int64, audioQueueLatencyUs: Int64) -> Int64 {
-        expectedServerTime - audioQueueLatencyUs
+        expectedServerTime + audioQueueLatencyUs
     }
 
     /// Convert linear volume (0.0-1.0) to perceptual amplitude.
