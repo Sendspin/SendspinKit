@@ -127,18 +127,134 @@ struct AudioStartupReleaseTests {
         )
     }
 
-    /// Once the release is closer than the re-check interval, the wait must be the exact
-    /// remaining time — that is what keeps startup accurate to the microsecond rather than
-    /// landing on an interval boundary.
-    @Test("a release within the re-check interval is waited for exactly")
-    func imminentReleaseWaitIsExact() {
+    /// The wait must stop short of the release instant, leaving the final approach to
+    /// `yieldUntilReleaseInstant`. Sleeping the exact remainder overshoots it instead — timer
+    /// granularity, measured at 2.4ms for a 34ms sleep — and that overshoot is skew at the
+    /// start of every stream.
+    ///
+    /// Mutation proof: returning `min(remaining, interval)` makes this fail.
+    @Test("a wait stops short of the release instant")
+    func waitStopsShortOfReleaseInstant() {
         let nowUs: Int64 = 1_700_000_000_000_000
         let remainingUs = AudioEngine.startupRecheckIntervalUs / 2
         let releaseTime = nowUs + remainingUs
 
         #expect(
-            AudioEngine.startupWaitMicroseconds(releaseTimeUs: releaseTime, nowUs: nowUs) == remainingUs
+            AudioEngine.startupWaitMicroseconds(releaseTimeUs: releaseTime, nowUs: nowUs)
+                == remainingUs - AudioEngine.startupSpinThresholdUs
         )
+    }
+
+    /// Inside the spin window there is nothing left to sleep for: the remaining distance is
+    /// closed by yielding, so any sleep here would only overshoot it.
+    @Test("a release inside the spin window is not slept for at all")
+    func imminentReleaseIsNotSlept() {
+        let nowUs: Int64 = 1_700_000_000_000_000
+        let releaseTime = nowUs + AudioEngine.startupSpinThresholdUs / 2
+
+        #expect(AudioEngine.startupWaitMicroseconds(releaseTimeUs: releaseTime, nowUs: nowUs) == 0)
+    }
+
+    /// The yield loop closes only the final approach. Handed a still-distant instant it must
+    /// decline immediately and leave the distance to another sleep hop.
+    ///
+    /// Mutation proof: removing the distance guard spends the whole safety budget polling
+    /// towards an instant it cannot reach — 32ms per hop — and this fails.
+    @Test("the yield loop declines a distant release instant")
+    func yieldLoopDeclinesDistantInstant() async {
+        let distant = MonotonicClock.absoluteMicroseconds() + AudioEngine.startupSpinThresholdUs * 10
+
+        let start = MonotonicClock.absoluteMicroseconds()
+        await AudioEngine.yieldUntilReleaseInstant(distant)
+        let elapsed = MonotonicClock.absoluteMicroseconds() - start
+
+        // Between the cost of declining (an actor hop) and the cost of not declining
+        // (the full budget), so neither load nor scheduling noise can flip the verdict.
+        #expect(
+            elapsed < AudioEngine.startupSpinThresholdUs * 2,
+            "declining must not poll: took \(elapsed)us"
+        )
+    }
+
+    /// A wait that has come due must release the chunk it was armed for, even when the wake
+    /// cost more than the lateness tolerance: re-testing lateness there slides the start to the
+    /// next chunk, and a live stream always has a next one.
+    ///
+    /// Mutation proof: routing the awaited case through `startupReleaseCandidate` selects the
+    /// second chunk instead of the first.
+    @Test("a release the wait was armed for survives a late wake")
+    func awaitedReleaseSurvivesLateWake() {
+        let outputLatencyUs: Int64 = 100_000
+        let playTimes: [Int64] = [1_000_000, 1_100_000]
+        let awaited = playTimes[0] - outputLatencyUs
+        // Woken an order of magnitude later than the tolerance permits.
+        let nowUs = awaited + CorrectionPlanner.defaultEngageUs * 10
+
+        let honoured = AudioEngine.releaseSelection(
+            playTimes: playTimes,
+            nowUs: nowUs,
+            outputLatencyUs: outputLatencyUs,
+            awaitedReleaseTimeUs: awaited
+        )
+        #expect(honoured?.index == 0, "the awaited chunk must be released, not skipped")
+        #expect(honoured?.releaseTimeUs == awaited)
+
+        // With no wait to honour, the same chunk is correctly skipped as unplayable.
+        let unawaited = AudioEngine.releaseSelection(
+            playTimes: playTimes,
+            nowUs: nowUs,
+            outputLatencyUs: outputLatencyUs,
+            awaitedReleaseTimeUs: nil
+        )
+        #expect(unawaited?.index == 1, "a chunk nobody waited for stays subject to the tolerance")
+    }
+
+    /// The wait must sleep through the schedule rather than poll it. A superseded wait that
+    /// carries on instead of ending arms a replacement that the next re-entry cancels in turn;
+    /// the release still lands correctly, so only the evaluation count exposes the difference.
+    ///
+    /// Two defences prevent that — the deadline task returns on a cancelled sleep, and the arm
+    /// token stops a superseded continuation — and either alone suffices. So this test fails
+    /// only when both are removed: verified at 65,166 evaluations against a bound of 200.
+    @Test("the startup wait sleeps through the schedule rather than polling it")
+    func startupWaitDoesNotPoll() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+        for index in 0 ..< 8 {
+            await engine.commands.enqueue(
+                .chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000)
+            )
+        }
+
+        #expect(
+            await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
+            "the stream must start"
+        )
+        let evaluations = await engine.startupReleaseEvaluations
+        await engine.shutdown()
+
+        // One evaluation per chunk arrival plus one per sleep hop: tens, not thousands. Far
+        // enough above the observed count to absorb scheduling noise, far enough below a poll
+        // to fail on one.
+        #expect(evaluations < 200, "the release was evaluated \(evaluations) times — the wait is polling")
+    }
+
+    /// And the yield loop must genuinely wait for an imminent instant. Returning early is what
+    /// a sleep does, and what leaves the release outside the tolerance.
+    @Test("the yield loop waits for an imminent release instant")
+    func yieldLoopWaitsForImminentInstant() async {
+        // Inside the spin window, so the loop engages rather than declining.
+        let target = MonotonicClock.absoluteMicroseconds() + AudioEngine.startupSpinThresholdUs / 4
+
+        await AudioEngine.yieldUntilReleaseInstant(target)
+
+        #expect(MonotonicClock.absoluteMicroseconds() >= target, "returned before the release instant")
     }
 
     /// A legitimately distant schedule (servers pre-buffer tens of seconds) is not an
