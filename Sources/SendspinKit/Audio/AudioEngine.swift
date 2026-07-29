@@ -66,15 +66,58 @@ actor AudioEngine {
     /// a stream that never becomes releasable would otherwise grow this unbounded.
     static let startupChunkRetentionLimit = 2_048
 
+    /// Distance from the release instant at which sleeping gives way to yielding.
+    ///
+    /// Timer overshoot scales with the sleep — ~7%, so 2.4ms for a 34ms one — and even a
+    /// sub-millisecond sleep lands outside ``CorrectionPlanner/defaultEngageUs``. Overshoot
+    /// is skew the sync corrector then has to remove, so the final approach is yielded
+    /// rather than slept.
+    ///
+    /// Must exceed the overshoot of a full ``startupRecheckIntervalUs`` hop (~3.5ms), or the
+    /// last sleep jumps the instant and leaves nothing to yield through.
+    static let startupSpinThresholdUs: Int64 = 8_000
+
     /// How long to sleep before re-evaluating a pending startup release.
     ///
-    /// Returns the exact time remaining when that is within
-    /// ``startupRecheckIntervalUs``, and the interval otherwise — so a distant or
+    /// Stops ``startupSpinThresholdUs`` short of the release instant, leaving the final
+    /// approach to ``yieldUntilReleaseInstant(_:)``; returns 0 once already inside that
+    /// window. Hops are capped at ``startupRecheckIntervalUs`` so a distant or
     /// unrepresentable schedule yields a wait that ends and gets re-examined.
     static func startupWaitMicroseconds(releaseTimeUs: Int64, nowUs: Int64) -> Int64 {
         let remaining = releaseTimeUs.subtractingReportingOverflow(nowUs)
         guard !remaining.overflow else { return startupRecheckIntervalUs }
-        return min(max(remaining.partialValue, 0), startupRecheckIntervalUs)
+        // Clamping before subtracting keeps the subtraction unconditionally safe: `pending`
+        // is non-negative and the threshold positive.
+        let pending = max(remaining.partialValue, 0)
+        guard pending > startupSpinThresholdUs else { return 0 }
+        return min(pending - startupSpinThresholdUs, startupRecheckIntervalUs)
+    }
+
+    /// Close the last ``startupSpinThresholdUs`` before a release instant by yielding.
+    ///
+    /// Yielding polls the clock at microsecond cost while still suspending, so this lands
+    /// within a few microseconds where no sleep can, and the engine keeps draining its
+    /// command queue throughout. Runs on the deadline task rather than inside an
+    /// actor-isolated method, so it never holds the engine between polls.
+    ///
+    /// The budget is a guard against a non-advancing clock only: the entry check bounds the
+    /// distance to ``startupSpinThresholdUs``, so a monotonic clock always reaches the release
+    /// instant first. Normal operation never reaches it.
+    static func yieldUntilReleaseInstant(_ releaseTimeUs: Int64) async {
+        let entry = MonotonicClock.absoluteMicroseconds()
+        let distance = releaseTimeUs.subtractingReportingOverflow(entry)
+        // Only the final approach is yielded through; a still-distant instant belongs to the
+        // next sleep hop.
+        guard !distance.overflow, distance.partialValue <= startupSpinThresholdUs else { return }
+        let budget = entry.addingReportingOverflow(startupSpinThresholdUs * 4)
+        let giveUpAt = budget.overflow ? Int64.max : budget.partialValue
+        while !Task.isCancelled {
+            let now = MonotonicClock.absoluteMicroseconds()
+            if now >= releaseTimeUs || now >= giveUpAt {
+                return
+            }
+            await Task.yield()
+        }
     }
 
     /// Whether to use the prepared-start path. Test-injected engines default this
@@ -86,6 +129,13 @@ actor AudioEngine {
     private let startupMinBufferUs: Int64
     private var startupBuffer: StartupBuffer?
     private var startupDeadlineTask: Task<Void, Never>?
+    /// Identifies the current wait. `Task` is not `Equatable`, so without this a
+    /// continuation cannot ask whether the stored handle still refers to it — and the stream
+    /// sequence cannot answer that, because every wait within one stream shares a sequence.
+    private var startupDeadlineToken: UInt64 = 0
+    /// Startup-release evaluations for the current stream. Internal so a test can prove the
+    /// wait sleeps rather than polls; a polling wait reaches five figures per stream start.
+    private(set) var startupReleaseEvaluations = 0
     private var startupSequence: UInt64 = 0
     private var outputHasStarted = false
 
@@ -94,6 +144,14 @@ actor AudioEngine {
         let format: AudioFormatSpec
         let outputLatencyUs: Int64
         var chunks: [StartupBufferedChunk] = []
+    }
+
+    /// What a timer-driven re-entry needs in order to identify itself: which wait it is,
+    /// which stream it belongs to, and the instant it waited for.
+    private struct DeadlineArm: Sendable {
+        let sequence: UInt64
+        let token: UInt64
+        let releaseTimeUs: Int64
     }
 
     private struct StartupBufferedChunk {
@@ -163,6 +221,44 @@ actor AudioEngine {
             }
         }
         return nil
+    }
+
+    /// Cancel any pending startup wait and invalidate its arm, so a continuation already past
+    /// its sleep cannot act on a schedule that no longer applies. Cancellation alone does not
+    /// achieve that: it is cooperative, and a task past its last suspension point runs on.
+    private func cancelStartupDeadline() {
+        startupDeadlineTask?.cancel()
+        startupDeadlineTask = nil
+        startupDeadlineToken &+= 1
+    }
+
+    /// Pick the chunk to start on, honouring a wait already made for one.
+    ///
+    /// A wait that has come due releases the chunk it was armed for, without re-testing
+    /// lateness. ``startupReleaseCandidate``'s tolerance is for chunks already unplayable when
+    /// first examined — joining a stream in progress — and a chunk this engine waited for
+    /// deliberately is not one: charging it for the cost of the wake slides the start to the
+    /// next chunk, and a live stream always has a next one.
+    static func releaseSelection(
+        playTimes: [Int64],
+        nowUs: Int64,
+        outputLatencyUs: Int64,
+        awaitedReleaseTimeUs: Int64?
+    ) -> (index: Int, releaseTimeUs: Int64)? {
+        if let awaited = awaitedReleaseTimeUs, nowUs >= awaited {
+            for (index, playTime) in playTimes.enumerated() {
+                let releaseTime = playTime.subtractingReportingOverflow(outputLatencyUs)
+                guard !releaseTime.overflow else { continue }
+                if releaseTime.partialValue == awaited {
+                    return (index, awaited)
+                }
+            }
+        }
+        return startupReleaseCandidate(
+            playTimes: playTimes,
+            nowUs: nowUs,
+            outputLatencyUs: outputLatencyUs
+        )
     }
 
     /// Re-arm the startup underrun grace window. Called after every successful
@@ -322,8 +418,7 @@ actor AudioEngine {
         }
 
         // 4. Stop the output immediately (any buffered playPCM becomes harmless)
-        startupDeadlineTask?.cancel()
-        startupDeadlineTask = nil
+        cancelStartupDeadline()
         startupBuffer = nil
         startupSequence &+= 1
         outputHasStarted = false
@@ -420,10 +515,10 @@ actor AudioEngine {
     /// Start a new stream: init decoder, then either start immediately (test path)
     /// or prepare the backend and wait for startup lead-time/min-buffer priming.
     private func applyStreamStart(format: AudioFormatSpec, codecHeader: Data?) async {
-        startupDeadlineTask?.cancel()
-        startupDeadlineTask = nil
+        cancelStartupDeadline()
         startupBuffer = nil
         startupSequence &+= 1
+        startupReleaseEvaluations = 0
 
         do {
             if startupBufferingEnabled {
@@ -497,19 +592,28 @@ actor AudioEngine {
     /// Release the startup buffer when starting AudioQueue now will naturally land
     /// the first sample near its server timestamp. The release feeds decoded PCM into
     /// the ring before starting AudioQueue, then hands any future chunks back to the scheduler.
-    private func releaseStartupBufferIfReady(sequence: UInt64? = nil) async {
+    private func releaseStartupBufferIfReady(arm: DeadlineArm? = nil) async {
+        startupReleaseEvaluations += 1
         guard var buffer = startupBuffer, !buffer.chunks.isEmpty else { return }
-        if let sequence, buffer.sequence != sequence {
-            return
+        if let arm {
+            guard buffer.sequence == arm.sequence, arm.token == startupDeadlineToken else {
+                // A superseded wait: a newer arrival re-armed, or the stream was replaced.
+                // The arm that superseded this one owns the handle, so leave it untouched.
+                return
+            }
+            // This call runs on the task the handle refers to, and its wait is over. Clearing
+            // the handle first keeps the re-arm below from cancelling the task it runs on.
+            startupDeadlineTask = nil
         }
         buffer.chunks.sort { $0.playTimeMicroseconds < $1.playTimeMicroseconds }
 
         let nowUs = MonotonicClock.absoluteMicroseconds()
         let playTimes = buffer.chunks.map(\.playTimeMicroseconds)
-        let candidate = Self.startupReleaseCandidate(
+        let candidate = Self.releaseSelection(
             playTimes: playTimes,
             nowUs: nowUs,
-            outputLatencyUs: buffer.outputLatencyUs
+            outputLatencyUs: buffer.outputLatencyUs,
+            awaitedReleaseTimeUs: arm?.releaseTimeUs
         )
 
         // Nil when every buffered chunk is already too late to start on. The spec permits
@@ -519,10 +623,13 @@ actor AudioEngine {
         // Deliberately no timer here: re-evaluating cannot change the answer, because
         // advancing `nowUs` only makes these chunks staler. Only a newly arrived,
         // future-dated chunk can, and `applyChunk` re-enters this method on every append.
+        //
+        // Logged because no playback counter can show it: a stream that never releases reports
+        // no lateness, no underruns and no drops. It is simply silent.
         guard let candidate else {
+            Log.audio.warning("startup release found no viable chunk (buffered=\(buffer.chunks.count))")
             startupBuffer = buffer
-            startupDeadlineTask?.cancel()
-            startupDeadlineTask = nil
+            cancelStartupDeadline()
             return
         }
         if candidate.index > 0 {
@@ -533,18 +640,29 @@ actor AudioEngine {
         let startTime = candidate.releaseTimeUs
         guard nowUs >= startTime else {
             startupBuffer = buffer
-            startupDeadlineTask?.cancel()
+            cancelStartupDeadline()
             let delayUs = Self.startupWaitMicroseconds(releaseTimeUs: startTime, nowUs: nowUs)
-            let sequence = buffer.sequence
+            startupDeadlineToken &+= 1
+            let arm = DeadlineArm(
+                sequence: buffer.sequence,
+                token: startupDeadlineToken,
+                releaseTimeUs: startTime
+            )
             startupDeadlineTask = Task { [weak self] in
-                try? await Task.sleep(for: .microseconds(delayUs))
-                await self?.releaseStartupBufferIfReady(sequence: sequence)
+                do {
+                    try await Task.sleep(for: .microseconds(delayUs))
+                } catch {
+                    // A superseded wait ends here; the arm that replaced it owns the handle.
+                    // Continuing arms a further replacement instead, polling the schedule.
+                    return
+                }
+                await Self.yieldUntilReleaseInstant(startTime)
+                await self?.releaseStartupBufferIfReady(arm: arm)
             }
             return
         }
 
-        startupDeadlineTask?.cancel()
-        startupDeadlineTask = nil
+        cancelStartupDeadline()
         startupBuffer = nil
 
         // Saturate rather than trap: `firstPlayTime` is wire-derived, and a horizon
@@ -632,8 +750,7 @@ actor AudioEngine {
     private func applyStreamClear(roles: [String]?) async {
         let shouldClear = roles == nil || roles?.contains("player") ?? false
         if shouldClear {
-            startupDeadlineTask?.cancel()
-            startupDeadlineTask = nil
+            cancelStartupDeadline()
             if startupBuffer != nil {
                 startupBuffer?.chunks.removeAll()
             }
@@ -647,8 +764,7 @@ actor AudioEngine {
         let shouldEnd = roles == nil || roles?.contains("player") ?? false
         if shouldEnd {
             startupBuffer = nil
-            startupDeadlineTask?.cancel()
-            startupDeadlineTask = nil
+            cancelStartupDeadline()
             startupSequence &+= 1
             outputHasStarted = false
             await audioScheduler.stop()
