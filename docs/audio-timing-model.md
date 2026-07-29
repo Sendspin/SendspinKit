@@ -44,87 +44,97 @@ appears once, sourced from the backend per callback rather than modelled. Its ex
 API (`ClockSync::server_to_local_instant_with_latency`) belongs to a separate scheduling path and
 is deliberately not combined with drift correction.
 
-## Departure 1 — the latency term has the wrong sign
+## What the implementation now does
 
-`AudioPlayer.updateCorrectionSchedule` computes
+- The correction formula reads `(expected + L) − cursor`. Three sites shared the old, inverted
+  equilibrium — `updateCorrectionSchedule`, `graceExpiryRebaselineCursor` and the reanchor
+  target — and are now one definition.
+- `L` includes the device path, read from the HAL at `prepare()` (`OutputDeviceLatency`).
+- The queue starts on silence at `prepare()`, so the device pays its spin-up during the window
+  already being spent buffering.
+- The first real frame is placed to the sample: once the queue is running the device consumes at
+  exactly the sample rate, so a frame's audible instant is fixed by its position in the stream.
+  `AudioQueueGetCurrentTime` gives frames played, `totalFramesEnqueued` gives frames handed over,
+  and the difference plus the device path says when the next frame written will be audible.
+  Silence pads the gap to its due instant.
+- Telemetry carries `startOffset`, `spinUp`, `startPad` and `inFlight`, because
+  `graceExpiryRebaselineCursor` still assigns the equilibrium and so `sync` reads ~0 from grace
+  expiry onward however far out playback began.
 
-```
-syncError = (expected − cursor) − L
-          = [(expected + L) − cursor] − 2L
-          = error_true − 2L
-```
+## Measured history of the start error
 
-Subtracting `L` where the invariant adds it. The consequence is not a constant offset that can be
-tuned away: **any change to `L` moves the equilibrium by `2·ΔL`**. Adding a measured 14.7ms device
-term to both the engine's scheduling and this formula moved the observed equilibrium by 27.6ms.
+Each row is the offset playback actually starts at, on the reference setup.
 
-Measured at the first evaluation of a stream, where the invariant holds exactly:
+| | startOffset | note |
+|---|---|---|
+| inverted sign, device path zero | −146,870 µs | invisible; frozen and reported as perfect sync |
+| sign corrected, device path measured | +297,935 / +396,532 µs | tracked `spinUp` 1:1 (residual 280–2,455 µs) |
+| device pre-warmed | +20,387 / +44,341 / +42,481 µs | decoupled from `spinUp`; one buffer period of jitter |
+| first frame placed to the sample | +33,374 … +33,504 µs | **deterministic to 130 µs over 5 runs** |
 
-| | value |
-|---|---|
-| `cursorLead` | +154,004 µs |
-| `L` (`aqLatency`) | 154,035 µs |
-| `syncError` as computed | −308,039 µs |
-| `syncError` with the sign corrected | **+31 µs** |
+Spin-up itself is unchanged at 292–413 ms; it is paid, not removed. The pad absorbing the
+variation ranged 609–1,383 frames while the resulting offset moved 130 µs.
 
-With the sign corrected the engine's scheduling and the correction model agree to 31
-microseconds. They were never two competing models.
+## Remaining departure — modelled depth against measured depth
 
-## Departure 2 — device spin-up is not modelled
-
-Between `AudioQueueStart` and the first output callback:
-
-| | |
-|---|---|
-| predicted from buffer depth | ~32 ms |
-| measured, run 1 | 299,192 µs |
-| measured, run 2 | 396,424 µs |
-
-An idle USB DAC takes 300–400ms to begin producing, and the figure varies by ~100ms between
-runs. Nothing in the scheduling accounts for it, so playback begins that much late and the whole
-cursor relationship is displaced:
+The placement measures the pipeline. The correction formula still models it as every allocated
+buffer:
 
 ```
-cursorLead(steady) = +L − spinUp = 154,035 − 300,905 = −146,870 µs
+L_modelled = audioQueueBufferCount * bufferBytes / byteRate + deviceLatency
+           = 139,319 + 14,716 = 154,035 µs
 ```
 
-against −146,870 µs measured. This term dominates every other latency in the system, including
-the queue depth (139ms) and the device latency (15ms).
+A running queue does not hold every buffer unplayed. Logged at one placement instant:
 
-## Why neither departure is audible today
+```
+inFlight 4,811 frames = 109,092 µs   deviceLatency 14,716 µs   total 123,808 µs
+```
 
-`graceExpiryRebaselineCursor` **assigns** `cursor = expected − L` one second into playback. It does
-not measure the equilibrium; it defines the wrong one into existence, after which drift correction
-holds the system there faithfully. The result is internally consistent, stable, and uniformly
-displaced.
+and the whole residual follows from the difference:
 
-A single speaker cannot reveal a constant displacement. Two speakers with differing pipeline
-depth — different format, device, or buffer size — reveal it as fixed misalignment, scaling with
-`2L` rather than `L`.
+```
+startOffset = L_modelled − (inFlight + deviceLatency) = 154,035 − 123,808 = 30,227 µs
+```
 
-## Departure 3 — the device path is modelled as zero
+against 33,504 µs measured — the remaining ~3 ms is unattributed. Sampled during playback,
+`inFlight` ranges 5,096–6,487 frames against 6,144 modelled, so the two disagree by roughly
+half a buffer to a buffer depending on where in the callback cadence the reading falls.
 
-`L` currently counts only the AudioQueue buffers this client primes. The path beyond them is real
-and measurable (`OutputDeviceLatency`): on the reference setup, 14.7ms — device latency 1.5ms,
-safety offset 1.6ms, IO buffer 11.6ms. An independent estimate from output-callback timing put it
-at ~17.5ms, corroborating within 3ms.
+Which of the two is correct for the correction formula is **not yet established**. The formula
+evaluates inside the callback, where the buffer just returned has been re-enqueued, and in-flight
+there may genuinely be the full allocated depth. Two things need measuring before changing it:
 
-There is no `kAudioQueueProperty_CurrentDeviceLatency`. macOS answers through the HAL
-(`kAudioDevicePropertyLatency` + `SafetyOffset` + `BufferFrameSize` + stream latency on the
-default output device); the session platforms answer through `AVAudioSession.outputLatency`. The
-queue reports its device as `AQDefaultDevice`, meaning it follows the system default — so the
-value must be re-read when the default output device changes.
+1. In-flight sampled *at the callback instant*, not at an arbitrary one.
+2. Whether `AudioQueueGetCurrentTime`'s `mSampleTime` reports the position the device has
+   consumed or the position it is emitting. If the latter, it already carries the device path and
+   adding `deviceLatency` double-counts it. `inFlight` readings above the modelled depth (6,487
+   against 6,144) are weak evidence for the latter and are not conclusive.
 
-## Consequences for a fix
+Sizing buffers by duration rather than a fixed byte count would remove the format dependence in
+this term at the same time — the depth currently doubles across a bit-depth change.
 
-1. The sign correction and the spin-up term must land together. Fixing the sign alone gives a
-   correct startup and a wrong steady state, because the anchor re-seats the cursor after the
-   pre-fill and the spin-up displacement remains.
-2. Scheduling the start instant precisely — via `AudioQueueStart`'s host-time parameter, which is
-   honoured on macOS at leads as short as 5ms — buys nothing while a 300ms spin-up sits
-   downstream of it, unmeasured.
-3. `graceExpiryRebaselineCursor` must stop defining the equilibrium. Any fix that leaves it
-   asserting a relationship rather than measuring one will hide the next error the same way.
-4. `aiosendspin` ignores `required_lead_time_ms` entirely (`push_stream.py` uses a fixed
-   `DEFAULT_INITIAL_DELAY_US = 250_000`), so deriving that value buys nothing against this server
-   — though it remains spec-correct and matters for others.
+## Why the offset is still invisible in `sync`
+
+`graceExpiryRebaselineCursor` **assigns** `cursor = expected + L` one second into playback. It does
+not measure the equilibrium; it defines one, after which drift correction holds the system there
+faithfully. The result is internally consistent, stable, and uniformly displaced — a single
+speaker cannot reveal a constant displacement. `startOffset` exists solely to expose it, and any
+change here that leaves the rebaseline asserting rather than measuring will hide the next error
+the same way.
+
+## Notes that remain true
+
+- Scheduling the start instant precisely — via `AudioQueueStart`'s host-time parameter, honoured
+  on macOS at leads as short as 5 ms — is unnecessary now that the device is pre-warmed and the
+  first frame is placed by position rather than by start time.
+- There is no `kAudioQueueProperty_CurrentDeviceLatency`. macOS answers through the HAL
+  (`kAudioDevicePropertyLatency` + `SafetyOffset` + `BufferFrameSize` + stream latency on the
+  default output device); the session platforms answer through `AVAudioSession.outputLatency`.
+  The queue reports its device as `AQDefaultDevice`, so it follows the system default and the
+  value must be re-read when that changes.
+- `aiosendspin` ignores `required_lead_time_ms` entirely (`push_stream.py` uses a fixed
+  `DEFAULT_INITIAL_DELAY_US = 250_000`), so deriving that value buys nothing against this server
+  — though it remains spec-correct and matters for others.
+- The DAC's own oversampling-filter delay may not be in the driver's reported figure. It is
+  common-mode when syncing identical endpoints and only matters across dissimilar hardware.

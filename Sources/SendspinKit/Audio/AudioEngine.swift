@@ -960,6 +960,8 @@ actor AudioEngine {
                     // device's own delay before its first callback — the dominant term in it.
                     + " startOffset=\(tSnap.startupOffsetUs.map(String.init) ?? "pending")us"
                     + " spinUp=\(tSnap.spinUpUs)us"
+                    + " startPad=\(tSnap.startupPadFrames)f"
+                    + " inFlight=\(tSnap.framesInFlight)f"
                 Log.audio.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats
