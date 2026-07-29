@@ -17,7 +17,9 @@ actor NoOpAudioOutput: AudioOutput {
             underrunCount: 0,
             pcmBytesDropped: 0,
             startupOffsetUs: nil,
-            spinUpUs: -1
+            spinUpUs: -1,
+            startupPadFrames: 0,
+            framesInFlight: 0
         )
     }
 

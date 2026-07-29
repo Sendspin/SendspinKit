@@ -99,6 +99,11 @@ private struct LockedState: @unchecked Sendable {
     /// Absolute time `AudioQueueStart` was called, or 0 before it has been.
     var queueStartAbsoluteUs: Int64 = 0
 
+    /// Frames handed to the AudioQueue since the queue started, silence included. With the
+    /// device's played-frame count this gives the frames still in flight, and so when a frame
+    /// written to the ring now will be audible.
+    var totalFramesEnqueued: Int64 = 0
+
     /// True from `prepare()` until the first real PCM reaches the ring. The queue is running
     /// on silence in that window so the device pays its spin-up before audio depends on it,
     /// and an empty ring there is the intent rather than a dropout.
@@ -109,6 +114,9 @@ private struct LockedState: @unchecked Sendable {
     /// producing than the primed depth predicts, and the gap varies run to run, so it
     /// is measured rather than modelled.
     var spinUpUs: Int64 = -1
+
+    /// Silence frames inserted ahead of the first real frame to land it on its due instant.
+    var startupPadFrames: Int64 = 0
 
     /// Sync error at the instant grace expired, before the rebaseline absorbed it, or
     /// `nil` until then. This is the offset playback actually starts at; without it the
@@ -310,6 +318,8 @@ actor AudioPlayer {
             state.queueStartAbsoluteUs = 0
             state.spinUpUs = -1
             state.prewarming = true
+            state.totalFramesEnqueued = 0
+            state.startupPadFrames = 0
             state.startupOffsetUs = nil
             state.frameSize = computedFrameSize
             state.processCallbackFormat = effectiveFormat
@@ -467,14 +477,32 @@ actor AudioPlayer {
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
     func playPCM(_ pcmData: Data, serverTimestamp: Int64) throws {
-        guard audioQueue != nil, currentFormat != nil else {
+        guard let queue = audioQueue, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
 
+        // Only the first real write is placed, and everything it needs is gathered outside
+        // the lock: `AudioQueueGetCurrentTime` is a queue call, its reading only means
+        // anything paired with a matched instant, and the pad must not be allocated while the
+        // audio thread may be waiting on the lock.
+        let placement: (framesPlayed: Int64, nowAbsolute: Int64, silence: Data)? =
+            if lockedState.withLock({ $0.prewarming }) {
+                // A pad beyond the pipeline depth would mean the release instant itself was
+                // wrong, so that bounds what can be needed.
+                (Self.framesPlayed(queue: queue), MonotonicClock.absoluteMicroseconds(), Data(count: maxStartupPadBytes()))
+            } else {
+                nil
+            }
+
         lockedState.withLock { state in
-            // Set cursor to first chunk's timestamp if not yet initialized
-            if state.framesConsumed == 0, state.cursorMicroseconds == 0 {
-                state.cursorMicroseconds = serverTimestamp
+            if let placement {
+                Self.placeFirstFrame(
+                    state: &state,
+                    serverTimestamp: serverTimestamp,
+                    framesPlayed: placement.framesPlayed,
+                    nowAbsolute: placement.nowAbsolute,
+                    silence: placement.silence
+                )
             }
             state.prewarming = false
             // Frame-aligned: a byte-truncated write would misalign every later frame read.
@@ -484,6 +512,72 @@ actor AudioPlayer {
                 state.pcmBytesDropped += Int64(dropped)
             }
         }
+    }
+
+    /// Ceiling on the startup silence pad, in bytes: one pipeline depth of frames.
+    private func maxStartupPadBytes() -> Int {
+        guard let format = currentFormat else { return 0 }
+        let frameSize = format.channels * (format.effectiveOutputBitDepth / 8)
+        let frames = pipelineLatencyMicroseconds() * Int64(format.sampleRate) / 1_000_000
+        return Int(frames) * frameSize
+    }
+
+    /// Frames the device has actually played since the queue started, or 0 if it cannot say.
+    private static func framesPlayed(queue: AudioQueueRef) -> Int64 {
+        var timestamp = AudioTimeStamp()
+        guard AudioQueueGetCurrentTime(queue, nil, &timestamp, nil) == noErr,
+              timestamp.mFlags.contains(.sampleTimeValid),
+              timestamp.mSampleTime > 0
+        else { return 0 }
+        return Int64(timestamp.mSampleTime)
+    }
+
+    /// Pad the ring with silence so the first real frame lands on its due instant.
+    ///
+    /// Once the queue is running the device consumes at exactly the sample rate, so a frame's
+    /// audible instant is fixed by its position in the stream, not by when the callback
+    /// happened to pull it. That makes the placement exact rather than quantised to the
+    /// callback cadence: the next frame written becomes audible once the frames still in
+    /// flight have played, plus the device path.
+    ///
+    /// A negative pad means the release instant has already passed; those frames can never be
+    /// audible on time, so they are dropped rather than played late.
+    private static func placeFirstFrame(
+        state: inout LockedState,
+        serverTimestamp: Int64,
+        framesPlayed: Int64,
+        nowAbsolute: Int64,
+        silence: Data
+    ) {
+        let sampleRate = Int64(state.sampleRate)
+        guard sampleRate > 0, state.frameSize > 0, let snapshot = state.timeSnapshot else {
+            // Without clock sync there is no due instant to place against.
+            state.cursorMicroseconds = serverTimestamp
+            return
+        }
+
+        let framesInFlight = max(0, state.totalFramesEnqueued - framesPlayed)
+        let audibleServerTime = snapshot.localTimeToServer(nowAbsolute)
+            + framesInFlight * 1_000_000 / sampleRate
+            + state.deviceLatencyUs
+
+        let padCapacityFrames = Int64(silence.count / state.frameSize)
+        let padFrames = min(
+            max((serverTimestamp - audibleServerTime) * sampleRate / 1_000_000, 0),
+            padCapacityFrames
+        )
+        if padFrames > 0 {
+            state.pcmRingBuffer.writeFrames(
+                silence.prefix(Int(padFrames) * state.frameSize),
+                frameSize: state.frameSize
+            )
+        }
+
+        // The pad is indistinguishable from audio once in the ring, so it advances the cursor
+        // too. Seating the cursor this far back leaves it reading exactly `serverTimestamp`
+        // at the moment the first real frame is handed over.
+        state.cursorMicroseconds = serverTimestamp - padFrames * 1_000_000 / sampleRate
+        state.startupPadFrames = padFrames
     }
 
     // MARK: - Sync correction interface
@@ -530,11 +624,17 @@ actor AudioPlayer {
         let startupOffsetUs: Int64?
         /// `AudioQueueStart` to first device callback. -1 until that callback lands.
         let spinUpUs: Int64
+        /// Silence frames inserted to land the first real frame on its due instant.
+        let startupPadFrames: Int64
+        /// Frames handed to the queue but not yet played — the real pipeline depth, against
+        /// the modelled one of every allocated buffer.
+        let framesInFlight: Int64
     }
 
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
-        lockedState.withLock { state in
+        let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
+        return lockedState.withLock { state in
             TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
                 sampleRate: state.sampleRate,
@@ -543,7 +643,9 @@ actor AudioPlayer {
                 underrunCount: state.underrunCount,
                 pcmBytesDropped: state.pcmBytesDropped,
                 startupOffsetUs: state.startupOffsetUs,
-                spinUpUs: state.spinUpUs
+                spinUpUs: state.spinUpUs,
+                startupPadFrames: state.startupPadFrames,
+                framesInFlight: max(0, state.totalFramesEnqueued - played)
             )
         }
     }
@@ -721,6 +823,8 @@ actor AudioPlayer {
                     break
                 }
             }
+
+            state.totalFramesEnqueued += Int64(capacity / fs)
 
             return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat)
         }
