@@ -33,6 +33,16 @@ public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer
 /// Constrains the fixed-size `lastFrameStorage` allocation.
 private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 
+/// Skip starting the queue at `prepare()` and start it at the release instant instead.
+///
+/// Diagnostic escape hatch for a CoreAudio stall seen in the field: `AudioQueueStart` blocks
+/// for ~13.2s while the HAL IO thread never reaches its running state, after which the device
+/// renders but is inaudible. Pre-warming calls `AudioQueueStart` within milliseconds of
+/// `AudioQueueNewOutput`, where the previous design left seconds of buffering between them, so
+/// the suspicion is a race with CoreAudio's asynchronous device setup. This exists so both
+/// paths can be compared on one binary; delete it once that is settled either way.
+let audioQueuePrewarmDisabled = ProcessInfo.processInfo.environment["SENDSPIN_NO_PREWARM"] == "1"
+
 /// Byte size of each prepared AudioQueue buffer.
 /// Shared with startup latency estimation so priming and correction use the same model.
 let audioQueueBufferByteSize: UInt32 = 16_384
@@ -179,6 +189,9 @@ actor AudioPlayer {
     private nonisolated(unsafe) var audioQueueForDeinit: AudioQueueRef?
     private var decoder: AudioDecoder?
     private var currentFormat: AudioFormatSpec?
+
+    /// Buffers held back for `startPrepared()` when pre-warm is disabled; empty otherwise.
+    private var pendingStartBuffers: [AudioQueueBufferRef] = []
 
     private var _isPlaying: Bool = false
 
@@ -381,6 +394,11 @@ actor AudioPlayer {
             allocated.append(buffer)
         }
 
+        guard !audioQueuePrewarmDisabled else {
+            pendingStartBuffers = allocated
+            return
+        }
+
         for buffer in allocated {
             fillBuffer(queue: queue, buffer: buffer)
         }
@@ -431,7 +449,9 @@ actor AudioPlayer {
     /// schedule sits in the ring until the device wakes and then plays that stale. Spin-up is
     /// normally a few hundred milliseconds but has been measured at 13 seconds.
     var outputDeviceIsLive: Bool {
-        lockedState.withLock { $0.spinUpUs >= 0 }
+        // With pre-warm disabled the queue does not exist until the release, so there is no
+        // device to wait for and gating on it would deadlock the startup path.
+        audioQueuePrewarmDisabled || lockedState.withLock { $0.spinUpUs >= 0 }
     }
 
     /// How far before a frame should be audible it must be written to the ring.
@@ -452,9 +472,26 @@ actor AudioPlayer {
             return
         }
 
-        // `prepare()` already started the queue on silence, so there is nothing to start
-        // here: the callback picks up whatever PCM the release put in the ring. The cursor
-        // advances only over frames really handed over, which is exactly what it means.
+        // Normally `prepare()` already started the queue on silence and there is nothing to do
+        // here. With pre-warm disabled the buffers were held back, so prime and start now.
+        if audioQueuePrewarmDisabled, let queue = audioQueue {
+            for buffer in pendingStartBuffers {
+                fillBuffer(queue: queue, buffer: buffer)
+            }
+            pendingStartBuffers.removeAll(keepingCapacity: true)
+            let startCalledAt = MonotonicClock.absoluteMicroseconds()
+            lockedState.withLock { $0.queueStartAbsoluteUs = startCalledAt }
+            let status = AudioQueueStart(queue, nil)
+            let blockedUs = MonotonicClock.absoluteMicroseconds() - startCalledAt
+            Log.audio.info("AudioQueueStart returned in \(blockedUs)us; device now (prewarm disabled)")
+            guard status == noErr else {
+                AudioQueueDispose(queue, true)
+                audioQueue = nil
+                currentFormat = nil
+                decoder = nil
+                throw AudioPlayerError.queueStartFailed(status)
+            }
+        }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(format.effectiveOutputBitDepth)-bit)"
         Log.audio.info("AudioQueue started: \(desc, privacy: .public)")
