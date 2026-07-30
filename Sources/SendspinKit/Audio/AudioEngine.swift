@@ -973,6 +973,9 @@ actor AudioEngine {
                     + " spinUp=\(tSnap.spinUpUs)us"
                     + " startPad=\(tSnap.startupPadFrames)f"
                     + " inFlight=\(tSnap.framesInFlight)f"
+                    // The one question no other counter answers: is anything audible at all.
+                    + " peak=\(String(format: "%.4f", tSnap.peakOutputLevel))"
+                    + " gain=\(String(format: "%.2f", tSnap.appliedVolume))"
                 Log.audio.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats

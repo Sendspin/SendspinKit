@@ -118,6 +118,11 @@ private struct LockedState: @unchecked Sendable {
     /// Silence frames inserted ahead of the first real frame to land it on its due instant.
     var startupPadFrames: Int64 = 0
 
+    /// Largest absolute sample value handed to the device since the last telemetry read,
+    /// as a fraction of full scale. The most basic health question — is anything actually
+    /// coming out — is otherwise unanswerable: every counter reads clean over silence.
+    var peakOutputLevel: Float = 0
+
     /// Sync error at the instant grace expired, before the rebaseline absorbed it, or
     /// `nil` until then. This is the offset playback actually starts at; without it the
     /// post-rebaseline error reads ~0 no matter how far out the start was.
@@ -532,6 +537,37 @@ actor AudioPlayer {
         return Int(frames) * frameSize
     }
 
+    /// Peak absolute sample magnitude in the filled region, as a fraction of full scale.
+    ///
+    /// Runs on the audio thread, so it is a bounded scan of the buffer just written and nothing
+    /// more — no allocation, no branching per sample beyond the comparison.
+    private static func peakMagnitude(
+        _ dest: UnsafeMutablePointer<UInt8>,
+        byteCount: Int,
+        bytesPerSample: Int
+    ) -> Float {
+        guard byteCount > 0 else { return 0 }
+        var peak: Int32 = 0
+        if bytesPerSample == 4 {
+            let samples = UnsafeRawPointer(dest).bindMemory(to: Int32.self, capacity: byteCount / 4)
+            for index in 0 ..< (byteCount / 4) {
+                let magnitude = samples[index] == Int32.min ? Int32.max : abs(samples[index])
+                peak = max(peak, magnitude)
+            }
+            return Float(peak) / Float(Int32.max)
+        }
+        if bytesPerSample == 2 {
+            let samples = UnsafeRawPointer(dest).bindMemory(to: Int16.self, capacity: byteCount / 2)
+            var peak16: Int16 = 0
+            for index in 0 ..< (byteCount / 2) {
+                let magnitude = samples[index] == Int16.min ? Int16.max : abs(samples[index])
+                peak16 = max(peak16, magnitude)
+            }
+            return Float(peak16) / Float(Int16.max)
+        }
+        return 0
+    }
+
     /// Frames the device has actually played since the queue started, or 0 if it cannot say.
     private static func framesPlayed(queue: AudioQueueRef) -> Int64 {
         var timestamp = AudioTimeStamp()
@@ -636,6 +672,10 @@ actor AudioPlayer {
         let spinUpUs: Int64
         /// Silence frames inserted to land the first real frame on its due instant.
         let startupPadFrames: Int64
+        /// Peak sample level handed to the device since the previous read, 0-1.
+        let peakOutputLevel: Float
+        /// Gain actually applied to the queue, after any ramp.
+        let appliedVolume: Float
         /// Frames handed to the queue but not yet played — the real pipeline depth, against
         /// the modelled one of every allocated buffer.
         let framesInFlight: Int64
@@ -644,6 +684,14 @@ actor AudioPlayer {
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
+        let appliedVolume = appliedVolume
+        // Read-and-clear: the peak describes the interval since the last read, so a signal that
+        // stops is visible rather than latched forever by one loud buffer.
+        let peak = lockedState.withLock { state -> Float in
+            let value = state.peakOutputLevel
+            state.peakOutputLevel = 0
+            return value
+        }
         return lockedState.withLock { state in
             TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
@@ -655,6 +703,8 @@ actor AudioPlayer {
                 startupOffsetUs: state.startupOffsetUs,
                 spinUpUs: state.spinUpUs,
                 startupPadFrames: state.startupPadFrames,
+                peakOutputLevel: peak,
+                appliedVolume: appliedVolume,
                 framesInFlight: max(0, state.totalFramesEnqueued - played)
             )
         }
@@ -780,6 +830,7 @@ actor AudioPlayer {
             let sr = state.sampleRate
             let cb = processCallback // nonisolated let, not in locked state
             let cbFormat = state.processCallbackFormat
+            let channels = cbFormat?.channels ?? 2
 
             // `prepare()` fills every buffer through this path before the queue is started,
             // so the first callback with a start time recorded is the device's own.
@@ -835,6 +886,8 @@ actor AudioPlayer {
             }
 
             state.totalFramesEnqueued += Int64(capacity / fs)
+            let peak = Self.peakMagnitude(dest, byteCount: outOffset, bytesPerSample: fs / max(1, channels))
+            state.peakOutputLevel = max(state.peakOutputLevel, peak)
 
             return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat)
         }
