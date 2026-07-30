@@ -978,6 +978,9 @@ actor AudioEngine {
                     + " consumed=\(tSnap.framesConsumed)f silentBufs=\(tSnap.silentBuffers)"
                     + " enqFail=\(tSnap.enqueueFailures)"
                     + " gain=\(String(format: "%.2f", tSnap.appliedVolume))"
+                    + " qGain=\(String(format: "%.2f", tSnap.queueGain))"
+                    + " devVol=\(String(format: "%.2f", tSnap.deviceVolume))"
+                    + " devMute=\(tSnap.deviceMuted)"
                 Log.audio.debug("\(telemetry, privacy: .public)")
 
                 lastTelemetryStats = currentStats

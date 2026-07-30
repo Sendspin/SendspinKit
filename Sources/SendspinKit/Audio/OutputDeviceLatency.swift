@@ -45,7 +45,46 @@ enum OutputDeviceLatency {
         #endif
     }
 
+    /// The output device's own volume and mute, as the HAL reports them — not what this
+    /// process believes it set. Returns nil where the device exposes neither.
+    static func currentDeviceGain() -> (volume: Float?, muted: Bool?) {
+        #if os(macOS)
+            guard let device = defaultOutputDevice() else { return (nil, nil) }
+            return (scalarVolume(device), deviceMuted(device))
+        #else
+            return (nil, nil)
+        #endif
+    }
+
     #if os(macOS)
+        private static func scalarVolume(_ device: AudioDeviceID) -> Float? {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyVolumeScalar,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var value: Float32 = 0
+            var size = UInt32(MemoryLayout<Float32>.size)
+            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else {
+                return nil
+            }
+            return value
+        }
+
+        private static func deviceMuted(_ device: AudioDeviceID) -> Bool? {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioDevicePropertyMute,
+                mScope: kAudioObjectPropertyScopeOutput,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var value: UInt32 = 0
+            var size = UInt32(MemoryLayout<UInt32>.size)
+            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else {
+                return nil
+            }
+            return value != 0
+        }
+
         private static func deviceName(_ device: AudioDeviceID) -> String {
             var address = AudioObjectPropertyAddress(
                 mSelector: kAudioObjectPropertyName,
