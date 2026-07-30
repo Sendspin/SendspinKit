@@ -35,6 +35,11 @@ actor NoOpAudioOutput: AudioOutput {
         0
     }
 
+    /// No device to wait for.
+    var outputDeviceIsLive: Bool {
+        true
+    }
+
     func start(format _: AudioFormatSpec, codecHeader _: Data?) throws {}
 
     func stop() {}

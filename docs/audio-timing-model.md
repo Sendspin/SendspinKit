@@ -75,6 +75,25 @@ Each row is the offset playback actually starts at, on the reference setup.
 Spin-up itself is unchanged at 292–413 ms; it is paid, not removed. The pad absorbing the
 variation ranged 609–1,383 frames while the resulting offset moved 130 µs.
 
+## Spin-up is not bounded, so the release waits on the device
+
+Pre-warm assumes the device wakes inside the buffering window. That assumption fails: the same
+build measured 292-413 ms on a Mac Studio driving a USB DAC and **13.3 seconds** on a laptop.
+
+Releasing on schedule into a device that has not begun producing hands PCM to a pipeline that is
+not consuming. It accumulates in the ring (4.9 s of it, measured) and plays that stale once the
+device wakes, while `late`, `underrun` and `pcmDrop` all stay clean and `sync` reads normally —
+the failure is invisible to every counter. The placement is fiction too, since
+`AudioQueueGetCurrentTime` reports nothing played.
+
+So the engine defers the startup release until `outputDeviceIsLive` — the device's first callback
+has landed. `applyChunk` re-enters the release path on every arrival, so a device that wakes late
+simply starts late instead of starting wrong.
+
+`spinUp` is telemetry rather than a modelled term precisely because it is unbounded and
+machine-specific. The smoke harness asserts on it: a device that never calls back, or takes
+longer than two seconds, is a failure.
+
 ## Remaining departure — modelled depth against measured depth
 
 The placement measures the pipeline. The correction formula still models it as every allocated

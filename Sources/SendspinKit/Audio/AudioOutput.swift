@@ -22,6 +22,10 @@ protocol AudioOutput: Actor, Sendable {
     /// device path. Valid once `prepare(format:codecHeader:)` has run.
     func pipelineLatencyMicroseconds() -> Int64
 
+    /// True once the output device has actually begun producing. Releasing before this
+    /// buffers audio into a pipeline that is not yet consuming.
+    var outputDeviceIsLive: Bool { get }
+
     /// How far ahead of a frame's due time `startPrepared()` must be called for that frame
     /// to be audible on time. Covers only the path beyond the primed buffers, which the
     /// pre-fill has already filled. Valid once `prepare(format:codecHeader:)` has run.

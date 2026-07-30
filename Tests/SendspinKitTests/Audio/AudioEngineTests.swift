@@ -123,6 +123,11 @@ actor SpyAudioOutput: AudioOutput {
         return depth + stubDeviceLatencyUs
     }
 
+    /// Tests drive release timing directly; no real device to wait on.
+    var outputDeviceIsLive: Bool {
+        true
+    }
+
     /// Mirrors the real player: only the path beyond the primed buffers.
     func startupLeadMicroseconds() -> Int64 {
         preparedFormat == nil ? 0 : stubDeviceLatencyUs
