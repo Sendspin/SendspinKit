@@ -29,7 +29,56 @@ enum OutputDeviceLatency {
         #endif
     }
 
+    /// Human-readable identity of the device audio will actually reach: name, how it is attached,
+    /// and its rate.
+    ///
+    /// The AudioQueue reports its device as `AQDefaultDevice`, meaning it follows the system
+    /// default — so full-amplitude audio at unity gain can be rendered perfectly into somewhere
+    /// nobody is listening, and every counter this client keeps will look healthy.
+    static func currentDeviceDescription() -> String {
+        #if os(macOS)
+            guard let device = defaultOutputDevice() else { return "none" }
+            let rate = nominalSampleRate(device)
+            return "\(deviceName(device)) [\(transportTypeName(device))] @\(Int(rate))Hz"
+        #else
+            return "default"
+        #endif
+    }
+
     #if os(macOS)
+        private static func deviceName(_ device: AudioDeviceID) -> String {
+            var address = AudioObjectPropertyAddress(
+                mSelector: kAudioObjectPropertyName,
+                mScope: kAudioObjectPropertyScopeGlobal,
+                mElement: kAudioObjectPropertyElementMain
+            )
+            var name: CFString = "" as CFString
+            var size = UInt32(MemoryLayout<CFString>.size)
+            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &name) == noErr else {
+                return "unknown"
+            }
+            return name as String
+        }
+
+        /// How the device is attached. Bluetooth in particular can stall for seconds and then
+        /// render into nothing, which is indistinguishable from working from inside this process.
+        private static func transportTypeName(_ device: AudioDeviceID) -> String {
+            switch frameProperty(device, kAudioDevicePropertyTransportType, scope: kAudioObjectPropertyScopeGlobal) {
+            case kAudioDeviceTransportTypeBuiltIn: "built-in"
+            case kAudioDeviceTransportTypeBluetooth: "bluetooth"
+            case kAudioDeviceTransportTypeBluetoothLE: "bluetooth-le"
+            case kAudioDeviceTransportTypeUSB: "usb"
+            case kAudioDeviceTransportTypeAirPlay: "airplay"
+            case kAudioDeviceTransportTypeVirtual: "virtual"
+            case kAudioDeviceTransportTypeAggregate: "aggregate"
+            case kAudioDeviceTransportTypeHDMI: "hdmi"
+            case kAudioDeviceTransportTypeDisplayPort: "displayport"
+            case kAudioDeviceTransportTypeThunderbolt: "thunderbolt"
+            case 0: "unknown"
+            default: "other"
+            }
+        }
+
         /// Sum of the device's own latency, its safety offset, the IO buffer and the stream's
         /// latency — the four terms CoreAudio separates and nobody totals for you.
         private static func macOSOutputLatencyMicroseconds() -> Int64 {

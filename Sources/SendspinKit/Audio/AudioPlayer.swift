@@ -321,6 +321,10 @@ actor AudioPlayer {
         // Read once per prepared queue: querying the HAL is not possible from the audio thread,
         // and the dominant term is the route's IO buffer rather than a constant.
         let deviceLatencyUs = OutputDeviceLatency.currentMicroseconds()
+        // Which device audio will actually reach. The queue follows the system default, so a
+        // default pointing somewhere nobody is listening renders at full amplitude, silently.
+        let deviceDescription = OutputDeviceLatency.currentDeviceDescription()
+        Log.audio.info("output device: \(deviceDescription, privacy: .public) latency=\(deviceLatencyUs)us")
 
         lockedState.withLock { state in
             state.deviceLatencyUs = deviceLatencyUs
@@ -353,6 +357,16 @@ actor AudioPlayer {
             state.correctionGraceFrames = Int64(format.sampleRate)
         }
 
+        try allocateAndPrewarm(queue: queue)
+    }
+
+    /// Allocate the queue's buffers and start it on silence.
+    ///
+    /// Started here rather than at the release instant because an idle DAC takes 300-400ms to
+    /// begin producing and the figure varies by ~100ms between starts, so it cannot be led by an
+    /// estimate — but paid during the window already spent buffering, it is spent before any
+    /// audio depends on it. The ring is empty, so every buffer enqueued below is silence.
+    private func allocateAndPrewarm(queue: AudioQueueRef) throws {
         var allocated: [AudioQueueBufferRef] = []
         for _ in 0 ..< audioQueueBufferCount {
             var buffer: AudioQueueBufferRef?
@@ -367,11 +381,6 @@ actor AudioPlayer {
             allocated.append(buffer)
         }
 
-        // Start on silence now rather than at the release instant. An idle DAC takes
-        // 300-400ms to begin producing and the figure varies by ~100ms between starts, so
-        // it cannot be led by an estimate — but paid here, during the buffering window, it
-        // is spent before any audio depends on it. The ring is empty, so every buffer
-        // enqueued below is silence.
         for buffer in allocated {
             fillBuffer(queue: queue, buffer: buffer)
         }
