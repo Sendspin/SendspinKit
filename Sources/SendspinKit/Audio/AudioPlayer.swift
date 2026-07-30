@@ -397,6 +397,16 @@ actor AudioPlayer {
         return queueDepthUs + lockedState.withLock { $0.deviceLatencyUs }
     }
 
+    /// True once the device has delivered its first callback.
+    ///
+    /// Until then nothing is known about the pipeline: `AudioQueueGetCurrentTime` reports
+    /// nothing played, so a placement computed against it is fiction, and PCM released on
+    /// schedule sits in the ring until the device wakes and then plays that stale. Spin-up is
+    /// normally a few hundred milliseconds but has been measured at 13 seconds.
+    var outputDeviceIsLive: Bool {
+        lockedState.withLock { $0.spinUpUs >= 0 }
+    }
+
     /// How far before a frame should be audible it must be written to the ring.
     ///
     /// The queue is already running on silence by then, so a released frame enters behind

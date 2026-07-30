@@ -607,6 +607,17 @@ actor AudioEngine {
         }
         buffer.chunks.sort { $0.playTimeMicroseconds < $1.playTimeMicroseconds }
 
+        // Releasing into a device that has not begun producing hands PCM to a pipeline that
+        // is not consuming: it sits in the ring and plays stale by however long the device
+        // took. Keep buffering instead — `applyChunk` re-enters here on every arrival, so a
+        // device that wakes late simply starts late rather than starting wrong.
+        guard await output.outputDeviceIsLive else {
+            Log.audio.debug("startup release deferred: output device not yet producing")
+            startupBuffer = buffer
+            cancelStartupDeadline()
+            return
+        }
+
         let nowUs = MonotonicClock.absoluteMicroseconds()
         let playTimes = buffer.chunks.map(\.playTimeMicroseconds)
         let candidate = Self.releaseSelection(
