@@ -102,27 +102,58 @@ off the release path — not because the hardware is slow.
 `prepare()` runs on the engine's ordered command loop, so whatever this call costs stalls chunk
 handling behind it.
 
-## Unresolved: intermittent silence with every counter healthy
+## Unresolved: intermittent silence, currently not reproducing
 
-On one machine, some runs produce no sound while reporting `late=0 underrun=0 pcmDrop=0`,
-`peak=0.2121 gain=1.00`, `silentBufs=0` and a normal sync error. Full-amplitude audio at unity
-gain reaches a device that is consuming it, and nothing is heard. In those runs `AudioQueueStart`
-blocks for 13.22-13.29 s -- seven readings inside 70 ms of each other, which is a timeout rather
-than a wake -- and the whole chunk backlog then arrives in a single burst.
+On one machine (MacBook, built-in speakers) some runs produce no sound while every counter reads
+healthy. In those runs `AudioQueueStart` blocks for 13.21-13.29s -- eight readings inside 80ms of
+each other, which is a timeout rather than a wake -- and the chunk backlog then arrives in a
+single burst, because `prepare()` runs on the engine's ordered command loop.
 
-It is intermittent and currently not reproducing. Ruled out by measurement, so do not revisit
-without new evidence:
+A stack sample taken during the block shows where:
+
+```
+AudioQueueStart -> AudioQueueXPC_Bridge::Start -> AudioQueueObject::StartRunning
+  -> AQMEIO_Base::StartIO_Sync -> AudioDeviceStart_mac_imp
+    -> HALC_ProxyIOContext::_StartIO(StartIO_RetryMethod)     <- loops
+      -> HALB_IOThread::StartAndWaitForState -> HALB_Guard::WaitFor
+        -> _pthread_cond_wait -> __psynch_mutexwait           <- 11,295 of 11,399 samples
+```
+
+The IO thread it waits on sits in `mach_msg` inside `IOWorkLoop` and never reaches its running
+state; `_StartIO` retries for 13.2s until CoreAudio brings up a replacement IO thread, which then
+does render. Neither IO thread carries a SendspinKit frame, so this is not a lock this client
+holds and not its render callback.
+
+After the stall the pipeline is indistinguishable from a working one: frames consumed at exactly
+the device clock (92,160 per 2.09s = 44,100/s), `peak=0.2121`, `silentBufs=0`, `enqFail=0`,
+`underrun=0`, sync within 83us and not correcting -- and still inaudible.
+
+Eliminated by measurement. Do not revisit without new evidence:
 
 - **Writing silence.** `peak` on a silent run equals `peak` on an audible one.
-- **Device selection.** It is the built-in speakers, not Bluetooth or a virtual device.
-- **Sample-rate mismatch.** 13,220,152 us at 48 kHz against 13,222,207 us at 44.1 kHz.
-- **The pty.** Running the player under `script` versus directly: 238-255 ms against 337-347 ms,
-  neither anywhere near 13 s.
-- **A slow DAC.** Same machine, same device, 233 ms on a run that worked.
+- **Device selection.** Built-in speakers, not Bluetooth, virtual or aggregate.
+- **Sample-rate mismatch.** 13,220,152us at 48kHz against 13,222,207us at 44.1kHz.
+- **The pty wrapper.** Under `script` 238-255ms, direct 337-347ms; neither near 13s.
+- **A slow DAC.** Same machine and device, 233ms on a run that worked.
+- **A refused enqueue.** `enqFail=0` on a silent run, the failure mode recorded in b8c4ddc.
+- **Gain.** `gain=1.00 qGain=1.00 devMute=false`, the queue parameter read back rather than
+  assumed.
 
-`scripts/smoke-test.sh --sample` captures the player's stacks during startup and prints the
-frames under `AudioQueueStart`; a sample taken while the 13 s block is happening is the next
-piece of evidence needed.
+**It is timing-sensitive and currently will not reproduce.** Two separate telemetry-only commits
+have each coincided with it disappearing -- a9ba372 and the batch ending aab0688 -- and telemetry
+cannot fix anything, so both are perturbation rather than repair. It has also been seen to vanish
+and return within minutes with no change at all. Any run that works proves nothing on its own.
+
+What remains actionable regardless of the cause:
+
+1. `prepare()` blocks the engine's ordered command loop for the whole of `AudioQueueStart` --
+   339ms on a healthy machine, and everything piles up behind it. Starting the queue without
+   blocking the loop would turn this fault from catastrophic into a late start, since
+   `outputDeviceIsLive` already gates the release.
+2. A start slower than `audioQueueStartSlowThresholdUs` is logged at `.notice`, so a
+   user-collected log shows it without debug logging.
+3. The smoke harness fails on spin-up over 2s, on a peak that never rises, and on any refused
+   enqueue.
 
 ## Remaining departure — modelled depth against measured depth
 

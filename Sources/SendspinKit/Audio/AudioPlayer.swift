@@ -33,6 +33,11 @@ public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer
 /// Constrains the fixed-size `lastFrameStorage` allocation.
 private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 
+/// Above this, `AudioQueueStart` is reported as a fault rather than a measurement. A healthy
+/// start is 230-400ms on the machines measured; seconds means CoreAudio's IO thread never
+/// reached its running state, which has coincided with audio that is consumed but inaudible.
+let audioQueueStartSlowThresholdUs: Int64 = 2_000_000
+
 /// Skip starting the queue at `prepare()` and start it at the release instant instead.
 ///
 /// Diagnostic escape hatch for a CoreAudio stall seen in the field: `AudioQueueStart` blocks
@@ -418,9 +423,19 @@ actor AudioPlayer {
         // happens on this actor, so anything it costs stalls the whole engine behind it.
         let startBlockedUs = MonotonicClock.absoluteMicroseconds() - startCalledAt
         let rateAfter = OutputDeviceLatency.currentDeviceDescription()
-        Log.audio.info(
-            "AudioQueueStart returned in \(startBlockedUs)us; device now \(rateAfter, privacy: .public)"
-        )
+        if startBlockedUs > audioQueueStartSlowThresholdUs {
+            // Operational, app-owner-facing: the engine's command loop is stalled for this whole
+            // span, and a start this slow has been seen to leave the device consuming audio that
+            // never reaches the speakers. Logged at .notice so it appears in a user-collected
+            // diagnostic without debug logging enabled.
+            Log.audio.notice(
+                "AudioQueueStart blocked \(startBlockedUs)us on \(rateAfter, privacy: .public) — playback may start late or silent"
+            )
+        } else {
+            Log.audio.info(
+                "AudioQueueStart returned in \(startBlockedUs)us; device now \(rateAfter, privacy: .public)"
+            )
+        }
         guard prewarmStatus == noErr else {
             AudioQueueDispose(queue, true)
             audioQueue = nil
