@@ -118,6 +118,10 @@ private struct LockedState: @unchecked Sendable {
     /// Silence frames inserted ahead of the first real frame to land it on its due instant.
     var startupPadFrames: Int64 = 0
 
+    /// Buffers handed to the device with nothing read from the ring, since the last telemetry
+    /// read. Counted separately from underruns, which are suppressed during pre-warm.
+    var silentBufferCount: Int64 = 0
+
     /// Largest absolute sample value handed to the device since the last telemetry read,
     /// as a fraction of full scale. The most basic health question — is anything actually
     /// coming out — is otherwise unanswerable: every counter reads clean over silence.
@@ -496,27 +500,23 @@ actor AudioPlayer {
             throw AudioPlayerError.notStarted
         }
 
-        // Only the first real write is placed, and everything it needs is gathered outside
-        // the lock: `AudioQueueGetCurrentTime` is a queue call, its reading only means
-        // anything paired with a matched instant, and the pad must not be allocated while the
-        // audio thread may be waiting on the lock.
-        let placement: (framesPlayed: Int64, nowAbsolute: Int64, silence: Data)? =
-            if lockedState.withLock({ $0.prewarming }) {
-                // A pad beyond the pipeline depth would mean the release instant itself was
-                // wrong, so that bounds what can be needed.
-                (Self.framesPlayed(queue: queue), MonotonicClock.absoluteMicroseconds(), Data(count: maxStartupPadBytes()))
-            } else {
-                nil
-            }
+        // Only the pad allocation happens outside the lock. The three quantities the placement
+        // divides — frames played, the instant that reading describes, and frames enqueued —
+        // must come from one coherent moment: a callback landing between them advances the
+        // enqueued count against a stale played count, overstating what is in flight by a whole
+        // buffer and collapsing the pad to nothing.
+        let silence = lockedState.withLock { $0.prewarming } ? Data(count: maxStartupPadBytes()) : Data()
 
-        lockedState.withLock { state in
-            if let placement {
+        // Unchecked because the queue handle is not `Sendable`; this closure runs synchronously
+        // on the actor and the handle outlives it.
+        lockedState.withLockUnchecked { state in
+            if state.prewarming {
                 Self.placeFirstFrame(
                     state: &state,
                     serverTimestamp: serverTimestamp,
-                    framesPlayed: placement.framesPlayed,
-                    nowAbsolute: placement.nowAbsolute,
-                    silence: placement.silence
+                    framesPlayed: Self.framesPlayed(queue: queue),
+                    nowAbsolute: MonotonicClock.absoluteMicroseconds(),
+                    silence: silence
                 )
             }
             state.prewarming = false
@@ -672,6 +672,12 @@ actor AudioPlayer {
         let spinUpUs: Int64
         /// Silence frames inserted to land the first real frame on its due instant.
         let startupPadFrames: Int64
+        /// Frames actually read out of the ring since the stream started. Distinguishes a
+        /// starved pipeline from one that is running and inaudible; free, unlike the peak scan.
+        let framesConsumed: Int64
+        /// Buffers filled entirely from silence because the ring had nothing, since the previous
+        /// read. Costs one comparison, so it can be trusted not to perturb what it measures.
+        let silentBuffers: Int64
         /// Peak sample level handed to the device since the previous read, 0-1.
         let peakOutputLevel: Float
         /// Gain actually applied to the queue, after any ramp.
@@ -687,10 +693,11 @@ actor AudioPlayer {
         let appliedVolume = appliedVolume
         // Read-and-clear: the peak describes the interval since the last read, so a signal that
         // stops is visible rather than latched forever by one loud buffer.
-        let peak = lockedState.withLock { state -> Float in
-            let value = state.peakOutputLevel
+        let (peak, silentBuffers) = lockedState.withLock { state -> (Float, Int64) in
+            let values = (state.peakOutputLevel, state.silentBufferCount)
             state.peakOutputLevel = 0
-            return value
+            state.silentBufferCount = 0
+            return values
         }
         return lockedState.withLock { state in
             TelemetrySnapshot(
@@ -703,6 +710,8 @@ actor AudioPlayer {
                 startupOffsetUs: state.startupOffsetUs,
                 spinUpUs: state.spinUpUs,
                 startupPadFrames: state.startupPadFrames,
+                framesConsumed: state.framesConsumed,
+                silentBuffers: silentBuffers,
                 peakOutputLevel: peak,
                 appliedVolume: appliedVolume,
                 framesInFlight: max(0, state.totalFramesEnqueued - played)
@@ -886,6 +895,9 @@ actor AudioPlayer {
             }
 
             state.totalFramesEnqueued += Int64(capacity / fs)
+            if outOffset == 0 {
+                state.silentBufferCount += 1
+            }
             let peak = Self.peakMagnitude(dest, byteCount: outOffset, bytesPerSample: fs / max(1, channels))
             state.peakOutputLevel = max(state.peakOutputLevel, peak)
 
