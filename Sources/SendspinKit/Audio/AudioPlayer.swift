@@ -128,6 +128,11 @@ private struct LockedState: @unchecked Sendable {
     /// Silence frames inserted ahead of the first real frame to land it on its due instant.
     var startupPadFrames: Int64 = 0
 
+    /// Enqueue calls the queue refused, cumulative. A queue primed with fewer buffers than
+    /// intended starts without error and then produces silence, so a discarded status here is
+    /// indistinguishable from working until someone listens.
+    var enqueueFailures: Int64 = 0
+
     /// Buffers handed to the device with nothing read from the ring, since the last telemetry
     /// read. Counted separately from underruns, which are suppressed during pre-warm.
     var silentBufferCount: Int64 = 0
@@ -346,6 +351,7 @@ actor AudioPlayer {
             state.prewarming = true
             state.totalFramesEnqueued = 0
             state.startupPadFrames = 0
+            state.enqueueFailures = 0
             state.startupOffsetUs = nil
             state.frameSize = computedFrameSize
             state.processCallbackFormat = effectiveFormat
@@ -733,6 +739,9 @@ actor AudioPlayer {
         /// Buffers filled entirely from silence because the ring had nothing, since the previous
         /// read. Costs one comparison, so it can be trusted not to perturb what it measures.
         let silentBuffers: Int64
+        /// Enqueue calls the queue refused, cumulative. Nonzero means the queue is running on
+        /// fewer buffers than were primed, which is silent and otherwise unreported.
+        let enqueueFailures: Int64
         /// Peak sample level handed to the device since the previous read, 0-1.
         let peakOutputLevel: Float
         /// Gain actually applied to the queue, after any ramp.
@@ -767,6 +776,7 @@ actor AudioPlayer {
                 startupPadFrames: state.startupPadFrames,
                 framesConsumed: state.framesConsumed,
                 silentBuffers: silentBuffers,
+                enqueueFailures: state.enqueueFailures,
                 peakOutputLevel: peak,
                 appliedVolume: appliedVolume,
                 framesInFlight: max(0, state.totalFramesEnqueued - played)
@@ -976,7 +986,11 @@ actor AudioPlayer {
         }
 
         buffer.pointee.mAudioDataByteSize = UInt32(capacity)
-        AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+        let enqueueStatus = AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
+        // Only touched on failure, so the normal path pays nothing for the check.
+        if enqueueStatus != noErr {
+            lockedState.withLock { $0.enqueueFailures += 1 }
+        }
     }
 
     // MARK: - Volume

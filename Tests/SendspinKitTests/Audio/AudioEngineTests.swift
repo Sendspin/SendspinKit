@@ -104,6 +104,7 @@ actor SpyAudioOutput: AudioOutput {
             startupPadFrames: 0,
             framesConsumed: 0,
             silentBuffers: 0,
+            enqueueFailures: 0,
             peakOutputLevel: 0,
             appliedVolume: 0,
             framesInFlight: 0
