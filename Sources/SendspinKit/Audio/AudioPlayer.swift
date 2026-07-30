@@ -746,6 +746,12 @@ actor AudioPlayer {
         let peakOutputLevel: Float
         /// Gain actually applied to the queue, after any ramp.
         let appliedVolume: Float
+        /// The queue's own gain parameter, read back rather than assumed. Diverging from
+        /// `appliedVolume` means a set was refused or overwritten.
+        let queueGain: Float
+        /// The output device's volume and mute as the HAL reports them. -1 where unavailable.
+        let deviceVolume: Float
+        let deviceMuted: Bool
         /// Frames handed to the queue but not yet played — the real pipeline depth, against
         /// the modelled one of every allocated buffer.
         let framesInFlight: Int64
@@ -755,6 +761,16 @@ actor AudioPlayer {
     var telemetrySnapshot: TelemetrySnapshot {
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
         let appliedVolume = appliedVolume
+        // Read back rather than trusted. `appliedVolume` is what this process believes it set;
+        // these are what the queue and the device report, and the span between them is the only
+        // one left unmeasured when full-amplitude audio is consumed at rate and heard by nobody.
+        let queueGain: Float = {
+            guard let queue = audioQueue else { return -1 }
+            var value: Float32 = -1
+            AudioQueueGetParameter(queue, kAudioQueueParam_Volume, &value)
+            return value
+        }()
+        let deviceGain = OutputDeviceLatency.currentDeviceGain()
         // Read-and-clear: the peak describes the interval since the last read, so a signal that
         // stops is visible rather than latched forever by one loud buffer.
         let (peak, silentBuffers) = lockedState.withLock { state -> (Float, Int64) in
@@ -779,6 +795,9 @@ actor AudioPlayer {
                 enqueueFailures: state.enqueueFailures,
                 peakOutputLevel: peak,
                 appliedVolume: appliedVolume,
+                queueGain: queueGain,
+                deviceVolume: deviceGain.volume ?? -1,
+                deviceMuted: deviceGain.muted ?? false,
                 framesInFlight: max(0, state.totalFramesEnqueued - played)
             )
         }

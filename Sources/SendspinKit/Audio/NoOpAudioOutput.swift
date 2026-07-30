@@ -24,6 +24,9 @@ actor NoOpAudioOutput: AudioOutput {
             enqueueFailures: 0,
             peakOutputLevel: 0,
             appliedVolume: 0,
+            queueGain: -1,
+            deviceVolume: -1,
+            deviceMuted: false,
             framesInFlight: 0
         )
     }
