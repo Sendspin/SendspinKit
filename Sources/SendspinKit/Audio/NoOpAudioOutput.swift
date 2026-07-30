@@ -19,6 +19,8 @@ actor NoOpAudioOutput: AudioOutput {
             startupOffsetUs: nil,
             spinUpUs: -1,
             startupPadFrames: 0,
+            framesConsumed: 0,
+            silentBuffers: 0,
             peakOutputLevel: 0,
             appliedVolume: 0,
             framesInFlight: 0
