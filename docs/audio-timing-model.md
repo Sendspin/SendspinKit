@@ -75,24 +75,54 @@ Each row is the offset playback actually starts at, on the reference setup.
 Spin-up itself is unchanged at 292–413 ms; it is paid, not removed. The pad absorbing the
 variation ranged 609–1,383 frames while the resulting offset moved 130 µs.
 
-## Spin-up is not bounded, so the release waits on the device
+## `AudioQueueStart` blocks, and dominates what this client calls "spin-up"
 
-Pre-warm assumes the device wakes inside the buffering window. That assumption fails: the same
-build measured 292-413 ms on a Mac Studio driving a USB DAC and **13.3 seconds** on a laptop.
+`AudioQueueStart` is synchronous. A stack sample shows why:
 
-Releasing on schedule into a device that has not begun producing hands PCM to a pipeline that is
-not consuming. It accumulates in the ring (4.9 s of it, measured) and plays that stale once the
-device wakes, while `late`, `underrun` and `pcmDrop` all stay clean and `sync` reads normally —
-the failure is invisible to every counter. The placement is fiction too, since
-`AudioQueueGetCurrentTime` reports nothing played.
+```
+AQ::API::V2Impl::AudioQueueStartWithFlags
+  AudioQueueXPC_Bridge::Start
+    _dispatch_sync_invoke_and_complete_recurse
+      AudioQueueXPC_Server::Start
+        AudioQueueObject::Start
+```
 
-So the engine defers the startup release until `outputDeviceIsLive` — the device's first callback
-has landed. `applyChunk` re-enters the release path on every arrival, so a device that wakes late
-simply starts late instead of starting wrong.
+It is a dispatched, synchronous XPC round trip to the audio server. Measured cost:
 
-`spinUp` is telemetry rather than a modelled term precisely because it is unbounded and
-machine-specific. The smoke harness asserts on it: a device that never calls back, or takes
-longer than two seconds, is a failure.
+| | `AudioQueueStart` | `spinUp` (measured from before the call) |
+|---|---|---|
+| Mac Studio, USB DAC | 339 ms | 391 ms |
+| MacBook, built-in | 233-323 ms | 291-380 ms |
+
+**The device itself wakes in roughly 50 ms.** Earlier revisions of this document attributed
+300-400 ms to an idle DAC; that figure was almost entirely this call, because `spinUp` is
+stamped before it. Pre-warming is still worth doing, but for the reason that it moves this cost
+off the release path — not because the hardware is slow.
+
+`prepare()` runs on the engine's ordered command loop, so whatever this call costs stalls chunk
+handling behind it.
+
+## Unresolved: intermittent silence with every counter healthy
+
+On one machine, some runs produce no sound while reporting `late=0 underrun=0 pcmDrop=0`,
+`peak=0.2121 gain=1.00`, `silentBufs=0` and a normal sync error. Full-amplitude audio at unity
+gain reaches a device that is consuming it, and nothing is heard. In those runs `AudioQueueStart`
+blocks for 13.22-13.29 s -- seven readings inside 70 ms of each other, which is a timeout rather
+than a wake -- and the whole chunk backlog then arrives in a single burst.
+
+It is intermittent and currently not reproducing. Ruled out by measurement, so do not revisit
+without new evidence:
+
+- **Writing silence.** `peak` on a silent run equals `peak` on an audible one.
+- **Device selection.** It is the built-in speakers, not Bluetooth or a virtual device.
+- **Sample-rate mismatch.** 13,220,152 us at 48 kHz against 13,222,207 us at 44.1 kHz.
+- **The pty.** Running the player under `script` versus directly: 238-255 ms against 337-347 ms,
+  neither anywhere near 13 s.
+- **A slow DAC.** Same machine, same device, 233 ms on a run that worked.
+
+`scripts/smoke-test.sh --sample` captures the player's stacks during startup and prints the
+frames under `AudioQueueStart`; a sample taken while the 13 s block is happening is the next
+piece of evidence needed.
 
 ## Remaining departure — modelled depth against measured depth
 
