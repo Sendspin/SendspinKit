@@ -386,8 +386,17 @@ actor AudioPlayer {
         }
         // Stamped after the fill loop: those calls run on this thread, and timing them would
         // measure our own enqueue rather than how long the device takes to answer.
-        lockedState.withLock { $0.queueStartAbsoluteUs = MonotonicClock.absoluteMicroseconds() }
+        let startCalledAt = MonotonicClock.absoluteMicroseconds()
+        lockedState.withLock { $0.queueStartAbsoluteUs = startCalledAt }
         let prewarmStatus = AudioQueueStart(queue, nil)
+        // `AudioQueueStart` is synchronous and can reconfigure the device — notably when the
+        // device's nominal rate differs from the queue's, which forces a rate change. That
+        // happens on this actor, so anything it costs stalls the whole engine behind it.
+        let startBlockedUs = MonotonicClock.absoluteMicroseconds() - startCalledAt
+        let rateAfter = OutputDeviceLatency.currentDeviceDescription()
+        Log.audio.info(
+            "AudioQueueStart returned in \(startBlockedUs)us; device now \(rateAfter, privacy: .public)"
+        )
         guard prewarmStatus == noErr else {
             AudioQueueDispose(queue, true)
             audioQueue = nil
