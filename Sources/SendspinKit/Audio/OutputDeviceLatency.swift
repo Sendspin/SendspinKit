@@ -91,12 +91,13 @@ enum OutputDeviceLatency {
                 mScope: kAudioObjectPropertyScopeGlobal,
                 mElement: kAudioObjectPropertyElementMain
             )
-            var name: CFString = "" as CFString
-            var size = UInt32(MemoryLayout<CFString>.size)
-            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &name) == noErr else {
+            var name: Unmanaged<CFString>?
+            var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &name) == noErr,
+                  let name else {
                 return "unknown"
             }
-            return name as String
+            return name.takeRetainedValue() as String
         }
 
         /// How the device is attached. Bluetooth in particular can stall for seconds and then
