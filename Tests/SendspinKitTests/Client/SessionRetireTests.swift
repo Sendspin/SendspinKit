@@ -9,10 +9,8 @@ import Testing
 /// suspension points; that property is what makes the gating race-free.
 @Suite("Session retire")
 struct SessionRetireTests {
-    /// Mutation guard: delete `sessionValidity?.invalidate()` from `retireSession()`
-    /// and this fails — nothing else can invalidate the token here, because teardown
-    /// (`shutdown()` / `finishTeardown`, the other invalidation sites) provably has
-    /// not started when the assertions run (`mock.disconnectCalled == false`).
+    /// The token must be invalidated synchronously, before asynchronous teardown begins,
+    /// so late events cannot enter the retired session.
     @Test("retireSession gates late events before teardown begins")
     @MainActor
     func retireFlipsTokenAndDetachesConnectionSynchronously() async throws {

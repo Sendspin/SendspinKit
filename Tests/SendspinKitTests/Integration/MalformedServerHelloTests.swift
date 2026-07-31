@@ -2,11 +2,8 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-/// Two defects met here: an unrecognized enum value failed the whole payload decode
-/// (`decodeIfPresent` throws on a present-but-unknown value), and `route(text:)` only
-/// logged the failure — so the handshake never completed and nothing timed it out.
-///
-/// The fixes are complementary: tolerate what we can reinterpret, fail loudly otherwise.
+/// Forward-compatible handshake decoding must tolerate unknown enum values, while
+/// transport-level failures must still be surfaced so the handshake cannot hang silently.
 @MainActor
 struct MalformedServerHelloTests {
     private func makeClient() throws -> SendspinClient {

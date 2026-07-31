@@ -127,12 +127,9 @@ struct AudioStartupReleaseTests {
         )
     }
 
-    /// The wait must stop short of the release instant, leaving the final approach to
-    /// `yieldUntilReleaseInstant`. Sleeping the exact remainder overshoots it instead — timer
-    /// granularity, measured at 2.4ms for a 34ms sleep — and that overshoot is skew at the
-    /// start of every stream.
-    ///
-    /// Mutation proof: returning `min(remaining, interval)` makes this fail.
+    /// The wait stops short of the release instant so the final approach can use
+    /// `yieldUntilReleaseInstant`. Sleeping the exact remainder can overshoot the target
+    /// because timer granularity adds scheduling error.
     @Test("a wait stops short of the release instant")
     func waitStopsShortOfReleaseInstant() {
         let nowUs: Int64 = 1_700_000_000_000_000
@@ -155,11 +152,8 @@ struct AudioStartupReleaseTests {
         #expect(AudioEngine.startupWaitMicroseconds(releaseTimeUs: releaseTime, nowUs: nowUs) == 0)
     }
 
-    /// The yield loop closes only the final approach. Handed a still-distant instant it must
-    /// decline immediately and leave the distance to another sleep hop.
-    ///
-    /// Mutation proof: removing the distance guard spends the whole safety budget polling
-    /// towards an instant it cannot reach — 32ms per hop — and this fails.
+    /// The yield loop handles only the final approach. A still-distant instant belongs to
+    /// another sleep hop, so it must be declined without polling.
     @Test("the yield loop declines a distant release instant")
     func yieldLoopDeclinesDistantInstant() async {
         let distant = MonotonicClock.absoluteMicroseconds() + AudioEngine.startupSpinThresholdUs * 10
@@ -176,12 +170,9 @@ struct AudioStartupReleaseTests {
         )
     }
 
-    /// A wait that has come due must release the chunk it was armed for, even when the wake
-    /// cost more than the lateness tolerance: re-testing lateness there slides the start to the
-    /// next chunk, and a live stream always has a next one.
-    ///
-    /// Mutation proof: routing the awaited case through `startupReleaseCandidate` selects the
-    /// second chunk instead of the first.
+    /// A due wait releases the chunk it was armed for even when wake-up exceeds the lateness
+    /// tolerance. Re-testing lateness would incorrectly slide a deliberately scheduled start
+    /// to the next chunk.
     @Test("a release the wait was armed for survives a late wake")
     func awaitedReleaseSurvivesLateWake() {
         let startupLeadUs: Int64 = 100_000
@@ -209,13 +200,8 @@ struct AudioStartupReleaseTests {
         #expect(unawaited?.index == 1, "a chunk nobody waited for stays subject to the tolerance")
     }
 
-    /// The wait must sleep through the schedule rather than poll it. A superseded wait that
-    /// carries on instead of ending arms a replacement that the next re-entry cancels in turn;
-    /// the release still lands correctly, so only the evaluation count exposes the difference.
-    ///
-    /// Two defences prevent that — the deadline task returns on a cancelled sleep, and the arm
-    /// token stops a superseded continuation — and either alone suffices. So this test fails
-    /// only when both are removed: verified at 65,166 evaluations against a bound of 200.
+    /// The wait sleeps through the schedule rather than polling it. Cancellation ends a
+    /// superseded wait, and its token prevents a late continuation from re-arming it.
     @Test("the startup wait sleeps through the schedule rather than polling it")
     func startupWaitDoesNotPoll() async throws {
         let clock = StubClock(anchorToNow: true)
@@ -239,9 +225,8 @@ struct AudioStartupReleaseTests {
         let evaluations = await engine.startupReleaseEvaluations
         await engine.shutdown()
 
-        // One evaluation per chunk arrival plus one per sleep hop: tens, not thousands. Far
-        // enough above the observed count to absorb scheduling noise, far enough below a poll
-        // to fail on one.
+        // One evaluation per chunk arrival plus one per sleep hop keeps this well below a
+        // polling loop, while allowing for scheduling noise.
         #expect(evaluations < 200, "the release was evaluated \(evaluations) times — the wait is polling")
     }
 
@@ -272,10 +257,9 @@ struct AudioStartupReleaseTests {
         )
     }
 
-    /// The all-stale branch deliberately arms no timer, because advancing the clock only
-    /// makes stale chunks staler. That leaves `applyChunk`'s re-entry into
-    /// `releaseStartupBufferIfReady` as the *only* thing that can start such a stream —
-    /// remove it and startup stalls permanently and silently. This pins that re-entry.
+    /// The all-stale branch deliberately arms no timer because advancing the clock cannot
+    /// make stale chunks viable. A newly arrived chunk re-enters startup evaluation and can
+    /// provide the first viable release point.
     @Test("a stream whose first chunks are stale still starts when a viable chunk arrives")
     func staleFirstChunksDoNotStallStartup() async throws {
         let clock = StubClock(anchorToNow: true)
@@ -294,8 +278,8 @@ struct AudioStartupReleaseTests {
             )
         }
 
-        // Wait for them to be *applied* rather than sleeping: otherwise the assertion
-        // below would also pass simply because the engine had not caught up yet.
+        // Wait until the engine has applied them so the next assertion observes processing,
+        // not merely a delayed command queue.
         #expect(
             await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == staleCount },
             "the stale chunks should have reached the engine"
@@ -305,7 +289,7 @@ struct AudioStartupReleaseTests {
             "no buffered chunk is viable, so output must not have started"
         )
 
-        // A viable, future-dated chunk arrives. Only the append re-entry can notice it.
+        // A viable, future-dated chunk arrives; appending it re-enters startup evaluation.
         await engine.commands.enqueue(.chunk(Data(repeating: 0xAA, count: 100), ts: 1_500_000))
 
         #expect(
@@ -359,10 +343,8 @@ struct AudioStartupReleaseTests {
         await engine.start()
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
-        // ~40ms of content against a 200ms min-buffer. The lead must comfortably exceed
-        // both the output latency (~256ms here) and any scheduling delay under parallel
-        // load — otherwise every chunk is already stale when the engine first evaluates
-        // them, which is a correct "joined too late" result but not what this test is for.
+        // The lead leaves time for output latency and scheduling before the engine evaluates
+        // the chunks, so this test exercises startup buffering rather than a late join.
         let leadUs: Int64 = 1_500_000
         for index in 0 ..< 3 {
             await engine.commands.enqueue(

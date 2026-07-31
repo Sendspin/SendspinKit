@@ -898,12 +898,10 @@ struct ClientIntegrationTests {
 
         #expect(client.currentServerId == newServerId)
         #expect(client.connectionState == .connected)
-        // The superseded old connection's teardown must not have clobbered the new
-        // session: a stale loss event interleaving the switch is dropped by the
-        // identity guard. The connection owns the transport, so a live connection
-        // is the facade-side proof the new transport survived the switch.
+        // A stale loss event from the superseded connection must not clobber the
+        // promoted session; the identity guard drops it before it reaches the facade.
         #expect(client.connection != nil, "Competing-switch must leave the new session live")
-        // Left the old server with `another_server`, and dropped it.
+        // The superseded server receives `another_server` and is disconnected.
         let oldGoodbyes = await sentGoodbyeReasons(from: mock1)
         let oldDisconnected = await mock1.disconnectCalled
         let newDisconnected = await mock2.disconnectCalled
@@ -977,11 +975,9 @@ struct ClientIntegrationTests {
 
     @Test
     func serverSwitchCarriesPlayerStateToNewSession() async throws {
-        // A multi-server switch skips the .disconnected facade reset (identity
-        // guard), so the user's volume/mute/delay survive on the facade — the NEW
-        // connection and its fresh engine must be seeded from that state, not
-        // protocol defaults. Pre-fix, the promoted session reported volume 100,
-        // unmuted, and the playerConfig initial delay.
+        // A multi-server switch skips the `.disconnected` facade reset, so the new
+        // connection and its fresh engine must inherit the user's volume, mute, and delay
+        // instead of protocol defaults.
         let client = try makeTestClient()
         _ = try await connectClient(client, connectionReason: .discovery)
 
@@ -1006,10 +1002,8 @@ struct ClientIntegrationTests {
 
     @Test
     func framesBufferedBehindHelloSurvivePromotionInOrder() async throws {
-        // SPLIT_CONCERNS_PLAN claim, previously unproven: frames the new server
-        // sends right behind its server/hello during arbitration sit buffered in
-        // the transport and must reach the promoted session's engine in order —
-        // neither dropped by the handshake reader nor reordered by the handoff.
+        // Frames sent immediately after `server/hello` during arbitration remain buffered
+        // in the transport and must reach the promoted session's engine in wire order.
         let client = try SendspinClient(
             clientId: "test-client",
             name: "Test Client",

@@ -133,8 +133,8 @@ actor AudioEngine {
     /// continuation cannot ask whether the stored handle still refers to it — and the stream
     /// sequence cannot answer that, because every wait within one stream shares a sequence.
     private var startupDeadlineToken: UInt64 = 0
-    /// Startup-release evaluations for the current stream. Internal so a test can prove the
-    /// wait sleeps rather than polls; a polling wait reaches five figures per stream start.
+    /// Startup-release evaluations for the current stream. Kept internal for bounded-work
+    /// diagnostics and tests.
     private(set) var startupReleaseEvaluations = 0
     private var startupSequence: UInt64 = 0
     private var outputHasStarted = false
@@ -664,7 +664,6 @@ actor AudioEngine {
                     try await Task.sleep(for: .microseconds(delayUs))
                 } catch {
                     // A superseded wait ends here; the arm that replaced it owns the handle.
-                    // Continuing arms a further replacement instead, polling the schedule.
                     return
                 }
                 await Self.yieldUntilReleaseInstant(startTime)

@@ -281,18 +281,13 @@ struct AudioEngineTests {
     }
 
     /// Seamless format change is engine-internal (no MainActor.run).
-    /// Drives runSchedulerOutput's rebuild path end-to-end: chunks are anchored near
-    /// "now" so the scheduler actually emits them, the generation bump routes the new
-    /// chunks through the rebuild, and `.formatApplied(fmt1)` is asserted in the reports.
-    /// Mutation proof: removing `streamGeneration &+= 1` in applyFormatChange means
-    /// scheduled chunks never change generation, runSchedulerOutput never rebuilds, and
-    /// `.formatApplied` is never emitted → this test fails.
+    /// Chunks are anchored near "now" so the scheduler emits them, and the generation
+    /// bump routes new chunks through the rebuild before `.formatApplied` is reported.
     @Test("seamless format change rebuilds and emits .formatApplied")
     func seamlessFormatChange() async throws {
         let clock = StubClock(anchorToNow: true)
         let output = SpyAudioOutput()
-        // Wide playbackWindow → load-independent delivery (matches formatAppliedReportedOnFirstNewGenChunk;
-        // the default 50ms window can drop chunks late under parallel-suite timer starvation).
+        // A wide playback window keeps delivery reliable when the test process is busy.
         let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
 
@@ -342,11 +337,9 @@ struct AudioEngineTests {
     }
 
     /// A deferred AudioQueue rebuild that fails must surface `.startFailed` rather
-    /// than be silently swallowed: the seamless path reports `.formatApplied` at the
-    /// commitment point (first new-gen chunk) before the rebuild, so a failed rebuild
-    /// would otherwise leave the client believing the format switched while audio
-    /// stops. Mutation proof: reverting the rebuild's do/catch to `try?` drops the
-    /// `.startFailed` report → this test fails.
+    /// than be silently swallowed. The seamless path reports `.formatApplied` at the
+    /// first new-generation chunk, so a failed rebuild must still report the failure
+    /// instead of leaving the client believing the format switch succeeded.
     @Test("a failed seamless rebuild surfaces .startFailed")
     func seamlessRebuildFailureReportsStartFailed() async throws {
         struct TestError: Error {}
@@ -412,23 +405,15 @@ struct AudioEngineTests {
         return (try? result?.get()) ?? false
     }
 
-    /// `.formatApplied` is reported at the commitment
-    /// point — the first new-generation chunk — NOT gated on the 2-chunk audio
-    /// pre-buffer. With only ONE trailing new-format chunk and no shutdown, the
-    /// report must still arrive promptly. Mutation proof: moving `yield(.formatApplied)`
-    /// back below the `while preBuffer.count < formatTransitionPreBuffer …` loop makes
-    /// runSchedulerOutput block on a 2nd chunk that never comes, so the report does
-    /// not arrive within the window → this test fails (it only appears later, when
-    /// shutdown's finish() unblocks the iterator).
+    /// `.formatApplied` is reported at the commitment point—the first new-generation
+    /// chunk—not gated on the two-chunk audio pre-buffer. A single trailing chunk must
+    /// therefore produce the report without waiting for shutdown.
     @Test(".formatApplied fires on the first new-generation chunk, not the pre-buffer threshold")
     func formatAppliedReportedOnFirstNewGenChunk() async throws {
         let clock = StubClock(anchorToNow: true)
         let output = SpyAudioOutput()
-        // Wide playback window so the single gen-1 chunk is never dropped-late under
-        // parallel-suite load: the scheduler drops a chunk only when its timer task
-        // wakes more than `playbackWindow` past the due time (AudioScheduler.checkQueue),
-        // and under contention the default 50ms is easily exceeded — starving the one
-        // chunk this test depends on. A 30s window makes delivery load-independent.
+        // A wide playback window keeps the single gen-1 chunk from being dropped when
+        // the test process is busy.
         let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
 
@@ -445,13 +430,8 @@ struct AudioEngineTests {
         // Exactly ONE new-generation chunk — fewer than formatTransitionPreBuffer (2).
         await engine.commands.enqueue(.chunk(Data(repeating: 2, count: 100), ts: 5_000))
 
-        // Must arrive BEFORE shutdown — shutdown's finish() would unblock the old
-        // (regressed) code path and mask the difference. The timeout is a generous
-        // FAILURE bound, not a synchronization race: on the fixed code the report
-        // arrives in ~100ms (awaitReport returns as soon as it matches); the bound is
-        // only reached under the mutation, where the report never arrives without a
-        // 2nd chunk. Sized well above scheduler-pipeline latency under parallel suite
-        // load (a 700ms bound flaked there — it raced the happy path, not just failures).
+        // Observe the report before shutdown so finishing the stream cannot satisfy the
+        // assertion by itself. The generous timeout covers scheduler latency under load.
         let sawFormatApplied = await awaitReport(from: engine, timeoutMs: 5_000) { report in
             if case let .formatApplied(applied) = report {
                 return applied == fmt1
@@ -463,11 +443,8 @@ struct AudioEngineTests {
         await engine.shutdown()
     }
 
-    /// A `swapDecoder` failure falls back to a full
-    /// `output.start()` (re-establishing a valid decoder so new-format chunks are
-    /// not decoded by the stale one) and still surfaces `.formatApplied`. Mutation
-    /// proof: reverting `applyFormatChange`'s catch to log-only means no second
-    /// `start(...)` call and no `.formatApplied` report → both assertions fail.
+    /// A `swapDecoder` failure falls back to a full `output.start()`, re-establishing
+    /// a valid decoder for new-format chunks, and still surfaces `.formatApplied`.
     @Test("swapDecoder failure restarts output and reports .formatApplied")
     func swapDecoderFailureFallsBackToRestart() async throws {
         struct TestError: Error {}
@@ -533,9 +510,8 @@ struct AudioEngineTests {
         return emitted
     }
 
-    /// DEFECT 1 (positive control): while participating, a rising underrun count must
-    /// drive an `.operationalState(.error)` report. Guards the observe→emit path so the
-    /// suppression test below can't pass merely because the loop is dead.
+    /// While participating, a rising underrun count must drive an
+    /// `.operationalState(.error)` report.
     @Test("Underrun while participating reports .operationalState(.error)")
     func underrunReportsErrorWhileParticipating() async throws {
         let emitted = try await observesUnderrunOperationalStateReport(external: false) {
@@ -582,11 +558,8 @@ struct AudioEngineTests {
         #expect(afterExpiry.deadline == nil)
     }
 
-    /// DEFECT 1 (the fix): while external source is active, the engine must re-baseline
-    /// and emit NOTHING — a starved device isn't our error, and any report would clobber
-    /// the client's externalSource state. Mutation proof: deleting the `else { resetBaseline }`
-    /// branch (always observe) makes the rising count emit `.operationalState(.error)`, so
-    /// `hasOperationalState` becomes true → this test fails.
+    /// While an external source is active, underruns are not this client's error. Re-baseline
+    /// the monitor without emitting a report so the external-source state remains authoritative.
     @Test("Underrun while external source emits no operational-state report")
     func underrunSuppressedWhileExternalSource() async throws {
         let emitted = try await observesUnderrunOperationalStateReport(external: true) {
@@ -640,9 +613,8 @@ struct AudioEngineTests {
         return await output.recordedCalls.filter { $0.hasPrefix("setMute(") }
     }
 
-    /// Spec: on cannot-maintain-sync the client must MUTE its audio output (not
-    /// just report `state: 'error'`). Mutation proof: remove the safety mute on
-    /// `.toError` and no `setMute(true)` is ever recorded.
+    /// On cannot-maintain-sync the client must mute its audio output, not only report
+    /// `state: 'error'`.
     @Test("Underrun error transition mutes the output")
     func underrunErrorMutesOutput() async throws {
         let muteCalls = try await driveUnderrunMuteScenario(recover: false)
@@ -671,9 +643,8 @@ struct AudioEngineTests {
         )
     }
 
-    /// The safety mute is OR'd with user mute: recovery must NOT unmute a player
-    /// the user muted. Mutation proof: make the recovery path call
-    /// `setMute(false)` unconditionally and this fails.
+    /// The safety mute is OR'd with user mute, so recovery must not unmute a player
+    /// the user has muted.
     @Test("Underrun recovery preserves an explicit user mute")
     func underrunRecoveryPreservesUserMute() async throws {
         let muteCalls = try await driveUnderrunMuteScenario(userMutedFirst: true, recover: true)
@@ -705,10 +676,8 @@ struct AudioEngineTests {
 
     // MARK: - Single-use lifecycle
 
-    /// The engine is single-use: `start()` after `shutdown()` must be a no-op.
-    /// Pre-fix, a post-shutdown start() passed `guard !running`, reset
-    /// `shuttingDown`, and respawned the telemetry task — a zombie loop that
-    /// could drive real `output.setMute` calls against a closed output.
+    /// The engine is single-use: `start()` after `shutdown()` must be a no-op,
+    /// including for its telemetry task and output.
     @Test("start() after shutdown() is a no-op (no zombie telemetry)")
     func startAfterShutdownIsNoOp() async {
         let clock = StubClock()
@@ -838,10 +807,8 @@ struct AudioEngineTests {
         #expect(depth == 0)
     }
 
-    /// streamEnd truncates scheduled-but-unplayed audio (immediate stop, not
-    /// drain-to-completion). Ten chunks are queued far in the future so none play before
-    /// the end; streamEnd must clear them. Mutation proof: removing audioScheduler.clear()
-    /// from applyStreamEnd leaves queueSize == 10 → this test fails.
+    /// `streamEnd` truncates scheduled-but-unplayed audio immediately rather than draining
+    /// to completion. Future-dated chunks remain queued until the stream ends.
     @Test("streamEnd truncates queued-but-unplayed audio")
     func streamEndTruncation() async throws {
         let clock = StubClock(anchorToNow: true)
@@ -925,7 +892,7 @@ struct AudioEngineTests {
     }
 }
 
-/// Helpers for SpyAudioOutput mutation
+/// Test controls for SpyAudioOutput.
 extension SpyAudioOutput {
     func setForcedStartThrow(_ error: Error) {
         forcedStartThrow = error

@@ -62,9 +62,7 @@ struct AudioPlayerTests {
 
     @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func verifyOldEnqueueMethodRemoved() async throws {
-        // This test documents that the old enqueue(chunk:) method has been removed
-        // in favor of the AudioScheduler-based architecture.
-        // The new flow is: SendspinClient -> AudioScheduler -> AudioPlayer.playPCM(_:serverTimestamp:)
+        // Exercise the scheduler-backed timestamped PCM path.
 
         let player = AudioPlayer()
 
@@ -152,14 +150,9 @@ struct AudioPlayerTests {
         }
     }
 
-    /// The pipeline latency both the engine and the sync corrector read must be the depth of the
-    /// buffers `prepare()` primes *plus* the device path beyond them. Counting only our own
-    /// buffers understates how far ahead of the speaker the cursor runs — measured at ~15ms on a
-    /// USB DAC — and the grace-expiry rebaseline then freezes that error for the stream.
-    ///
-    /// Mutation proof: dropping the device term from `pipelineLatencyMicroseconds` leaves the
-    /// value equal to the depth alone, failing the second expectation wherever the platform can
-    /// report a latency.
+    /// The pipeline latency used by both the engine and sync corrector includes the buffers
+    /// `prepare()` primes and the device path beyond them. Omitting the device path understates
+    /// how far ahead of the speaker the cursor runs.
     @Test("pipeline latency counts the device path, not just our buffers")
     func pipelineLatencyIncludesDeviceLatency() async throws {
         let player = AudioPlayer(pcmBufferCapacity: 1 << 18)

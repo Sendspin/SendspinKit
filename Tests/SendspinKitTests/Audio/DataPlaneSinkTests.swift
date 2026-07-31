@@ -275,9 +275,7 @@ struct DataPlaneSinkTests {
         sink.enqueue(command)
         #expect(sink.depth == prefill)
 
-        // Genuinely race enqueues against finish() — no pre-sleep tilting the
-        // outcome (the old `Task.sleep(100ns)` all but guaranteed the enqueues
-        // finished first, making the lower-bound check below tautological).
+        // Race enqueues against `finish()` without imposing an ordering between them.
         let racingEnqueues = 100
         async let enqueues: Void = Task {
             for _ in 0 ..< racingEnqueues {

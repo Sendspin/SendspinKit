@@ -61,9 +61,9 @@ is deliberately not combined with drift correction.
   `graceExpiryRebaselineCursor` still assigns the equilibrium and so `sync` reads ~0 from grace
   expiry onward however far out playback began.
 
-## Measured history of the start error
+## Measured start offset
 
-Each row is the offset playback actually starts at, on the reference setup.
+Each row is the offset playback actually starts at on the reference setup.
 
 | | startOffset | note |
 |---|---|---|
@@ -94,10 +94,8 @@ It is a dispatched, synchronous XPC round trip to the audio server. Measured cos
 | Mac Studio, USB DAC | 339 ms | 391 ms |
 | MacBook, built-in | 233-323 ms | 291-380 ms |
 
-**The device itself wakes in roughly 50 ms.** Earlier revisions of this document attributed
-300-400 ms to an idle DAC; that figure was almost entirely this call, because `spinUp` is
-stamped before it. Pre-warming is still worth doing, but for the reason that it moves this cost
-off the release path — not because the hardware is slow.
+**The device itself wakes in roughly 50 ms.** The remaining 300-400 ms is dominated by this
+call, because `spinUp` is stamped before it. Pre-warming moves this cost off the release path.
 
 `prepare()` runs on the engine's ordered command loop, so whatever this call costs stalls chunk
 handling behind it.
@@ -128,21 +126,18 @@ After the stall the pipeline is indistinguishable from a working one: frames con
 the device clock (92,160 per 2.09s = 44,100/s), `peak=0.2121`, `silentBufs=0`, `enqFail=0`,
 `underrun=0`, sync within 83us and not correcting -- and still inaudible.
 
-Eliminated by measurement. Do not revisit without new evidence:
+The following checks did not identify the cause:
 
 - **Writing silence.** `peak` on a silent run equals `peak` on an audible one.
 - **Device selection.** Built-in speakers, not Bluetooth, virtual or aggregate.
 - **Sample-rate mismatch.** 13,220,152us at 48kHz against 13,222,207us at 44.1kHz.
 - **The pty wrapper.** Under `script` 238-255ms, direct 337-347ms; neither near 13s.
 - **A slow DAC.** Same machine and device, 233ms on a run that worked.
-- **A refused enqueue.** `enqFail=0` on a silent run, the failure mode recorded in b8c4ddc.
-- **Gain.** `gain=1.00 qGain=1.00 devMute=false`, the queue parameter read back rather than
-  assumed.
+- **A refused enqueue.** `enqFail=0` on a silent run.
+- **Gain.** `gain=1.00 qGain=1.00 devMute=false`, the queue parameter read back rather than assumed.
 
-**It is timing-sensitive and currently will not reproduce.** Two separate telemetry-only commits
-have each coincided with it disappearing -- a9ba372 and the batch ending aab0688 -- and telemetry
-cannot fix anything, so both are perturbation rather than repair. It has also been seen to vanish
-and return within minutes with no change at all. Any run that works proves nothing on its own.
+The failure remains timing-sensitive and was not reproduced by the available runs. Telemetry-only
+changes altered the outcome but cannot account for a repair, so the cause remains open.
 
 What remains actionable regardless of the cause:
 

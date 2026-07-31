@@ -67,7 +67,7 @@ trap cleanup EXIT
 
 echo -e "${BLUE}SendspinKit Stability Test (${DURATION}s)${NC}"
 
-# Always rebuild. A stale binary silently tests code you did not write.
+# Rebuild by default so the run exercises the current source tree.
 CLI_PLAYER="${REPO_DIR}/Examples/CLIPlayer/.build/release/CLIPlayer"
 if [ "${DO_BUILD}" -eq 1 ]; then
     echo -e "${YELLOW}Building CLIPlayer...${NC}"
@@ -92,7 +92,6 @@ if [ -z "${SERVER_URL}" ]; then
             > "${LOG_DIR}/5min_${TIMESTAMP}_server.log" 2>&1 &
     fi
     SERVER_PID=$!
-    # Detach so bash does not print "Terminated" job notices during cleanup.
     disown "${SERVER_PID}" 2>/dev/null || true
 
     for _ in $(seq 1 60); do
@@ -104,13 +103,11 @@ if [ -z "${SERVER_URL}" ]; then
         tail -20 "${LOG_DIR}/5min_${TIMESTAMP}_server.log"
         exit 1
     }
-    # Path is fixed by the protocol (aiosendspin: API_PATH = "/sendspin").
     SERVER_URL="ws://localhost:${PORT}/sendspin"
 fi
 
 echo -e "Server:  ${GREEN}${SERVER_URL}${NC}"
 
-# Playback telemetry goes to OSLog at debug level, not stdout.
 log stream --level debug \
     --predicate 'subsystem == "com.sendspin.kit" AND category == "audio"' \
     > "${TELEMETRY_LOG}" 2>&1 &
@@ -118,12 +115,9 @@ LOGGER_PID=$!
 disown "${LOGGER_PID}" 2>/dev/null || true
 
 echo -e "${BLUE}Running until $(date -v +"${DURATION}"S '+%H:%M:%S' 2>/dev/null || echo "+${DURATION}s")...${NC}"
-# `script` gives the player a pty. Without it stdout is block-buffered and the
-# events we assert on are lost when the timeout kills the process.
-#
-# `script` must not inherit a TTY on stdin: `timeout` runs it in its own process group, so
-# the tcsetattr it does on a controlling terminal raises SIGTTOU and kills the player
-# before it connects. Only reproducible from an interactive shell.
+# `script` gives the player a pty so output is flushed before `timeout` terminates it.
+# Keep stdin detached: a controlling TTY lets `script` receive SIGTTOU in the timeout's
+# process group before the player connects.
 timeout "${DURATION}s" script -q /dev/null \
     "${CLI_PLAYER}" --no-tui "${SERVER_URL}" "${CLIENT_NAME}" \
     < /dev/null > "${PLAYER_LOG}" 2>&1 || true
@@ -139,8 +133,6 @@ echo ""
 }
 
 grep -q "Server connected" "${PLAYER_LOG}" || {
-    # `|| true`: under `set -o pipefail` a grep that matches nothing fails the pipeline,
-    # and `set -e` would then kill the script here — silently, before reporting anything.
     sed 's/\r//' "${PLAYER_LOG}" | grep -iE 'fatal|error' | head -3 || true
     echo -e "${RED}FAIL${NC}: never connected to ${SERVER_URL}"
     exit 1
@@ -151,7 +143,6 @@ grep -q "Stream started" "${PLAYER_LOG}" || {
 }
 echo -e "Stream:  ${GREEN}$(sed 's/\r//' "${PLAYER_LOG}" | grep -m1 'Stream started' | sed 's/.*Stream started: //')${NC}"
 
-# Isolate the telemetry payload from the OSLog line prefix.
 STATS=$(grep -oE 'sched=.*pcmDrop=[0-9]+' "${TELEMETRY_LOG}" || true)
 SAMPLES=$(printf '%s\n' "${STATS}" | grep -c 'sched=' || true)
 [ "${SAMPLES:-0}" -gt 0 ] || {
@@ -159,9 +150,8 @@ SAMPLES=$(printf '%s\n' "${STATS}" | grep -c 'sched=' || true)
     exit 0
 }
 
-# `sched`/`played`/`late` are per-window deltas and sum; `underrun`/`pcmDrop`
-# are cumulative so the last value is the total. `played` legitimately trails
-# `sched` because several seconds sit buffered ahead — never compare them.
+# `sched`, `played`, and `late` are per-window deltas; `underrun` and `pcmDrop` are
+# cumulative, so the last value is the total. `played` trails `sched` while audio is buffered.
 eval "$(printf '%s\n' "${STATS}" | awk '
 {
     for (i = 1; i <= NF; i++) {
@@ -187,8 +177,6 @@ END {
 }')"
 
 DROP_RATE=$(awk "BEGIN {printf \"%.3f\", (${SCHED} > 0 ? ${LATE} / ${SCHED} * 100 : 0)}")
-# Telemetry is emitted every 2s, so a full run yields about half as many
-# samples as it does seconds.
 EXPECTED_SAMPLES=$(( DURATION / 2 ))
 
 echo ""
@@ -209,12 +197,9 @@ check() {
 }
 
 check "$(awk "BEGIN {print (${DROP_RATE} <= 1.0) ? 1 : 0}")" "late-frame drop rate ≤ 1% (${DROP_RATE}%)"
-# An underrun is the ring running dry on read: an audible dropout, never acceptable.
 check "$([ "${UNDERRUN}" -eq 0 ] && echo 1 || echo 0)" "no ring underruns (${UNDERRUN})"
 check "$([ "${PCMDROP}" -eq 0 ] && echo 1 || echo 0)" "no PCM lost to ring overflow (${PCMDROP})"
-# The spec's steady-state accuracy floor is ±1ms.
 check "$(awk "BEGIN {print (${MAX_SYNC} < 1000) ? 1 : 0}")" "max sync error < 1ms (${MAX_SYNC}us)"
-# Allow slack for startup before the first telemetry tick.
 check "$([ "${SAMPLES}" -ge $(( EXPECTED_SAMPLES - 5 )) ] && echo 1 || echo 0)" \
     "ran the full duration (${SAMPLES}/${EXPECTED_SAMPLES} samples)"
 

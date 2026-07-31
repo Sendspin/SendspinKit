@@ -58,7 +58,7 @@ struct FLACChannelSafetyTests {
         }
     }
 
-    /// Guards against the fix over-rejecting: every count FLAC can represent must work.
+    /// Every channel count representable by FLAC remains accepted.
     @Test("FLAC decoder still accepts every channel count FLAC can represent")
     func acceptsAllRepresentableChannelCounts() throws {
         for channels in 1 ... FLACDecoder.maxFLACChannels {
@@ -68,7 +68,7 @@ struct FLACChannelSafetyTests {
 
     // MARK: - Frame-header vs announced mismatch
 
-    /// The memory-safety regression: this used to index `buffer[1]` on a 1-element array.
+    /// The frame-header channel count must be validated before interleaving samples.
     @Test("a mono stream announced as stereo is refused, not read out of bounds")
     func monoStreamAnnouncedAsStereoIsRefused() throws {
         let decoder = try FLACDecoder(sampleRate: 44_100, channels: 2, bitDepth: 16)

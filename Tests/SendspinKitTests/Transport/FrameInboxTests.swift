@@ -105,10 +105,8 @@ struct FrameInboxTests {
 
     @Test("cancelling a parked next() does NOT release it; only finish() does")
     func cancellationDoesNotReleaseParkedConsumer() async {
-        // Stronger than the test above (which cancels AND finishes): this proves the
-        // *negative* — after cancellation alone, the parked pull stays suspended and
-        // does not complete until finish() arrives. Mutation guard: make FrameInbox
-        // release on cancellation and the mid-test `!completed` assertion fails.
+        // Cancellation alone must not release the parked pull; `finish()` is the
+        // lifecycle operation that completes it.
         let inbox = FrameInbox()
         let done = TestBox<Bool>(false)
 

@@ -53,7 +53,7 @@ struct PCMRingBufferFrameAlignmentTests {
         }
     }
 
-    /// Guards against the fix degenerating into "never write anything".
+    /// A fitting, frame-aligned payload is written in full.
     @Test("a frame-aligned write still fills the buffer when there is room")
     func nonOverflowingWriteIsUnaffected() {
         var buffer = PCMRingBuffer(capacity: 256)

@@ -33,19 +33,14 @@ public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer
 /// Constrains the fixed-size `lastFrameStorage` allocation.
 private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 
-/// Above this, `AudioQueueStart` is reported as a fault rather than a measurement. A healthy
-/// start is 230-400ms on the machines measured; seconds means CoreAudio's IO thread never
-/// reached its running state, which has coincided with audio that is consumed but inaudible.
+/// Report starts slower than this as a fault: a healthy start completes in hundreds of
+/// milliseconds, while multi-second starts can leave CoreAudio consuming inaudible audio.
 let audioQueueStartSlowThresholdUs: Int64 = 2_000_000
 
-/// Skip starting the queue at `prepare()` and start it at the release instant instead.
+/// Leave the queue stopped until the release instant.
 ///
-/// Diagnostic escape hatch for a CoreAudio stall seen in the field: `AudioQueueStart` blocks
-/// for ~13.2s while the HAL IO thread never reaches its running state, after which the device
-/// renders but is inaudible. Pre-warming calls `AudioQueueStart` within milliseconds of
-/// `AudioQueueNewOutput`, where the previous design left seconds of buffering between them, so
-/// the suspicion is a race with CoreAudio's asynchronous device setup. This exists so both
-/// paths can be compared on one binary; delete it once that is settled either way.
+/// This diagnostic mode allows startup behavior to be compared with pre-warming when
+/// investigating CoreAudio start stalls. Set `SENDSPIN_NO_PREWARM=1` to enable it.
 let audioQueuePrewarmDisabled = ProcessInfo.processInfo.environment["SENDSPIN_NO_PREWARM"] == "1"
 
 /// Byte size of each prepared AudioQueue buffer.
@@ -424,10 +419,9 @@ actor AudioPlayer {
         let startBlockedUs = MonotonicClock.absoluteMicroseconds() - startCalledAt
         let rateAfter = OutputDeviceLatency.currentDeviceDescription()
         if startBlockedUs > audioQueueStartSlowThresholdUs {
-            // Operational, app-owner-facing: the engine's command loop is stalled for this whole
-            // span, and a start this slow has been seen to leave the device consuming audio that
-            // never reaches the speakers. Logged at .notice so it appears in a user-collected
-            // diagnostic without debug logging enabled.
+            // The command loop is stalled for the duration, and a slow start can leave the
+            // device consuming audio that never reaches the speakers. Keep this at .notice so
+            // it appears in user-collected diagnostics.
             Log.audio.notice(
                 "AudioQueueStart blocked \(startBlockedUs)us on \(rateAfter, privacy: .public) — playback may start late or silent"
             )

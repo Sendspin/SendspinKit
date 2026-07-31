@@ -90,12 +90,9 @@ struct NWWebSocketTransportOutboundTests {
 
     // MARK: - Send on a dead-but-non-nil connection
 
-    /// `send`/`sendBinary` guarded only `connection == nil`, so a connection that
-    /// died underneath us (server gone, NWConnection no longer `.ready`) attempted
-    /// a real Network.framework send instead of failing fast with
-    /// `TransportError.notConnected`. Both sends are bounded so a pre-fix NW
-    /// pathology (completion never called on a dead connection) fails the test
-    /// instead of wedging it.
+    /// `send`/`sendBinary` must reject a connection that is no longer `.ready` rather
+    /// than entering Network.framework's send path. The bounded calls keep a dead
+    /// connection from leaving the test parked if completion never arrives.
     @Test
     func sendOnDeadConnectionThrowsNotConnected() async throws {
         let server = LoopbackWebSocketServer()
@@ -153,9 +150,8 @@ struct NWWebSocketTransportOutboundTests {
     /// hang of `connect()`. Deterministic repro: dial a loopback port whose
     /// listener was just shut down.
     ///
-    /// Pre-fix this fails via the poll timeout (connect() never completes); the
-    /// trailing `disconnect()` unparks the orphaned dial so the test process
-    /// doesn't leak a parked continuation either way.
+    /// The bounded operation timeout prevents a stalled dial from leaking a parked
+    /// continuation; the cleanup disconnect releases any pending Network.framework wait.
     @Test
     func dialRefusedPortFailsPromptlyInsteadOfHangingInWaiting() async throws {
         let server = LoopbackWebSocketServer()
