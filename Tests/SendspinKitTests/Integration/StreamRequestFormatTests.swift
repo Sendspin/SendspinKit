@@ -266,14 +266,9 @@ struct StreamRequestFormatTests {
 
     @Test
     func midStreamFormatChange_classifiedWithoutAwaitingStartedReport() async throws {
-        // Classification uses the synchronously-tracked
-        // announced format, not the async render-applied currentStreamFormat. A
-        // second stream/start arriving before the first `.started` report drains
-        // must still be classified as a format *change* (enqueue `.formatChange`),
-        // not a fresh start. The deliberate absence of waitForStreamFormat is the
-        // point. Mutation proof: keying isFormatChange off currentStreamFormat (the
-        // prior behavior) leaves it nil here → misclassified as `.streamStart` → no
-        // `.formatChange` → waitForEngineDrain times out → this test fails.
+        // Classification uses the synchronously tracked announced format rather than the
+        // asynchronously render-applied `currentStreamFormat`. A second stream/start that
+        // arrives before `.started` drains is therefore still a format change.
         let client = try makePlayerClient()
         let mock = try await connectClient(client, activeRoles: [.playerV1])
 

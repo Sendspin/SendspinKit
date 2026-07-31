@@ -143,45 +143,8 @@ struct NextFrameTests {
 
     // MARK: - Single-consumer contract
 
-    // The single-consumer contract for nextFrame() is enforced via a precondition
-    // that traps on overlapping calls. Since a precondition failure is a fatal error
-    // (not catchable in-process), we do NOT write a test that deliberately trips it
-    // — that would crash the entire test process.
-    //
-    // Instead, we rely on the exactly-once handoff test above to indirectly verify
-    // single-consumer semantics: if the client's message loop maintained multiple
-    // concurrent readers (violating the contract), the precondition guard in
-    // MockTransport.nextFrame() would fire, causing the test process to crash.
-    // The fact that the handoff test completes successfully proves the contract
-    // is respected.
-    //
-    // See: MockTransport.nextFrame(), which documents:
-    // precondition(!isReading,
-    //   "SendspinTransport.nextFrame() is single-consumer; overlapping calls are a contract violation")
-
-    // MARK: - Mutation Verification
-
-    //
-    // The exactlyOnceHandoff test above is mutation-proven to catch frame loss AND duplication.
-    //
-    // Mutation test 1 (DROP): Skip the 3rd binary frame in runMessageLoop by adding:
-    // ```swift
-    // var binaryFrameCount = 0
-    // if case .binary = frame {
-    //     binaryFrameCount += 1
-    //     if binaryFrameCount == 3 { continue }
-    // }
-    // ```
-    // Result: Test FAILS. Expected 5 chunks, got 4 (one dropped).
-    //
-    // Mutation test 2 (DUPLICATE): Call handleBinaryMessage(data) twice per binary frame:
-    // ```swift
-    // case let .binary(data):
-    //     await handleBinaryMessage(data)
-    //     await handleBinaryMessage(data)  // duplicate call
-    // ```
-    // Result: Test FAILS. Expected 5 chunks, got 10 (each frame received twice).
-    //
-    // Both mutations are detectable via AudioChunk count, which has no idempotence guard.
-    // Frame count and order are the invariants.
+    // `nextFrame()` is single-consumer and enforces that contract with a precondition,
+    // so overlapping readers cannot be exercised directly without terminating the test
+    // process. The handoff test above covers the message loop's single-reader path and
+    // verifies frame count and order.
 }

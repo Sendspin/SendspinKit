@@ -22,7 +22,7 @@ public actor ServerDiscovery {
     /// How long to wait for a service resolve before giving up.
     private static let resolveTimeout: Duration = .seconds(10)
 
-    /// Outstanding connections used to resolve service endpoints to host:port.
+    /// Connections resolving service endpoints to host:port.
     /// Tracked so they can be cancelled in ``stopDiscovery()``.
     /// Marked `nonisolated(unsafe)` because it is accessed in `deinit` (non-isolated).
     /// `NWConnection.cancel()` is thread-safe.

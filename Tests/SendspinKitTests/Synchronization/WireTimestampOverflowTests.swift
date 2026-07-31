@@ -2,9 +2,8 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
-/// Unchecked `Int64` arithmetic on server-supplied timestamps traps on overflow. Revert
-/// any `…ReportingOverflow` guard in `ClockSynchronizer`/`PlaybackProgress` and the
-/// matching test here dies with SIGTRAP rather than failing an expectation.
+/// Server-supplied timestamps must not trap when arithmetic reaches an `Int64` boundary.
+/// These tests exercise both the rejection path and the saturating conversion paths.
 struct WireTimestampOverflowTests {
     // MARK: - processServerTime
 
@@ -51,12 +50,11 @@ struct WireTimestampOverflowTests {
             }
         }
 
-        // Surviving is the assertion; confirm no sample corrupted the filter.
+        // No accepted sample should leave the filter synchronized.
         #expect(await clock.hasSynced == false)
     }
 
-    /// A well-formed sample must still be accepted — proves the overflow guards did not
-    /// simply reject everything (which would make the tests above vacuous).
+    /// A well-formed sample remains accepted alongside the rejected boundary cases.
     @Test("a well-formed server/time sample is still accepted")
     func wellFormedSampleIsAccepted() async {
         let clock = ClockSynchronizer()
@@ -105,7 +103,6 @@ struct WireTimestampOverflowTests {
         _ = await clock.localTimeToServer(.min)
         _ = await clock.localTimeToServer(.max)
 
-        // Surviving every conversion is the assertion.
         #expect(await clock.hasSynced, "the good samples should have synced the filter")
     }
 
@@ -181,7 +178,7 @@ struct WireTimestampOverflowTests {
             }
         }
 
-        // Surviving every conversion is the assertion; confirm a sane one is still exact.
+        // A normal-range conversion remains exact after the boundary cases.
         let sane = TimeFilterSnapshot(
             offset: 0,
             drift: 0,

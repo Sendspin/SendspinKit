@@ -3,8 +3,8 @@ import Foundation
 import Testing
 
 /// `performHandshake`'s reader parks in `nextFrame()`, which only transport closure
-/// releases. External cancellation makes the timeout child report `.ended`, which used to
-/// skip the close — so `cancelAll()` was a no-op and the group's drain never returned.
+/// releases. Cancellation must therefore close the candidate transport so the task group
+/// can drain.
 @MainActor
 struct CompetingHandshakeCancellationTests {
     /// Must stay under `performHandshake`'s own 5s timeout, or the test would pass even

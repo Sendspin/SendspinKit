@@ -132,8 +132,7 @@ struct AudioProcessCallbackTests {
         try await player.playPCM(pcmData, serverTimestamp: 0)
 
         let fired = try await Self.pollUntil { modified.count > 0 }
-        // If we got here without crashing, the mutable access worked
-        #expect(fired, "Callback with mutation should have fired")
+        #expect(fired, "The process callback should have fired")
 
         await player.stop()
     }

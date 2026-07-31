@@ -348,10 +348,8 @@ struct SessionStateResetTests {
         _ = try await connectClient(client)
         #expect(client.currentGroup?.groupId == "g1", "Group membership must survive a reconnect (spec)")
         #expect(client.currentGroup?.groupName == "Kitchen")
-        // Assert the observable outcome (cleared playback state) rather than a
-        // timing coincidence: these pass today only because `setupConnection`
-        // resets session state before its first suspension. Polling decouples the
-        // test from that ordering invariant.
+        // Observe the cleared state with bounded polling so the check does not depend on
+        // task scheduling around connection setup.
         let clearedPlayback = await waitUntil { await MainActor.run { client.currentGroup?.playbackState == nil } }
         #expect(clearedPlayback, "Playback state is session-scoped and must not survive reconnect")
         let clearedStatus = await waitUntil { await MainActor.run { client.currentPlaybackStatus == nil } }

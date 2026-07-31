@@ -6,8 +6,8 @@ import Testing
 /// concurrent paths around it, which had no coverage.
 @MainActor
 struct ArbitrationConcurrencyTests {
-    /// Two servers dialling in within the 5s handshake window is ordinary on a
-    /// multi-server network. Both used to arbitrate against a stale incumbent and switch.
+    /// Concurrent candidates must be serialized so only one can arbitrate against the
+    /// incumbent at a time.
     @Test("a second competing connection arriving mid-arbitration is dropped, not arbitrated")
     func concurrentArbitrationDropsTheSecondCandidate() async throws {
         let client = try makeTestClient()
@@ -19,7 +19,7 @@ struct ArbitrationConcurrencyTests {
 
         let taskA = Task { try? await client.acceptConnection(candidateA) }
 
-        // A's handshake must be underway before B arrives, or this proves nothing.
+        // Ensure A owns the arbitration before B arrives.
         #expect(
             await waitUntil { await !candidateA.sentTextMessages.isEmpty },
             "candidate A's handshake should be in flight"

@@ -72,11 +72,9 @@ struct SendCompletionTests {
 
     // MARK: - Invariant 4: cross-isolation producer/consumer race
 
-    /// Models the production shape: a parked continuation in one task, two
-    /// independent producers racing in others. Repeats many iterations to
-    /// surface any held-lock or ordering bug. The pre-fix shape (resuming the
-    /// continuation under the lock) would crash if the lock-resume re-entered;
-    /// the current shape (resume after lock release) must come out clean.
+    /// Models the production shape: a parked continuation in one task and two
+    /// independent producers racing in others. Resuming after releasing the lock
+    /// keeps producer re-entry out of the critical section.
     @Test("concurrent producers never double-resume the continuation")
     func concurrentProducersDoNotDoubleResume() async {
         for _ in 0 ..< raceTestIterations {

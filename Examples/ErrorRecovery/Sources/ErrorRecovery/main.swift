@@ -30,11 +30,8 @@ private func resolveServerURL(server: String?, discover: Bool, timeout: Double) 
 /// treated as fatal so a typo'd URL or a library change doesn't put us into
 /// an unbounded retry loop. If you need retry on a new error type, add it here.
 private func isRetryableError(_ error: any Error) -> Bool {
-    // Cooperative cancellation (SIGINT → disconnect()) — fatal in this tool.
-    // SIGINT is our only source of task cancellation; if another cancellation
-    // path is added later (e.g. this example getting wrapped in a parent task
-    // that cancels), this classification should be revisited. For a stand-alone
-    // retry loop, "someone asked us to stop" is always a reason to exit.
+    // Cooperative cancellation (SIGINT → disconnect()) is fatal in this tool;
+    // a stop request must not trigger a reconnect loop.
     if error is CancellationError { return false }
 
     if let streaming = error as? StreamingError {

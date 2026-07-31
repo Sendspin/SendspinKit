@@ -896,7 +896,6 @@ struct SendspinConnectionTests {
         }
 
         // Each processed server/time must forward a snapshot to the engine output.
-        // Mutation: removing `engine.updateClockSnapshot` in handleServerTime → zero calls → fails.
         let snapshotCalls = await output.recordedCalls.count(where: { $0 == "updateTimeSnapshot()" })
         #expect(
             snapshotCalls >= expectedSnapshots,
@@ -1506,10 +1505,8 @@ struct SendspinConnectionSessionTests {
             "the control stream must be finished, with no events, for a never-started connection"
         )
 
-        // Pre-fix, the erroneous session from start() parks on the never-finished
-        // inbox and shutdown() would await it forever (skipping the transport close
-        // because shuttingDown is already set). Finish the streams first so this
-        // test FAILS rather than wedges. Post-fix this is an idempotent no-op.
+        // Finish the streams so shutdown can complete even when the connection was
+        // never started. A second shutdown must remain an idempotent no-op.
         await transport.finishStreams()
         await connection.shutdown()
     }
