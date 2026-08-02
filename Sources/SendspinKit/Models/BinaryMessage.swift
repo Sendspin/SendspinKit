@@ -18,8 +18,14 @@ enum BinaryMessageType: UInt8 {
     case artworkChannel2 = 10
     case artworkChannel3 = 11
 
-    /// Visualizer role (16-23).
-    case visualizerData = 16
+    // Visualizer role (16-23), one type per feature
+    // (aiosendspin models/types.py BinaryMessageType)
+    case visualizerLoudness = 16
+    case visualizerBeat = 17
+    case visualizerFPeak = 18
+    case visualizerSpectrum = 19
+    case visualizerPeak = 20
+    case visualizerPitch = 21
 
     /// The artwork channel index (0-3) for artwork message types, or `nil` for non-artwork types.
     var artworkChannel: Int? {
@@ -28,6 +34,19 @@ enum BinaryMessageType: UInt8 {
             Int(rawValue - BinaryMessageType.artworkChannel0.rawValue)
         default:
             nil
+        }
+    }
+
+    /// The visualizer feature this binary type carries, or `nil` for non-visualizer types.
+    var visualizerFeature: VisualizerFeatureType? {
+        switch self {
+        case .visualizerLoudness: .loudness
+        case .visualizerBeat: .beat
+        case .visualizerFPeak: .fPeak
+        case .visualizerSpectrum: .spectrum
+        case .visualizerPeak: .peak
+        case .visualizerPitch: .pitch
+        case .audioChunk, .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3: nil
         }
     }
 }

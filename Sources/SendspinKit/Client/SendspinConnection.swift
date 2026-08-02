@@ -63,6 +63,10 @@ actor SendspinConnection {
     var playerStreamActive = false
     var artworkStreamActive = false
     var visualizerStreamActive = false
+    /// The most recent `stream/start` visualizer announcement. Retained across
+    /// `stream/clear` (which flushes buffers without renegotiating); replaced by
+    /// the next announcement; cleared when the visualizer stream ends.
+    var negotiatedVisualizerStream: StreamVisualizerConfig?
     var isClockSynced = false
     var announcedPlayerStream: (format: AudioFormatSpec, codecHeader: Data?)?
     var clientOperationalState: ClientOperationalState = .synchronized

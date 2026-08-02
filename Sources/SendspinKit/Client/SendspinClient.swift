@@ -14,6 +14,7 @@ public final class SendspinClient {
     let deviceInfo: DeviceInfo?
     let playerConfig: PlayerConfiguration?
     let artworkConfig: ArtworkConfiguration?
+    let visualizerConfig: VisualizerConfiguration?
     /// Optional storage hook for the spec's "last played server" bookkeeping.
     /// Saved on every `group/update` that reports playback started; read by the
     /// multi-server arbitration tiebreak. `nil` means no implicit storage: discovery
@@ -54,11 +55,13 @@ public final class SendspinClient {
     /// Observability mirrors of server-declared stream activity. These do NOT
     /// gate `stream/request-format`: per spec, those requests are allowed before
     /// a stream starts and after it ends. The mirrors are render-applied (player:
-    /// from the engine's `.started` report; artwork:
-    /// from `.artworkStreamStarted`), so they can lag the connection's gates.
-    /// `stream/clear` leaves both untouched — the stream continues (per spec).
+    /// from the engine's `.started` report; artwork/visualizer:
+    /// from `.artworkStreamStarted`/`.visualizerStreamStarted`), so they can lag
+    /// the connection's gates.
+    /// `stream/clear` leaves them untouched — the stream continues (per spec).
     var playerStreamActive = false
     var artworkStreamActive = false
+    var visualizerStreamActive = false
     /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
     var shouldEmitRawAudio = false
 
@@ -124,6 +127,11 @@ public final class SendspinClient {
     let visualizerDataContinuation: AsyncStream<VisualizerData>.Continuation
     /// Visualizer bytes from the visualizer data stream.
     public let visualizerData: AsyncStream<VisualizerData>
+    /// The server's negotiated visualizer stream announcement from the most recent
+    /// `stream/start`, or nil if no visualizer stream is active. Its
+    /// `spectrum.nDispBins` is the bin count for decoding binary spectrum frames
+    /// (see ``VisualizerData/frame(spectrumBins:)``).
+    public private(set) var currentVisualizerStream: StreamVisualizerConfig?
 
     public init(
         clientId: String,
@@ -132,6 +140,7 @@ public final class SendspinClient {
         deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
+        visualizerConfig: VisualizerConfiguration? = nil,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil
     ) throws(ConfigurationError) {
         let orderedRoles = Self.deduplicatingRoles(roles)
@@ -143,6 +152,9 @@ public final class SendspinClient {
         if roleSet.contains(.artworkV1), artworkConfig == nil {
             throw .artworkRoleRequiresConfiguration
         }
+        if roleSet.contains(.visualizerV1), visualizerConfig == nil {
+            throw .visualizerRoleRequiresConfiguration
+        }
 
         self.clientId = clientId
         self.name = name
@@ -151,6 +163,7 @@ public final class SendspinClient {
         self.deviceInfo = deviceInfo
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
+        self.visualizerConfig = visualizerConfig
         self.persistenceProvider = persistenceProvider
         staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
 
@@ -492,6 +505,11 @@ public final class SendspinClient {
             artworkStreamActive = true
             emitEvent(.artworkStreamStarted(channels))
 
+        case let .visualizerStreamStarted(config):
+            visualizerStreamActive = true
+            currentVisualizerStream = config
+            emitEvent(.visualizerStreamStarted(config))
+
         case let .streamAccepted(format):
             playerStreamActive = true
             updateStreamFormat(format)
@@ -514,6 +532,10 @@ public final class SendspinClient {
             }
             if roles == nil || roles?.contains(StreamRole.artwork.rawValue) == true {
                 artworkStreamActive = false
+            }
+            if roles == nil || roles?.contains(StreamRole.visualizer.rawValue) == true {
+                visualizerStreamActive = false
+                currentVisualizerStream = nil
             }
             emitEvent(.streamEnded(roles: roles))
 
@@ -608,6 +630,8 @@ public final class SendspinClient {
         shouldEmitRawAudio = false
         playerStreamActive = false
         artworkStreamActive = false
+        visualizerStreamActive = false
+        currentVisualizerStream = nil
     }
 
     /// Clear server-reported state that is scoped to a single connection. A
