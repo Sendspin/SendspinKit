@@ -44,9 +44,7 @@ actor NoOpAudioOutput: AudioOutput {
     }
 
     /// No device to wait for.
-    var outputDeviceIsLive: Bool {
-        true
-    }
+    func waitUntilOutputDeviceIsLive() async throws {}
 
     func start(format _: AudioFormatSpec, codecHeader _: Data?) throws {}
 
@@ -58,7 +56,7 @@ actor NoOpAudioOutput: AudioOutput {
         data
     }
 
-    func playPCM(_: Data, serverTimestamp _: Int64) throws {}
+    func playPCM(_: Data, serverTimestamp _: Int64) async throws {}
 
     func clearBuffer() {}
 

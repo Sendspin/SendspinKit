@@ -86,6 +86,32 @@ actor SpyAudioOutput: AudioOutput {
     var forcedDecodeThrow: Error?
     var playbackState: Bool = false
     var underrunCountValue: Int64 = 0
+    var outputDeviceProbeDelay: Duration = .zero
+    var outputDeviceProbeDelayAfterFirst: Duration = .zero
+    private(set) var outputDeviceProbeCount = 0
+    private var shouldBlockNextOutputDeviceProbe = false
+    private var blockedOutputDeviceProbe: CheckedContinuation<Void, Never>?
+    private var shouldBlockNextPCM = false
+    private var blockedPCM: CheckedContinuation<Void, Never>?
+    private(set) var playedPCMTimestamps: [Int64] = []
+
+    func blockNextOutputDeviceProbe() {
+        shouldBlockNextOutputDeviceProbe = true
+    }
+
+    func releaseBlockedOutputDeviceProbe() {
+        blockedOutputDeviceProbe?.resume()
+        blockedOutputDeviceProbe = nil
+    }
+
+    func blockNextPCM() {
+        shouldBlockNextPCM = true
+    }
+
+    func releaseBlockedPCM() {
+        blockedPCM?.resume()
+        blockedPCM = nil
+    }
 
     var isPlaying: Bool {
         playbackState
@@ -132,8 +158,18 @@ actor SpyAudioOutput: AudioOutput {
     }
 
     /// Tests drive release timing directly; no real device to wait on.
-    var outputDeviceIsLive: Bool {
-        true
+    func waitUntilOutputDeviceIsLive() async throws {
+        outputDeviceProbeCount += 1
+        if shouldBlockNextOutputDeviceProbe {
+            shouldBlockNextOutputDeviceProbe = false
+            await withCheckedContinuation { continuation in
+                blockedOutputDeviceProbe = continuation
+            }
+        }
+        let delay = outputDeviceProbeCount == 1 ? outputDeviceProbeDelay : outputDeviceProbeDelayAfterFirst
+        if delay != .zero {
+            try? await Task.sleep(for: delay)
+        }
     }
 
     /// Mirrors the real player: only the path beyond the primed buffers.
@@ -181,8 +217,15 @@ actor SpyAudioOutput: AudioOutput {
         return Data(repeating: 0, count: 4)
     }
 
-    func playPCM(_ pcm: Data, serverTimestamp _: Int64) throws {
+    func playPCM(_ pcm: Data, serverTimestamp: Int64) async throws {
         recordedCalls.append("playPCM(\(pcm.count) bytes)")
+        playedPCMTimestamps.append(serverTimestamp)
+        if shouldBlockNextPCM {
+            shouldBlockNextPCM = false
+            await withCheckedContinuation { continuation in
+                blockedPCM = continuation
+            }
+        }
         if let error = forcedPlayPCMThrow {
             throw error
         }

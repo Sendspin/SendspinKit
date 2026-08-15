@@ -1,3 +1,5 @@
+import Foundation
+
 /// Correction schedule for drop/insert cadence
 struct CorrectionSchedule: Equatable {
     /// Insert one frame every N frames (0 = disabled)
@@ -16,6 +18,107 @@ struct CorrectionSchedule: Equatable {
     /// True when any correction (insert, drop, or reanchor) is active
     var isCorrecting: Bool {
         insertEveryNFrames > 0 || dropEveryNFrames > 0 || reanchor
+    }
+}
+
+/// Windowed comparison between wire timestamp spacing and decoded PCM duration.
+struct ChunkTimingDiagnostics {
+    struct Snapshot {
+        let chunkCount: Int
+        let pairedCount: Int
+        let timestampDeltaMinUs: Int64?
+        let timestampDeltaMaxUs: Int64?
+        let decodedDurationMinUs: Int64?
+        let decodedDurationMaxUs: Int64?
+        let meanMismatchUs: Double?
+        let meanAbsoluteMismatchUs: Double?
+        let maximumAbsoluteMismatchUs: Int64?
+
+        var summary: String {
+            guard chunkCount > 0 else { return "none" }
+            let timestampRange = range(timestampDeltaMinUs, timestampDeltaMaxUs)
+            let decodedRange = range(decodedDurationMinUs, decodedDurationMaxUs)
+            guard pairedCount > 0 else {
+                return "chunks=\(chunkCount) pairs=0 decoded=\(decodedRange)"
+            }
+            let mean = String(format: "%.1f", meanMismatchUs ?? 0)
+            let absoluteMean = String(format: "%.1f", meanAbsoluteMismatchUs ?? 0)
+            let maximum = maximumAbsoluteMismatchUs ?? 0
+            return "chunks=\(chunkCount) pairs=\(pairedCount)"
+                + " ts=\(timestampRange) decoded=\(decodedRange)"
+                + " mismatch=mean:\(mean)us absMean:\(absoluteMean)us max:\(maximum)us"
+        }
+
+        private func range(_ minimum: Int64?, _ maximum: Int64?) -> String {
+            guard let minimum, let maximum else { return "n/a" }
+            return "\(minimum)...\(maximum)us"
+        }
+    }
+
+    private var previousTimestampUs: Int64?
+    private var previousDecodedFrameCount: Int64?
+    private var previousSampleRate: Int?
+    private(set) var chunkCount = 0
+    private(set) var pairedCount = 0
+    private(set) var timestampDeltaMinUs: Int64?
+    private(set) var timestampDeltaMaxUs: Int64?
+    private(set) var decodedDurationMinUs: Int64?
+    private(set) var decodedDurationMaxUs: Int64?
+    private var totalMismatchUs: Int64 = 0
+    private var totalAbsoluteMismatchUs: Int64 = 0
+    private(set) var maximumAbsoluteMismatchUs: Int64?
+
+    mutating func record(timestampUs: Int64, decodedFrameCount: Int64, sampleRate: Int) {
+        guard decodedFrameCount > 0, sampleRate > 0 else { return }
+
+        chunkCount += 1
+        let decodedDurationUs = Int64((Double(decodedFrameCount) * 1_000_000.0 / Double(sampleRate)).rounded())
+        decodedDurationMinUs = minOptional(decodedDurationMinUs, decodedDurationUs)
+        decodedDurationMaxUs = maxOptional(decodedDurationMaxUs, decodedDurationUs)
+
+        if let previousTimestampUs, let previousDecodedFrameCount, previousSampleRate == sampleRate {
+            let timestampDelta = timestampUs - previousTimestampUs
+            if timestampDelta > 0 {
+                let previousDecodedDurationUs = Int64(
+                    (Double(previousDecodedFrameCount) * 1_000_000.0 / Double(sampleRate)).rounded()
+                )
+                let mismatch = previousDecodedDurationUs - timestampDelta
+                pairedCount += 1
+                timestampDeltaMinUs = minOptional(timestampDeltaMinUs, timestampDelta)
+                timestampDeltaMaxUs = maxOptional(timestampDeltaMaxUs, timestampDelta)
+                totalMismatchUs += mismatch
+                totalAbsoluteMismatchUs += abs(mismatch)
+                maximumAbsoluteMismatchUs = maxOptional(maximumAbsoluteMismatchUs, abs(mismatch))
+            }
+        }
+
+        previousTimestampUs = timestampUs
+        previousDecodedFrameCount = decodedFrameCount
+        previousSampleRate = sampleRate
+    }
+
+    mutating func takeSnapshot() -> Snapshot {
+        let snapshot = Snapshot(
+            chunkCount: chunkCount,
+            pairedCount: pairedCount,
+            timestampDeltaMinUs: timestampDeltaMinUs,
+            timestampDeltaMaxUs: timestampDeltaMaxUs,
+            decodedDurationMinUs: decodedDurationMinUs,
+            decodedDurationMaxUs: decodedDurationMaxUs,
+            meanMismatchUs: pairedCount > 0 ? Double(totalMismatchUs) / Double(pairedCount) : nil,
+            meanAbsoluteMismatchUs: pairedCount > 0 ? Double(totalAbsoluteMismatchUs) / Double(pairedCount) : nil,
+            maximumAbsoluteMismatchUs: maximumAbsoluteMismatchUs
+        )
+        self = Self()
+        return snapshot
+    }
+
+    private func minOptional(_ current: Int64?, _ candidate: Int64) -> Int64 {
+        min(current ?? candidate, candidate)
+    }
+
+    private func maxOptional(_ current: Int64?, _ candidate: Int64) -> Int64 {
+        max(current ?? candidate, candidate)
     }
 }
 

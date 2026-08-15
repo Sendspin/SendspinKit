@@ -197,8 +197,10 @@ actor AudioPlayer {
 
     /// Buffers held back for `startPrepared()` when pre-warm is disabled; empty otherwise.
     private var pendingStartBuffers: [AudioQueueBufferRef] = []
+    private var outputDeviceLiveContinuation: CheckedContinuation<Void, Never>?
 
     private var _isPlaying: Bool = false
+    private let playerID = UUID().uuidString
 
     /// All state shared between the actor and the audio thread, protected by
     /// `OSAllocatedUnfairLock` with priority donation. Access is structurally
@@ -272,6 +274,10 @@ actor AudioPlayer {
     /// - `deinit` disposes the queue directly (can't call actor-isolated `stop()`)
     /// Do not insert throwing calls between `AudioQueueNewOutput` and `audioQueue = queue`.
     func prepare(format: AudioFormatSpec, codecHeader: Data?) throws {
+        let currentPlayerID = playerID
+        let currentlyPlaying = _isPlaying
+        let prepareLog = "prepare player=\(currentPlayerID) format=\(format.codec.rawValue) isPlaying=\(currentlyPlaying)"
+        Log.audio.debug("\(prepareLog, privacy: .public)")
         stop()
 
         decoder = try AudioDecoderFactory.create(
@@ -457,16 +463,26 @@ actor AudioPlayer {
         return queueDepthUs + lockedState.withLock { $0.deviceLatencyUs }
     }
 
-    /// True once the device has delivered its first callback.
-    ///
-    /// Until then nothing is known about the pipeline: `AudioQueueGetCurrentTime` reports
-    /// nothing played, so a placement computed against it is fiction, and PCM released on
-    /// schedule sits in the ring until the device wakes and then plays that stale. Spin-up is
-    /// normally a few hundred milliseconds but has been measured at 13 seconds.
-    var outputDeviceIsLive: Bool {
+    /// Wait until the device has delivered its first callback. Before that, PCM released on
+    /// schedule sits in the ring and plays stale; spin-up is usually sub-second but has been
+    /// measured at 13 seconds.
+    func waitUntilOutputDeviceIsLive() async throws {
         // With pre-warm disabled the queue does not exist until the release, so there is no
         // device to wait for and gating on it would deadlock the startup path.
-        audioQueuePrewarmDisabled || lockedState.withLock { $0.spinUpUs >= 0 }
+        guard !audioQueuePrewarmDisabled else { return }
+        guard lockedState.withLock({ $0.spinUpUs < 0 }) else { return }
+        await withCheckedContinuation { continuation in
+            outputDeviceLiveContinuation = continuation
+            if lockedState.withLock({ $0.spinUpUs >= 0 }) {
+                outputDeviceLiveContinuation = nil
+                continuation.resume()
+            }
+        }
+    }
+
+    private func resumeOutputDeviceLiveWaiter() {
+        outputDeviceLiveContinuation?.resume()
+        outputDeviceLiveContinuation = nil
     }
 
     /// How far before a frame should be audible it must be written to the ring.
@@ -484,8 +500,12 @@ actor AudioPlayer {
             throw AudioPlayerError.notStarted
         }
         if _isPlaying {
+            let currentPlayerID = playerID
+            Log.audio.debug("startPrepared ignored player=\(currentPlayerID, privacy: .public) isPlaying=true")
             return
         }
+        let currentPlayerID = playerID
+        Log.audio.debug("startPrepared begin player=\(currentPlayerID, privacy: .public) format=\(format.codec.rawValue, privacy: .public)")
 
         // Normally `prepare()` already started the queue on silence and there is nothing to do
         // here. With pre-warm disabled the buffers were held back, so prime and start now.
@@ -509,7 +529,7 @@ actor AudioPlayer {
         }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(format.effectiveOutputBitDepth)-bit)"
-        Log.audio.info("AudioQueue started: \(desc, privacy: .public)")
+        Log.audio.info("AudioQueue started player=\(currentPlayerID, privacy: .public): \(desc, privacy: .public)")
         _isPlaying = true
     }
 
@@ -521,7 +541,12 @@ actor AudioPlayer {
 
     /// Stop playback and clean up
     func stop() {
+        let currentPlayerID = playerID
+        let currentlyPlaying = _isPlaying
+        Log.audio.debug("stop player=\(currentPlayerID, privacy: .public) isPlaying=\(currentlyPlaying, privacy: .public)")
         cancelVolumeRamp()
+        outputDeviceLiveContinuation?.resume()
+        outputDeviceLiveContinuation = nil
         guard let queue = audioQueue else { return }
 
         AudioQueueStop(queue, true)
@@ -565,7 +590,7 @@ actor AudioPlayer {
     }
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
-    func playPCM(_ pcmData: Data, serverTimestamp: Int64) throws {
+    func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
         guard let queue = audioQueue, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
@@ -938,6 +963,9 @@ actor AudioPlayer {
             // so the first callback with a start time recorded is the device's own.
             if state.spinUpUs < 0, state.queueStartAbsoluteUs > 0 {
                 state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
+                Task { [weak self] in
+                    await self?.resumeOutputDeviceLiveWaiter()
+                }
             }
 
             Self.updateCorrectionSchedule(state: &state, capacity: capacity, frameSize: fs, sampleRate: sr)

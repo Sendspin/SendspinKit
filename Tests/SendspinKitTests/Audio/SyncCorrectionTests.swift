@@ -9,6 +9,52 @@ struct SyncCorrectionTests {
     private static let maxSpeedCorrection = CorrectionPlanner.defaultMaxSpeedCorrection
 
     @Test
+    func chunkTimingExactCadenceHasNoMismatch() {
+        var diagnostics = ChunkTimingDiagnostics()
+        diagnostics.record(timestampUs: 1_000_000, decodedFrameCount: 960, sampleRate: 48_000)
+        diagnostics.record(timestampUs: 1_020_000, decodedFrameCount: 960, sampleRate: 48_000)
+        diagnostics.record(timestampUs: 1_040_000, decodedFrameCount: 960, sampleRate: 48_000)
+
+        let snapshot = diagnostics.takeSnapshot()
+        #expect(snapshot.chunkCount == 3)
+        #expect(snapshot.pairedCount == 2)
+        #expect(snapshot.timestampDeltaMinUs == 20_000)
+        #expect(snapshot.timestampDeltaMaxUs == 20_000)
+        #expect(snapshot.decodedDurationMinUs == 20_000)
+        #expect(snapshot.decodedDurationMaxUs == 20_000)
+        #expect(snapshot.meanMismatchUs == 0)
+        #expect(snapshot.meanAbsoluteMismatchUs == 0)
+        #expect(snapshot.maximumAbsoluteMismatchUs == 0)
+    }
+
+    @Test
+    func chunkTimingReportsSignedAndAbsoluteMismatch() {
+        var diagnostics = ChunkTimingDiagnostics()
+        diagnostics.record(timestampUs: 1_000_000, decodedFrameCount: 960, sampleRate: 48_000)
+        diagnostics.record(timestampUs: 1_019_000, decodedFrameCount: 960, sampleRate: 48_000)
+        diagnostics.record(timestampUs: 1_040_000, decodedFrameCount: 960, sampleRate: 48_000)
+
+        let snapshot = diagnostics.takeSnapshot()
+        #expect(snapshot.pairedCount == 2)
+        #expect(snapshot.meanMismatchUs == 0)
+        #expect(snapshot.meanAbsoluteMismatchUs == 1_000)
+        #expect(snapshot.maximumAbsoluteMismatchUs == 1_000)
+    }
+
+    @Test
+    func chunkTimingSnapshotResetsWindowButKeepsNoState() {
+        var diagnostics = ChunkTimingDiagnostics()
+        diagnostics.record(timestampUs: 1_000_000, decodedFrameCount: 960, sampleRate: 48_000)
+        diagnostics.record(timestampUs: 1_020_000, decodedFrameCount: 960, sampleRate: 48_000)
+        _ = diagnostics.takeSnapshot()
+        diagnostics.record(timestampUs: 2_000_000, decodedFrameCount: 960, sampleRate: 48_000)
+
+        let snapshot = diagnostics.takeSnapshot()
+        #expect(snapshot.chunkCount == 1)
+        #expect(snapshot.pairedCount == 0)
+    }
+
+    @Test
     func defaultsMatchPlayerSyncAccuracyPolicy() {
         #expect(Self.deadbandUs == 100, "soft correction should stop inside the dead band")
         #expect(Self.engageUs == 500, "soft correction should start at the recommended accuracy target")

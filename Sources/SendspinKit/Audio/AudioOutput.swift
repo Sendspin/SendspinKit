@@ -22,9 +22,9 @@ protocol AudioOutput: Actor, Sendable {
     /// device path. Valid once `prepare(format:codecHeader:)` has run.
     func pipelineLatencyMicroseconds() -> Int64
 
-    /// True once the output device has actually begun producing. Releasing before this
+    /// Wait until the output device has actually begun producing. Releasing before this
     /// buffers audio into a pipeline that is not yet consuming.
-    var outputDeviceIsLive: Bool { get }
+    func waitUntilOutputDeviceIsLive() async throws
 
     /// How far ahead of a frame's due time `startPrepared()` must be called for that frame
     /// to be audible on time. Covers only the path beyond the primed buffers, which the
@@ -48,7 +48,7 @@ protocol AudioOutput: Actor, Sendable {
 
     /// Queue a PCM chunk for playback at the given server timestamp.
     /// Throws if playback cannot continue (e.g., underrun recovery failing).
-    func playPCM(_ pcm: Data, serverTimestamp: Int64) throws
+    func playPCM(_ pcm: Data, serverTimestamp: Int64) async throws
 
     /// Clear buffered PCM without stopping playback (for stream clear or seek).
     func clearBuffer()

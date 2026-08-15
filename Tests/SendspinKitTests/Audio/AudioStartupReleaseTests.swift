@@ -230,6 +230,51 @@ struct AudioStartupReleaseTests {
         #expect(evaluations < 200, "the release was evaluated \(evaluations) times — the wait is polling")
     }
 
+    /// Later chunks must not replace a pending deadline when the earliest candidate is unchanged.
+    @Test("later startup chunks keep the existing release deadline")
+    func laterChunksKeepExistingReleaseDeadline() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+
+        let firstTimestamp: Int64 = 50_000
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
+        #expect(await waitUntil { await engine.startupDeadlineArms == 1 }, "the first chunk must arm one deadline")
+
+        let laterChunkCount = 32
+        for index in 0 ..< laterChunkCount {
+            await engine.commands.enqueue(
+                .chunk(
+                    Data(repeating: UInt8(index + 2), count: 100),
+                    ts: firstTimestamp + Int64(index + 1) * 100_000
+                )
+            )
+        }
+        let expectedChunkCount = laterChunkCount + 1
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount },
+            "the later chunks must be processed before checking deadline churn"
+        )
+        let callsBeforeRelease = await output.recordedCalls
+        #expect(!callsBeforeRelease.contains("startPrepared()"))
+        #expect(await engine.startupDeadlineArms == 1)
+
+        #expect(
+            await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
+            "the original deadline must still produce one startup commit"
+        )
+        let commits = await engine.startupReleaseCommits
+        let calls = await output.recordedCalls
+        await engine.shutdown()
+
+        #expect(commits == 1)
+        #expect(calls.count(where: { $0 == "startPrepared()" }) == 1)
+    }
+
     /// And the yield loop must genuinely wait for an imminent instant. Returning early is what
     /// a sleep does, and what leaves the release outside the tolerance.
     @Test("the yield loop waits for an imminent release instant")
@@ -297,6 +342,129 @@ struct AudioStartupReleaseTests {
             "the newly arrived viable chunk must start the stream"
         )
         await engine.shutdown()
+    }
+
+    @Test("startup release remains single-flight while a deadline probe is suspended")
+    func startupReleaseRemainsSingleFlightWhileDeadlineProbeIsSuspended() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupMinBufferMs: 200
+        )
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+
+        // Second arrival lands while the deadline task is suspended in the device-live probe;
+        // without the deferred mailbox the stale snapshot drops or duplicates one timestamp.
+        let firstTimestamp: Int64 = 1_000_000
+        let secondTimestamp: Int64 = 1_100_000
+        await output.blockNextOutputDeviceProbe()
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
+        #expect(await waitUntil { await output.outputDeviceProbeCount >= 1 })
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x02, count: 100), ts: secondTimestamp))
+        await output.releaseBlockedOutputDeviceProbe()
+
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        let calls = await output.recordedCalls
+        let playedTimestamps = await output.playedPCMTimestamps
+        let commits = await engine.startupReleaseCommits
+        await engine.shutdown()
+
+        #expect(calls.count(where: { $0 == "startPrepared()" }) == 1)
+        #expect(commits == 1)
+        #expect(playedTimestamps.sorted() == [firstTimestamp, secondTimestamp])
+    }
+
+    @Test("chunks arriving during PCM priming are scheduled after the startup commit")
+    func chunksDuringPCMPrimingAreDeferredUntilAfterCommit() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupMinBufferMs: 200
+        )
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let firstTimestamp: Int64 = 1_000_000
+        let deferredTimestamp: Int64 = 1_100_000
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+        await output.blockNextPCM()
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
+        #expect(await waitUntil { await output.playedPCMTimestamps.contains(firstTimestamp) })
+
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x02, count: 100), ts: deferredTimestamp))
+        #expect(await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 2 })
+        #expect(await !output.recordedCalls.contains("startPrepared()"))
+        await output.releaseBlockedPCM()
+
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: .seconds(3)) { await scheduler.stats.received == 1 })
+        let calls = await output.recordedCalls
+        let timestamps = await output.playedPCMTimestamps
+        let commits = await engine.startupReleaseCommits
+        await engine.shutdown()
+
+        let startIndex = try #require(calls.firstIndex(of: "startPrepared()"))
+        #expect(timestamps == [firstTimestamp])
+        #expect(calls[..<startIndex].filter { $0.hasPrefix("playPCM(") }.count == 1)
+        #expect(commits == 1)
+    }
+
+    @Test("stream end invalidates a suspended startup release")
+    func streamEndInvalidatesSuspendedStartupRelease() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+        await output.blockNextOutputDeviceProbe()
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: 1_000_000))
+        #expect(await waitUntil { await output.outputDeviceProbeCount == 1 })
+        await engine.commands.enqueue(.streamEnd(roles: ["player"]))
+        #expect(await waitUntil { await engine.appliedCommandKinds().last == .streamEnd })
+        await output.releaseBlockedOutputDeviceProbe()
+        try? await Task.sleep(for: .milliseconds(100))
+
+        let commits = await engine.startupReleaseCommits
+        let calls = await output.recordedCalls
+        await engine.shutdown()
+
+        #expect(commits == 0)
+        #expect(!calls.contains("startPrepared()"))
+    }
+
+    @Test("shutdown invalidates a suspended startup release")
+    func shutdownInvalidatesSuspendedStartupRelease() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+        await output.blockNextOutputDeviceProbe()
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: 1_000_000))
+        #expect(await waitUntil { await output.outputDeviceProbeCount == 1 })
+        let shutdown = Task { await engine.shutdown() }
+        await output.releaseBlockedOutputDeviceProbe()
+        await shutdown.value
+
+        let commits = await engine.startupReleaseCommits
+        let calls = await output.recordedCalls
+        #expect(commits == 0)
+        #expect(!calls.contains("startPrepared()"))
     }
 
     @Test("startup buffering primes PCM before starting prepared output")
