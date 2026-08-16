@@ -68,14 +68,14 @@ struct BinaryMessageTests {
     func decodeVisualizerDataMessage() throws {
         let fftData = Data([0x10, 0x20, 0x30, 0x40])
         let frame = Self.makeFrame(
-            type: BinaryMessageType.visualizerData.rawValue,
+            type: BinaryMessageType.visualizerLoudness.rawValue,
             timestamp: 5_000_000,
             payload: fftData
         )
 
         let message = try #require(BinaryMessage(data: frame))
 
-        #expect(message.type == .visualizerData)
+        #expect(message.type == .visualizerLoudness)
         #expect(message.timestamp == 5_000_000)
         #expect(message.data == fftData)
     }
@@ -105,7 +105,7 @@ struct BinaryMessageTests {
     @Test
     func artworkChannel_returnsNilForNonArtworkTypes() {
         #expect(BinaryMessageType.audioChunk.artworkChannel == nil)
-        #expect(BinaryMessageType.visualizerData.artworkChannel == nil)
+        #expect(BinaryMessageType.visualizerLoudness.artworkChannel == nil)
     }
 
     // MARK: - Timestamp edge cases

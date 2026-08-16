@@ -120,15 +120,29 @@ struct ArtworkSupport: Codable, Equatable {
     let channels: [ArtworkChannel]
 }
 
-/// Empty `supported.visualizer` block. The visualizer role is not yet
-/// implemented; this exists so a server payload advertising visualizer support
-/// decodes (and re-encodes) without error rather than failing the whole message.
+/// Visualizer@v1 support object in client/hello per spec
+/// (aiosendspin models/visualizer.py `ClientHelloVisualizerSupport`).
+///
+/// aiosendspin 6.x validates this object strictly on the server side —
+/// non-empty `types`, positive `buffer_capacity`/`rate_max`, and a `spectrum`
+/// object whenever `"spectrum"` is in `types` — and hard-rejects the whole
+/// `client/hello` otherwise. In particular the empty `{}` shape this struct
+/// used to encode is rejected, so advertising the visualizer role without a
+/// complete support object breaks the connection during the handshake.
+/// Validation of client input lives in ``VisualizerConfiguration``; this wire
+/// struct carries already-validated fields.
 struct VisualizerSupport: Codable, Equatable {
-    init() {}
+    let bufferCapacity: Int
+    let rateMax: Int
+    let types: [VisualizerFeatureType]
+    let spectrum: VisualizerSpectrumConfig?
 
-    // Explicit Codable implementation for empty struct
-    init(from _: Decoder) throws {}
-    func encode(to _: Encoder) throws {}
+    enum CodingKeys: String, CodingKey {
+        case bufferCapacity = "buffer_capacity"
+        case rateMax = "rate_max"
+        case types
+        case spectrum
+    }
 }
 
 // MARK: - Server Messages

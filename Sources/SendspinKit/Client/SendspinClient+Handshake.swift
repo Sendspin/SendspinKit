@@ -17,6 +17,19 @@ extension SendspinClient {
             artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
         }
 
+        // aiosendspin 6.x hard-rejects a client/hello whose visualizer@v1_support
+        // is incomplete (the old empty {} shape breaks the handshake), so the
+        // support object is always built from a validated VisualizerConfiguration.
+        var visualizerV1Support: VisualizerSupport?
+        if roleSet.contains(.visualizerV1), let visualizerConfig {
+            visualizerV1Support = VisualizerSupport(
+                bufferCapacity: visualizerConfig.bufferCapacity,
+                rateMax: visualizerConfig.rateMax,
+                types: visualizerConfig.types,
+                spectrum: visualizerConfig.spectrum
+            )
+        }
+
         return ClientHelloPayload(
             clientId: clientId,
             name: name,
@@ -25,7 +38,7 @@ extension SendspinClient {
             supportedRoles: roles,
             playerV1Support: playerV1Support,
             artworkV1Support: artworkV1Support,
-            visualizerV1Support: roleSet.contains(.visualizerV1) ? VisualizerSupport() : nil
+            visualizerV1Support: visualizerV1Support
         )
     }
 }

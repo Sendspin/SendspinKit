@@ -42,6 +42,21 @@ public enum ConfigurationError: SendspinError, Hashable {
     /// Artwork channel index must be 0–3.
     case artworkChannelOutOfRange(Int)
 
+    // MARK: - VisualizerConfiguration / VisualizerSpectrumConfig
+
+    /// At least one visualizer feature type is required.
+    case emptyVisualizerTypes
+    /// Visualizer buffer capacity must be positive.
+    case nonPositiveVisualizerBufferCapacity(Int)
+    /// Visualizer rate_max must be positive.
+    case nonPositiveVisualizerRateMax(Int)
+    /// Advertising the `spectrum` feature requires a spectrum configuration.
+    case spectrumConfigurationRequired
+    /// Spectrum display bin count must be positive.
+    case nonPositiveSpectrumBins(Int)
+    /// Spectrum frequency range must satisfy 0 <= f_min < f_max.
+    case invalidSpectrumFrequencyRange(fMin: Int, fMax: Int)
+
     // MARK: - PlayerStateObject
 
     /// Volume must be between 0 and 100.
@@ -61,6 +76,10 @@ public enum ConfigurationError: SendspinError, Hashable {
     case playerRoleRequiresConfiguration
     /// Artwork role was requested but no ``ArtworkConfiguration`` was provided.
     case artworkRoleRequiresConfiguration
+    /// Visualizer role was requested but no ``VisualizerConfiguration`` was provided.
+    /// aiosendspin 6.x hard-rejects a `client/hello` that advertises `visualizer@v1`
+    /// without a complete support object, so the role cannot be advertised bare.
+    case visualizerRoleRequiresConfiguration
 }
 
 extension ConfigurationError: LocalizedError {
@@ -92,6 +111,18 @@ extension ConfigurationError: LocalizedError {
             "\(field) must be non-negative, got \(value)"
         case let .artworkChannelOutOfRange(v):
             "Artwork channel must be 0–3, got \(v)"
+        case .emptyVisualizerTypes:
+            "Must advertise at least one visualizer feature type"
+        case let .nonPositiveVisualizerBufferCapacity(v):
+            "Visualizer buffer capacity must be positive, got \(v)"
+        case let .nonPositiveVisualizerRateMax(v):
+            "Visualizer rate_max must be positive, got \(v)"
+        case .spectrumConfigurationRequired:
+            "Advertising the spectrum feature requires a VisualizerSpectrumConfig"
+        case let .nonPositiveSpectrumBins(v):
+            "Spectrum n_disp_bins must be positive, got \(v)"
+        case let .invalidSpectrumFrequencyRange(fMin, fMax):
+            "Spectrum frequency range must satisfy 0 <= f_min < f_max, got f_min \(fMin), f_max \(fMax)"
         case let .volumeOutOfRange(v):
             "Volume must be 0–100, got \(v)"
         case let .invalidStateCommands(v):
@@ -102,6 +133,8 @@ extension ConfigurationError: LocalizedError {
             "Player role requires a PlayerConfiguration"
         case .artworkRoleRequiresConfiguration:
             "Artwork role requires an ArtworkConfiguration"
+        case .visualizerRoleRequiresConfiguration:
+            "Visualizer role requires a VisualizerConfiguration"
         }
     }
 }
