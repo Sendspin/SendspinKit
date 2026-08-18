@@ -67,7 +67,8 @@ struct ClientStateDeltaTests {
             clientId: "test-timing",
             name: "Timing Test",
             roles: [.playerV1],
-            playerConfig: playerConfig
+            playerConfig: playerConfig,
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
         let mock = try await connectClient(client)
 

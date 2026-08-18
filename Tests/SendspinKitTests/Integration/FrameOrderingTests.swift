@@ -111,7 +111,8 @@ struct FrameOrderingTests {
                 ],
                 volumeMode: .none, // headless — skip real audio-output setup
                 emitRawAudioEvents: true
-            )
+            ),
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
     }
 
@@ -128,7 +129,8 @@ struct FrameOrderingTests {
                 ],
                 volumeMode: .none,
                 emitRawAudioEvents: false
-            )
+            ),
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
         let mock = try await connectClient(client)
         let chunks = CollectedValues<AudioChunk>()
@@ -496,14 +498,13 @@ struct FrameOrderingTests {
 
     @Test
     func midStreamFormatChange_preservesChunkOrdering() async throws {
-        // A mid-stream format change (new stream/start, different sample rate) does NOT
-        // clear buffers (spec README:380). This asserts the *within-class* binary contract:
-        // every AudioChunk is delivered, in wire order, across the format-change
-        // boundary — none dropped or reordered. The cross-class interleaving of
-        // `.streamFormatChanged` (a render-applied lifecycle event, async via the engine
-        // report) vs the typed audio data stream is non-deterministic by design;
-        // engine-channel *processing* order across the change is asserted by the
-        // mid-stream format-change processing-order test.
+        // A mid-stream format change (new stream/start, different sample rate) preserves the
+        // public binary contract even though the engine flushes private output PCM: every
+        // AudioChunk is delivered, in wire order, across the format-change boundary — none
+        // dropped or reordered. The cross-class interleaving of `.streamFormatChanged` (a
+        // render-applied lifecycle event, async via the engine report) vs the typed audio data
+        // stream is non-deterministic by design; engine-channel *processing* order across the
+        // change is asserted by the mid-stream format-change processing-order test.
         let client = try makePlayerClient()
         let mock = MockTransport()
         try await client.acceptConnection(mock)
@@ -670,9 +671,9 @@ struct FrameOrderingTests {
 
     @Test
     func midStreamFormatChangeIsProcessedAfterPrecedingChunks() async throws {
-        // Mid-stream format change is processed after preceding chunks;
-        // old-generation chunks scheduled until the first new-generation chunk;
-        // none dropped across the swap (generation tags monotonic/contiguous).
+        // Mid-stream format change is processed after preceding chunks. The public command
+        // channel remains FIFO across the boundary; private scheduler/output PCM from the old
+        // generation is flushed when the format change reaches the engine.
         let client = try makePlayerClient()
         let mock = MockTransport()
         try await client.acceptConnection(mock)

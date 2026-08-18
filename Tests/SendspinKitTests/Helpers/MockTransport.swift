@@ -6,7 +6,7 @@ import Foundation
 /// Inject server messages via `injectText(_:)` and `injectBinary(_:)`.
 /// Inspect client-sent messages via `sentTextMessages` and `sentBinaryMessages`.
 /// Simulate failures via `setShouldFailOnSend(_:)`.
-actor MockTransport: SendspinTransport {
+actor MockTransport: ClientDialingTransport {
     private let inbox = FrameInbox()
 
     /// JSON-encoded messages sent by the client, captured as raw Data.
@@ -37,6 +37,8 @@ actor MockTransport: SendspinTransport {
     private let encoder = SendspinEncoding.makeEncoder()
 
     // MARK: - SendspinTransport conformance
+
+    func connect() async throws {}
 
     func nextFrame() async -> TransportFrame? {
         await inbox.next()

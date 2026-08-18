@@ -57,9 +57,9 @@ public extension SendspinClient {
     /// All parameters are optional — omitted fields are filled in by the server
     /// (typically from the current format or the client's first supported format).
     ///
-    /// **Important:** The requested combination must exist in the client's
-    /// `supported_formats` list from `client/hello`, otherwise the server
-    /// falls back to the current format.
+    /// **Important:** The requested combination must exist in the effective
+    /// `supported_formats` list from `client/hello`. Invalid full or partial
+    /// requests throw ``OutputFormatError/noMatchingFormat`` before sending.
     ///
     /// Use cases:
     /// - Switch codec: `try await requestPlayerFormat(codec: .flac)`
@@ -71,7 +71,8 @@ public extension SendspinClient {
     /// the server must not start one in response, but should remember the request
     /// and apply it to the next player stream it starts.
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected, or
+    ///   ``OutputFormatError/noMatchingFormat`` when the request matches no effective format.
     @MainActor
     func requestPlayerFormat(
         codec: AudioCodec? = nil,
@@ -79,6 +80,7 @@ public extension SendspinClient {
         sampleRate: Int? = nil,
         bitDepth: Int? = nil
     ) async throws {
+        try requireOpen()
         guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.playerV1)
@@ -94,7 +96,8 @@ public extension SendspinClient {
     /// Request a specific format from the `supportedFormats` list by exact match.
     /// This is a convenience that sends all fields, avoiding server-side fill-in ambiguity.
     ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// - Throws: ``SendspinClientError/notConnected`` if not connected, or
+    ///   ``OutputFormatError/noMatchingFormat`` when the format is not in the effective catalog.
     @MainActor
     func requestPlayerFormat(_ format: AudioFormatSpec) async throws {
         try await requestPlayerFormat(
@@ -124,6 +127,7 @@ public extension SendspinClient {
         mediaWidth: Int? = nil,
         mediaHeight: Int? = nil
     ) async throws {
+        try requireOpen()
         guard roleSet.contains(.artworkV1) else { throw SendspinClientError.roleNotActive(.artworkV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.artworkV1)
@@ -154,6 +158,7 @@ extension SendspinClient {
         positionMs: Int? = nil,
         offsetMs: Int? = nil
     ) async throws {
+        try requireOpen()
         guard roleSet.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.requireActiveRole(.controllerV1)

@@ -19,7 +19,8 @@ struct StreamRequestFormatTests {
                 ],
                 volumeMode: .none,
                 emitRawAudioEvents: true
-            )
+            ),
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
     }
 
@@ -49,7 +50,8 @@ struct StreamRequestFormatTests {
             ),
             artworkConfig: ArtworkConfiguration(channels: [
                 ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
-            ])
+            ]),
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
     }
 
@@ -166,6 +168,49 @@ struct StreamRequestFormatTests {
         #expect(!client.playerStreamActive, "Requesting a format must not locally activate a stream")
 
         await client.disconnect()
+    }
+
+    @Test
+    func requestPlayerFormat_validatesFullAndPartialRequestsAgainstEffectiveCatalog() async throws {
+        let nativePCM = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let nativeFLAC = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
+        let filteredOut = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        let provider = AudioOutputCapabilityService(
+            initialSnapshot: AudioOutputSnapshot(
+                sampleRate: 48_000,
+                reportedBitDepth: nil,
+                diagnosticDescription: "Request validation output"
+            ),
+            platformMonitor: InertAudioOutputPlatformMonitor()
+        )
+        let client = try SendspinClient(
+            clientId: "request-membership-test",
+            name: "Request Membership Test",
+            roles: [.playerV1],
+            playerConfig: PlayerConfiguration(
+                bufferCapacity: 65_536,
+                supportedFormats: [filteredOut, nativePCM, nativeFLAC],
+                volumeMode: .none,
+                outputSampleRatePolicy: .requireCurrentOutput
+            ),
+            audioOutputCapabilityProvider: provider
+        )
+        let mock = try await connectClient(client, activeRoles: [.playerV1])
+
+        try await client.requestPlayerFormat(nativeFLAC)
+        try await client.requestPlayerFormat(codec: .pcm, sampleRate: 48_000)
+        #expect(try await sentRequestFormats(mock).count == 2)
+
+        await #expect(throws: OutputFormatError.noMatchingFormat) {
+            try await client.requestPlayerFormat(filteredOut)
+        }
+        await #expect(throws: OutputFormatError.noMatchingFormat) {
+            try await client.requestPlayerFormat(codec: .flac, bitDepth: 16)
+        }
+        #expect(try await sentRequestFormats(mock).count == 2)
+
+        await client.disconnect()
+        await client.finishAudioOutputCapabilityMonitoring()
     }
 
     @Test
@@ -498,12 +543,12 @@ struct StreamRequestFormatTests {
         #expect(playerClosed)
         #expect(client.artworkStreamActive, "Ending the player stream must not touch artwork")
 
-        try await client.requestPlayerFormat(codec: .flac)
+        try await client.requestPlayerFormat(codec: .pcm)
         try await client.requestArtworkFormat(channel: 0, format: .png)
 
         let sent = try await sentRequestFormats(mock)
         #expect(sent.count == 2)
-        #expect(sent.first?.payload.player?.codec == .flac)
+        #expect(sent.first?.payload.player?.codec == .pcm)
         #expect(sent.last?.payload.artwork?.channel == 0)
 
         await client.disconnect()

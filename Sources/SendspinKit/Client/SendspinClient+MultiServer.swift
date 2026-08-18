@@ -71,8 +71,10 @@ extension SendspinClient {
         let arbitrationEpoch = sessionEpoch
 
         let hello: ServerHelloMessage
+        let negotiation: SessionFormatNegotiation
         do {
-            hello = try await performHandshake(on: newTransport)
+            negotiation = try await makeSessionFormatNegotiation()
+            hello = try await performHandshake(on: newTransport, negotiation: negotiation)
         } catch {
             // The new server never completed its handshake — keep the existing one
             // and drop the probe WITHOUT a goodbye. This is deliberate, not an
@@ -99,7 +101,7 @@ extension SendspinClient {
         // `.keepExisting`, which would leave us with no connection at all.
         guard connection != nil else {
             updateConnectionState(.connecting)
-            await setupConnection(with: newTransport, preReadHello: hello)
+            await setupConnection(with: newTransport, preReadHello: hello, negotiation: negotiation)
             return
         }
 
@@ -120,7 +122,7 @@ extension SendspinClient {
         case .switchToNew:
             await disconnect(reason: .anotherServer)
             updateConnectionState(.connecting)
-            await setupConnection(with: newTransport, preReadHello: hello)
+            await setupConnection(with: newTransport, preReadHello: hello, negotiation: negotiation)
         }
     }
 
@@ -134,9 +136,13 @@ extension SendspinClient {
     @MainActor
     private func performHandshake(
         on transport: any SendspinTransport,
+        negotiation: SessionFormatNegotiation,
         timeout: Duration = .seconds(5)
     ) async throws -> ServerHelloMessage {
-        try await transport.send(ClientHelloMessage(payload: buildClientHelloPayload()))
+        let payload = buildClientHelloPayload(
+            effectivePlayerFormats: negotiation.effectivePlayerFormats
+        )
+        try await transport.send(ClientHelloMessage(payload: payload))
 
         return try await withThrowingTaskGroup(of: HandshakeProbeResult.self) { group in
             group.addTask {

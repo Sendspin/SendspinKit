@@ -56,12 +56,12 @@ struct MetadataClient: AsyncParsableCommand {
 
         // MARK: SIGINT handling
         // Ignore the default handler so Ctrl-C doesn't kill us mid-async-loop.
-        // Instead, dispatch a graceful disconnect and let the event loop exit naturally.
+        // Instead, permanently close the client and let the event loop exit naturally.
         signal(SIGINT, SIG_IGN)
         let sigintSource = DispatchSource.makeSignalSource(signal: SIGINT, queue: .main)
         sigintSource.setEventHandler {
             print("\nShutting down...")
-            Task { await client.disconnect() }
+            Task { await client.close() }
         }
         sigintSource.resume()
 
@@ -162,6 +162,8 @@ struct MetadataClient: AsyncParsableCommand {
                     print("--- Disconnected (incompatible server) ---")
                 case .handshakeTimeout:
                     print("--- Disconnected (handshake timed out) ---")
+                case let .outputFormatRejected(error):
+                    print("--- Disconnected (output format rejected: \(error.localizedDescription)) ---")
                 case .explicit(let goodbye):
                     print("--- Disconnected (\(goodbye.rawValue)) ---")
                 }

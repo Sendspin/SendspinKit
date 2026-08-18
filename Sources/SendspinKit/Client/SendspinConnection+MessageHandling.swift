@@ -105,6 +105,7 @@ extension SendspinConnection {
             activeRoles: activeRoles
         )
         controlSink.enqueue(.serverConnected(info))
+        await activateOutputFormatNegotiation()
 
         // A fresh handshake means the server holds no prior state: clear the delta baseline
         // so the next send is a full client/state, not an empty delta.
@@ -266,6 +267,10 @@ extension SendspinConnection {
             return
         }
 
+        if outputSampleRatePolicy == .requireCurrentOutput {
+            guard await handleOutputFormatStreamStart(format) else { return }
+        }
+
         // Parse codec header. A present-but-malformed (non-base64) header is a
         // corrupt stream/start, not an absent header: surface it as a format error
         // rather than starting headerless (which, for FLAC, fails every decode
@@ -289,9 +294,12 @@ extension SendspinConnection {
         let previous = announcedPlayerStream
         let isFormatChange = previous.map { $0.format != format || $0.codecHeader != codecHeader } ?? false
         announcedPlayerStream = (format: format, codecHeader: codecHeader)
+        if outputSampleRatePolicy != .requireCurrentOutput {
+            _ = await handleOutputFormatStreamStart(format)
+        }
 
         if isFormatChange {
-            audioEngine.commands.enqueue(.formatChange(format, codecHeader: codecHeader))
+            audioEngine.enqueueFormatChange(format: format, codecHeader: codecHeader)
         } else {
             if clientOperationalState == .error {
                 clientOperationalState = .synchronized
@@ -320,6 +328,7 @@ extension SendspinConnection {
             playerStreamActive = false
             audioEngine.commands.enqueue(.streamEnd(roles: endedRoles))
             announcedPlayerStream = nil
+            resetOutputFormatNegotiationForStreamBoundary()
         }
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
@@ -410,9 +419,10 @@ extension SendspinConnection {
             validity.yieldIfValid(chunk, to: audioSink)
         }
 
-        // Only enqueue to engine if clock is synced
+        // Only enqueue to engine if clock is synced. Tag the frame at ingress so a format
+        // announcement invalidates chunks already waiting in the FIFO before they are decoded.
         if isClockSynced {
-            audioEngine.commands.enqueue(.chunk(message.data, ts: message.timestamp))
+            audioEngine.enqueueAudioChunk(data: message.data, timestamp: message.timestamp)
         }
     }
 

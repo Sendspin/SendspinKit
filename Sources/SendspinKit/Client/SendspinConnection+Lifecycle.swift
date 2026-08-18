@@ -154,8 +154,9 @@ extension SendspinConnection {
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
 
-        // Release the deadline task so it cannot outlive the connection it guards.
+        // Release deadline tasks so they cannot outlive the connection they guard.
         cancelHandshakeDeadline()
+        stopOutputFormatNegotiation()
 
         // Invalidate the token
         validity.invalidate()
@@ -177,6 +178,7 @@ extension SendspinConnection {
     /// past an already-issued disconnect/shutdown. No `.disconnected` is emitted:
     /// the facade installs its drain only after `start()`, so no consumer exists.
     func teardownFromIdle() async {
+        stopOutputFormatNegotiation()
         lifecycle = .stopped
         validity.invalidate()
         controlSink.finish()

@@ -42,6 +42,9 @@ private func isRetryableError(_ error: any Error) -> Bool {
         case .audioStartFailed:
             // Audio device may be temporarily unavailable (e.g. device switch).
             return true
+        case .outputFormat:
+            // The strict session catalog cannot accept the server-selected format.
+            return false
         }
     }
 
@@ -175,7 +178,7 @@ struct ErrorRecovery: AsyncParsableCommand {
             print("\n[\(timestamp())] Caught SIGINT — shutting down...")
             Task { @MainActor in
                 state.shouldQuit = true
-                await client.disconnect()
+                await client.close()
             }
         }
         sigintSource.resume()
@@ -239,6 +242,9 @@ struct ErrorRecovery: AsyncParsableCommand {
                             // Unlike an incompatible server, this says nothing about
                             // protocol support: retry.
                             print("[\(timestamp())] Handshake timed out; will retry.")
+                        case let .outputFormatRejected(error):
+                            print("[\(timestamp())] Output format rejected: \(error.localizedDescription)")
+                            state.shouldQuit = true
                         case .explicit(let goodbye):
                             print("[\(timestamp())] Disconnected: \(goodbye.rawValue)")
                             // An explicit disconnect from SIGINT — we're done.

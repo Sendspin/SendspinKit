@@ -6,8 +6,8 @@ import Foundation
 /// or match specific types for targeted handling.
 public protocol SendspinError: Error, Sendable {}
 
-/// Error thrown when attempting to start a discovery or advertiser instance that
-/// has been permanently stopped. Create a new instance instead.
+/// Error thrown when an operation is attempted on a permanently closed instance.
+/// Create a new instance instead.
 public struct TerminatedError: Error, Sendable, LocalizedError, CustomStringConvertible {
     public var errorDescription: String? {
         "Instance has been permanently stopped; create a new one"

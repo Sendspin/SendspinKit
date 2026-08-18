@@ -82,6 +82,8 @@ public enum DisconnectReason: Sendable, Equatable {
     /// protocol support, so this is usually transient (a slow or overloaded server) and
     /// is a reasonable candidate for reconnect, whereas an incompatible server is not.
     case handshakeTimeout
+    /// The server selected a player format rejected by the session's output policy.
+    case outputFormatRejected(OutputFormatError)
 }
 
 /// Raw player audio bytes exactly as received from the server.
@@ -127,6 +129,12 @@ public struct VisualizerData: Sendable, Equatable {
 
 public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
+    /// The client observed a new advisory audio-output capability snapshot.
+    case audioOutputChanged(AudioOutputSnapshot)
+    /// The current session's output-format negotiation status changed.
+    case outputFormatStatusChanged(OutputFormatStatus)
+    /// Streaming could not continue with the server-selected format or audio output.
+    case streamingFailed(StreamingError)
     case streamStarted(AudioFormatSpec)
     /// Format changed mid-stream (e.g. after a `stream/request-format` request)
     case streamFormatChanged(AudioFormatSpec)

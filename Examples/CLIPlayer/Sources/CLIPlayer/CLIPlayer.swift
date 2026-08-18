@@ -185,7 +185,10 @@ final class CLIPlayer {
         // Ignored in TUI mode — these are either handled by log mode only, or
         // have no corresponding on-screen element yet. Keep the list explicit
         // so adding a new case is a compiler error, not a silent drop.
-        case .groupUpdated,
+        case .audioOutputChanged,
+             .outputFormatStatusChanged,
+             .streamingFailed,
+             .groupUpdated,
              .controllerStateUpdated,
              .colorStateUpdated,
              .colorStateCleared,
@@ -204,6 +207,15 @@ final class CLIPlayer {
         switch event {
         case let .serverConnected(info):
             print("[EVENT] Server connected: \(info.name) (v\(info.version))")
+
+        case let .audioOutputChanged(output):
+            print("[AUDIO OUTPUT] \(output.diagnosticDescription ?? "unknown") rate=\(output.sampleRate.map(String.init) ?? "unknown")")
+
+        case let .outputFormatStatusChanged(status):
+            print("[AUDIO OUTPUT] Format status: \(String(describing: status.state))")
+
+        case let .streamingFailed(error):
+            print("[EVENT] Streaming failed: \(error.localizedDescription)")
 
         case let .streamStarted(format):
             print("[EVENT] Stream started: \(Self.formatString(format))")
@@ -293,7 +305,7 @@ final class CLIPlayer {
 
             switch command.lowercased() {
             case "q", "quit", "exit":
-                await client.disconnect()
+                await client.close()
                 return
 
             case "?", "h", "help":
@@ -447,12 +459,12 @@ final class CLIPlayer {
         }
     }
 
-    /// Graceful shutdown: disconnect with reason, clean up resources.
+    /// Graceful shutdown: permanently close the client and clean up resources.
     /// Called from the SIGINT handler for clean Ctrl-C behavior.
     @MainActor
     func gracefulShutdown() async {
         if let client = client {
-            await client.disconnect(reason: .shutdown)
+            await client.close()
         }
         eventTask?.cancel()
     }

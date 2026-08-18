@@ -12,6 +12,11 @@ enum DataPlaneCommand {
     /// Schedule a chunk of PCM audio for playback at the given server timestamp (microseconds).
     case chunk(Data, ts: Int64)
 
+    /// Schedule a chunk tagged with the input generation that was current when the wire frame
+    /// arrived. The tagged form lets format renegotiation invalidate chunks already waiting in
+    /// the command sink before they are decoded.
+    case chunkAtGeneration(Data, ts: Int64, generation: UInt64)
+
     /// Clear buffered audio for the given roles (nil = all roles).
     case streamClear(roles: [String]?)
 
@@ -20,6 +25,9 @@ enum DataPlaneCommand {
 
     /// Change format mid-stream (seamless format swap).
     case formatChange(AudioFormatSpec, codecHeader: Data?)
+
+    /// Change format at an explicitly announced input generation.
+    case formatChangeAtGeneration(AudioFormatSpec, codecHeader: Data?, generation: UInt64)
 
     /// Set static delay in milliseconds (subtracted from scheduled timestamps).
     case setStaticDelay(Int)
@@ -43,13 +51,13 @@ extension DataPlaneCommand {
         switch self {
         case .streamStart:
             .streamStart
-        case .chunk:
+        case .chunk, .chunkAtGeneration:
             .chunk
         case .streamClear:
             .streamClear
         case .streamEnd:
             .streamEnd
-        case .formatChange:
+        case .formatChange, .formatChangeAtGeneration:
             .formatChange
         case .setStaticDelay:
             .setStaticDelay

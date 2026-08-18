@@ -134,7 +134,7 @@ struct ControllerClient: AsyncParsableCommand {
         // defer handles restoreTerminalMode — no manual call needed here.
         print("\nDisconnecting...")
         eventTask.cancel()
-        await client.disconnect(reason: .shutdown)
+        await client.close()
     }
 
     /// Monitor server events and update shared playback state.

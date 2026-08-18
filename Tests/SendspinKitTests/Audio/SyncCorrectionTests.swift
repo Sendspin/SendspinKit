@@ -9,6 +9,47 @@ struct SyncCorrectionTests {
     private static let maxSpeedCorrection = CorrectionPlanner.defaultMaxSpeedCorrection
 
     @Test
+    func decodedTimelineEngagesWhenWireCadenceUsesPreviousRate() {
+        var timeline = AudioChunkPlaybackTimeline()
+        let first = timeline.playTime(
+            wireTimestampUs: 1_000_000,
+            wirePlayTimeUs: 10_000_000,
+            decodedDurationUs: 96_000
+        )
+        let second = timeline.playTime(
+            wireTimestampUs: 1_104_490,
+            wirePlayTimeUs: 10_104_490,
+            decodedDurationUs: 96_000
+        )
+        let third = timeline.playTime(
+            wireTimestampUs: 1_200_490,
+            wirePlayTimeUs: 10_200_490,
+            decodedDurationUs: 96_000
+        )
+
+        #expect(first.playTimeUs == 10_000_000)
+        #expect(second.didEngageDecodedTimeline)
+        #expect(second.playTimeUs == 10_096_000)
+        #expect(third.playTimeUs == 10_192_000)
+        #expect(timeline.usesDecodedTimeline)
+    }
+
+    @Test
+    func decodedTimelineKeepsWireCadenceWhenDurationsMatch() {
+        var timeline = AudioChunkPlaybackTimeline()
+        _ = timeline.playTime(wireTimestampUs: 1_000_000, wirePlayTimeUs: 10_000_000, decodedDurationUs: 96_000)
+        let second = timeline.playTime(
+            wireTimestampUs: 1_096_000,
+            wirePlayTimeUs: 10_096_000,
+            decodedDurationUs: 96_000
+        )
+
+        #expect(second.playTimeUs == 10_096_000)
+        #expect(!second.didEngageDecodedTimeline)
+        #expect(!timeline.usesDecodedTimeline)
+    }
+
+    @Test
     func chunkTimingExactCadenceHasNoMismatch() {
         var diagnostics = ChunkTimingDiagnostics()
         diagnostics.record(timestampUs: 1_000_000, decodedFrameCount: 960, sampleRate: 48_000)

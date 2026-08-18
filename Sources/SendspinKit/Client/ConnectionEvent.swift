@@ -11,6 +11,12 @@ enum ConnectionEvent: Equatable {
     /// Server handshake completed, roles negotiated
     case serverConnected(ServerInfo)
 
+    /// The client-owned capability service observed a new audio output snapshot.
+    case audioOutputChanged(AudioOutputSnapshot)
+
+    /// The current session's output-format negotiation status changed.
+    case outputFormatStatusChanged(OutputFormatStatus)
+
     /// Track metadata received and accumulated from server deltas
     case metadataReceived(TrackMetadata)
 

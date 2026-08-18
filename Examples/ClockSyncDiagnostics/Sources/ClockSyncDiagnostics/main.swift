@@ -168,7 +168,7 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
             // to mutate state and disconnect.
             Task { @MainActor in
                 state.shouldQuit = true
-                await client.disconnect()
+                await client.close()
             }
         }
         sigintSource.resume()
@@ -194,6 +194,8 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
                         print("\n[Disconnected: server rejected as incompatible]")
                     case .handshakeTimeout:
                         print("\n[Disconnected: server/hello never arrived]")
+                    case let .outputFormatRejected(error):
+                        print("\n[Disconnected: output format rejected: \(error.localizedDescription)]")
                     case .explicit:
                         break // SIGINT path — we already printed a message
                     }

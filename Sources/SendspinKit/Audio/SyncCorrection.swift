@@ -21,6 +21,48 @@ struct CorrectionSchedule: Equatable {
     }
 }
 
+/// Reconstructs a contiguous local playback timeline when a format transition temporarily
+/// carries timestamps from the previous sample-rate cadence.
+struct AudioChunkPlaybackTimeline {
+    /// Timestamp spacing must differ by more than this to be treated as a cadence mismatch.
+    static let cadenceMismatchToleranceUs: Int64 = 1_000
+
+    private var previousWireTimestampUs: Int64?
+    private var previousPlayTimeUs: Int64?
+    private var previousDecodedDurationUs: Int64?
+    private(set) var usesDecodedTimeline = false
+
+    /// Return the local play time for one decoded chunk. Once a material cadence mismatch is
+    /// observed, remain on the decoded-duration timeline for the rest of this stream generation;
+    /// switching back to wire timestamps mid-buffer would reintroduce a discontinuity.
+    mutating func playTime(
+        wireTimestampUs: Int64,
+        wirePlayTimeUs: Int64,
+        decodedDurationUs: Int64
+    ) -> (playTimeUs: Int64, didEngageDecodedTimeline: Bool) {
+        let wasUsingDecodedTimeline = usesDecodedTimeline
+        if let previousWireTimestampUs,
+           let previousDecodedDurationUs {
+            let wireDelta = wireTimestampUs - previousWireTimestampUs
+            let mismatch = abs(wireDelta - previousDecodedDurationUs)
+            if wireDelta > 0, mismatch > Self.cadenceMismatchToleranceUs {
+                usesDecodedTimeline = true
+            }
+        }
+
+        let playTimeUs = if usesDecodedTimeline, let previousPlayTimeUs, let previousDecodedDurationUs {
+            previousPlayTimeUs + previousDecodedDurationUs
+        } else {
+            wirePlayTimeUs
+        }
+
+        previousWireTimestampUs = wireTimestampUs
+        previousPlayTimeUs = playTimeUs
+        previousDecodedDurationUs = decodedDurationUs
+        return (playTimeUs, !wasUsingDecodedTimeline && usesDecodedTimeline)
+    }
+}
+
 /// Windowed comparison between wire timestamp spacing and decoded PCM duration.
 struct ChunkTimingDiagnostics {
     struct Snapshot {

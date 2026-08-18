@@ -72,3 +72,8 @@ public protocol SendspinTransport: Actor, Sendable {
     /// Disconnect the transport
     func disconnect() async
 }
+
+/// Internal refinement for transports created by the client-initiated dial path.
+protocol ClientDialingTransport: SendspinTransport {
+    func connect() async throws
+}

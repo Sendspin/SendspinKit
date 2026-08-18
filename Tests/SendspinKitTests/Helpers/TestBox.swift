@@ -1,4 +1,5 @@
 import Foundation
+@testable import SendspinKit
 
 /// A single mutable `Sendable` value isolated behind an actor.
 ///
@@ -27,4 +28,18 @@ actor TestBox<Value: Sendable> {
     func set(_ newValue: Value) {
         value = newValue
     }
+}
+
+actor InertAudioOutputPlatformMonitor: AudioOutputPlatformMonitoring {
+    nonisolated let requiresActiveAudioSession = false
+
+    func startMonitoring() -> AsyncStream<AudioOutputPlatformObservation> {
+        AsyncStream { _ in }
+    }
+
+    func stopMonitoring() {}
+}
+
+func makeInertAudioOutputCapabilityProvider() -> any AudioOutputCapabilityProviding {
+    AudioOutputCapabilityService(platformMonitor: InertAudioOutputPlatformMonitor())
 }

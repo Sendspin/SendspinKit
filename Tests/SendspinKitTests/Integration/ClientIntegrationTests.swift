@@ -72,7 +72,8 @@ func makeTestClient(
         name: "Test Client",
         roles: roles,
         playerConfig: playerConfig,
-        persistenceProvider: persistenceProvider
+        persistenceProvider: persistenceProvider,
+        audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
     )
 }
 
@@ -1014,7 +1015,8 @@ struct ClientIntegrationTests {
                     AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
                 ],
                 emitRawAudioEvents: true
-            )
+            ),
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
         _ = try await connectClient(client, connectionReason: .discovery)
 

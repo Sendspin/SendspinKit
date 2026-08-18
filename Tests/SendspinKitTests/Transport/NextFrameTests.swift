@@ -77,7 +77,8 @@ struct NextFrameTests {
                     ],
                     volumeMode: .none,
                     emitRawAudioEvents: true
-                )
+                ),
+                audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
             )
         }.value
 

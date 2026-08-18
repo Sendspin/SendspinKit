@@ -46,6 +46,17 @@ final class SessionValidityToken: Sendable {
         }
     }
 
+    /// Atomically check validity and run a brief sendable action.
+    ///
+    /// The action must not suspend or re-enter this token. Use this when an off-main
+    /// subsystem needs the same retirement boundary as binary event emission.
+    func performSendableIfValid(_ action: @Sendable () -> Void) {
+        lock.withLock { isValidNow in
+            guard isValidNow else { return }
+            action()
+        }
+    }
+
     /// Atomically check validity and yield the event in one critical section.
     ///
     /// This is the only method for emitting binary events. Under the lock, it

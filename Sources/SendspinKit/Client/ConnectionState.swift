@@ -12,6 +12,8 @@ public enum StreamingError: SendspinError, Hashable, LocalizedError, CustomDebug
     case invalidFormat(String)
     /// AudioQueue failed to start (e.g. no audio device available)
     case audioStartFailed(String)
+    /// The server-selected format violates the session's output-format policy.
+    case outputFormat(OutputFormatError)
 
     public var errorDescription: String? {
         switch self {
@@ -21,6 +23,8 @@ public enum StreamingError: SendspinError, Hashable, LocalizedError, CustomDebug
             "Invalid audio format: \(reason)"
         case let .audioStartFailed(reason):
             "Failed to start audio: \(reason)"
+        case let .outputFormat(error):
+            error.errorDescription
         }
     }
 
@@ -32,6 +36,8 @@ public enum StreamingError: SendspinError, Hashable, LocalizedError, CustomDebug
             "StreamingError.invalidFormat(\(reason))"
         case let .audioStartFailed(reason):
             "StreamingError.audioStartFailed(\(reason))"
+        case let .outputFormat(error):
+            "StreamingError.outputFormat(\(error))"
         }
     }
 }

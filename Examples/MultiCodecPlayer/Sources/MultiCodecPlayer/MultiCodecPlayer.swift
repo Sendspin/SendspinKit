@@ -123,12 +123,12 @@ struct MultiCodecPlayer: AsyncParsableCommand {
             playerConfig: playerConfig
         )
 
-        // 5. If duration > 0, schedule disconnect after the deadline
+        // 5. If duration > 0, permanently close after the deadline
         if duration > 0 {
             Task { @MainActor in
                 try? await Task.sleep(for: .seconds(duration))
                 print("\nDuration limit reached (\(duration)s). Disconnecting...")
-                await client.disconnect(reason: .shutdown)
+                await client.close()
             }
         }
 

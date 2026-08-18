@@ -20,6 +20,11 @@ actor AudioEngine {
     private let _commandsSink: DataPlaneSink
     private let _commandStream: AsyncStream<DataPlaneCommand>
 
+    /// Generation gate shared with the wire-facing connection. Format announcements must
+    /// invalidate already-received chunks before the FIFO command drain reaches the format
+    /// command; an actor-isolated counter would be too late for that boundary.
+    private nonisolated let inputGeneration: OSAllocatedUnfairLock<UInt64>
+
     // Report egress
     private let reportStream: AsyncStream<EngineReport>
     private let reportContinuation: AsyncStream<EngineReport>.Continuation
@@ -27,9 +32,12 @@ actor AudioEngine {
     // Seamless format state (engine-isolated, no MainActor.run)
     private var pendingFormat: AudioFormatSpec?
     private var pendingCodecHeader: Data?
+    private var pendingFormatGeneration: UInt64?
     private var streamGeneration: UInt64 = 0
     private var chunkTimingFormat: AudioFormatSpec?
     private var chunkTimingDiagnostics = ChunkTimingDiagnostics()
+    private var playbackTimeline = AudioChunkPlaybackTimeline()
+    private var playbackTimelineTransitionEnabled = false
 
     /// Static delay in milliseconds (subtracted from scheduled timestamps)
     private var staticDelayMs: Int = 0
@@ -328,6 +336,7 @@ actor AudioEngine {
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
+        inputGeneration = OSAllocatedUnfairLock(initialState: 0)
         let (reportStream, reportContinuation) = AsyncStream<EngineReport>.makeStream()
         self.reportStream = reportStream
         self.reportContinuation = reportContinuation
@@ -337,7 +346,11 @@ actor AudioEngine {
 
     /// Secondary initializer for production use, building real AudioPlayer and AudioScheduler.
     /// (Actors don't support convenience initializers, so this is a separate designated init.)
-    init(clock: any ClockSyncProtocol, config: PlayerConfiguration) {
+    init(
+        clock: any ClockSyncProtocol,
+        config: PlayerConfiguration,
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
+    ) {
         let audioScheduler = AudioScheduler(
             clockSync: clock,
             releaseLeadTime: TimeInterval(config.minBufferMs) / 1_000.0
@@ -348,7 +361,8 @@ actor AudioEngine {
         let audioPlayer = AudioPlayer(
             pcmBufferCapacity: pcmBufferCapacity,
             volumeControl: VolumeControlFactory.resolve(mode: config.volumeMode).control,
-            processCallback: config.processCallback
+            processCallback: config.processCallback,
+            outputTransitionCallback: outputTransitionCallback
         )
 
         output = audioPlayer
@@ -357,6 +371,7 @@ actor AudioEngine {
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
+        inputGeneration = OSAllocatedUnfairLock(initialState: 0)
         let (reportStream, reportContinuation) = AsyncStream<EngineReport>.makeStream()
         self.reportStream = reportStream
         self.reportContinuation = reportContinuation
@@ -369,6 +384,25 @@ actor AudioEngine {
     /// The data-plane sink where commands are enqueued by the client message loop.
     nonisolated var commands: DataPlaneSink {
         _commandsSink
+    }
+
+    /// Enqueue an inbound audio chunk tagged with the current wire generation.
+    nonisolated func enqueueAudioChunk(data: Data, timestamp: Int64) {
+        let generation = inputGeneration.withLock { $0 }
+        _commandsSink.enqueue(.chunkAtGeneration(data, ts: timestamp, generation: generation))
+    }
+
+    /// Enqueue a format change with an ingress generation barrier.
+    ///
+    /// The barrier advances before the command enters the FIFO. Audio chunks that were already
+    /// received but are still waiting in that FIFO therefore become stale immediately, rather
+    /// than being decoded and scheduled while the engine waits to reach this command.
+    nonisolated func enqueueFormatChange(format: AudioFormatSpec, codecHeader: Data?) {
+        let generation = inputGeneration.withLock { value in
+            value &+= 1
+            return value
+        }
+        _commandsSink.enqueue(.formatChangeAtGeneration(format, codecHeader: codecHeader, generation: generation))
     }
 
     /// The report stream where the engine emits lifecycle and state transitions.
@@ -544,6 +578,11 @@ actor AudioEngine {
             let signal = await waitForStartupSignal()
             switch signal {
             case .stateChanged:
+                // Once a release instant is armed, arrivals only extend the owned buffer.
+                // They must not re-select the startup anchor: doing so can keep sliding the
+                // deadline on a late join until the server ends the stream. The deadline task
+                // is the sole owner of that wait and re-evaluates lateness when it fires.
+                guard currentStartupDeadlineArm == nil else { continue }
                 await releaseStartupBufferIfReady()
             case let .deadline(arm):
                 await releaseStartupBufferIfReady(arm: arm)
@@ -606,10 +645,18 @@ actor AudioEngine {
             await applyStreamStart(format: format, codecHeader: codecHeader)
 
         case let .chunk(data, ts):
-            await applyChunk(data: data, ts: ts)
+            await applyChunk(data: data, ts: ts, generation: nil)
+
+        case let .chunkAtGeneration(data, ts, generation):
+            guard generation == inputGeneration.withLock({ $0 }), generation == streamGeneration else { return }
+            await applyChunk(data: data, ts: ts, generation: generation)
 
         case let .formatChange(format, codecHeader):
-            await applyFormatChange(format: format, codecHeader: codecHeader)
+            await applyFormatChange(format: format, codecHeader: codecHeader, generation: nil)
+
+        case let .formatChangeAtGeneration(format, codecHeader, generation):
+            guard generation == inputGeneration.withLock({ $0 }) else { return }
+            await applyFormatChange(format: format, codecHeader: codecHeader, generation: generation)
 
         case let .streamClear(roles):
             await applyStreamClear(roles: roles)
@@ -633,8 +680,13 @@ actor AudioEngine {
         startupSequence &+= 1
         startupReleaseEvaluations = 0
         startupDeadlineArms = 0
+        pendingFormat = nil
+        pendingCodecHeader = nil
+        pendingFormatGeneration = nil
         chunkTimingFormat = format
         chunkTimingDiagnostics = ChunkTimingDiagnostics()
+        playbackTimeline = AudioChunkPlaybackTimeline()
+        playbackTimelineTransitionEnabled = false
         signalStartupCoordinator(.stateChanged)
         let streamStartLog = "stream start engine=\(engineID) sequence=\(startupSequence) format=\(format.codec.rawValue)"
         Log.audio.debug("\(streamStartLog, privacy: .public)")
@@ -670,7 +722,12 @@ actor AudioEngine {
     }
 
     /// Schedule a chunk for playback.
-    private func applyChunk(data: Data, ts: Int64) async {
+    private func applyChunk(data: Data, ts: Int64, generation: UInt64?) async {
+        if let generation, generation < streamGeneration {
+            return
+        }
+
+        let chunkGeneration = generation ?? streamGeneration
         do {
             let pcm = try await output.decode(data)
             if let format = chunkTimingFormat {
@@ -689,14 +746,37 @@ actor AudioEngine {
                 return
             }
             let adjustedTs = delayed.partialValue
+            let frameSize = chunkTimingFormat.map {
+                $0.channels * ($0.effectiveOutputBitDepth / 8)
+            } ?? 1
+            let sampleRate = chunkTimingFormat?.sampleRate ?? 1
+            let decodedDurationUs = Int64(
+                (Double(pcm.count / max(1, frameSize)) * 1_000_000.0 / Double(sampleRate)).rounded()
+            )
+            let wirePlayTime = await clock.serverTimeToLocal(adjustedTs)
+            let playTime: Int64
+            if playbackTimelineTransitionEnabled {
+                let timeline = playbackTimeline.playTime(
+                    wireTimestampUs: adjustedTs,
+                    wirePlayTimeUs: wirePlayTime,
+                    decodedDurationUs: max(1, decodedDurationUs)
+                )
+                if timeline.didEngageDecodedTimeline {
+                    Log.audio.notice(
+                        "Audio timestamp cadence differs from decoded duration; using a contiguous playback timeline"
+                    )
+                }
+                playTime = timeline.playTimeUs
+            } else {
+                playTime = wirePlayTime
+            }
             if startupBuffer != nil || startupReleaseInProgress {
-                let playTime = await clock.serverTimeToLocal(adjustedTs)
                 if startupReleaseInProgress, startupBuffer == nil {
                     startupReleaseDeferredChunks.append(StartupBufferedChunk(
                         pcmData: pcm,
                         playTimeMicroseconds: playTime,
                         originalTimestamp: adjustedTs,
-                        generation: streamGeneration
+                        generation: chunkGeneration
                     ))
                     return
                 }
@@ -711,7 +791,7 @@ actor AudioEngine {
                         pcmData: pcm,
                         playTimeMicroseconds: playTime,
                         originalTimestamp: adjustedTs,
-                        generation: streamGeneration
+                        generation: chunkGeneration
                     ))
                     if !startupReleaseInProgress {
                         signalStartupCoordinator(.stateChanged)
@@ -721,11 +801,11 @@ actor AudioEngine {
                         pcm: pcm,
                         serverTimestamp: adjustedTs,
                         playTimeMicroseconds: playTime,
-                        generation: streamGeneration
+                        generation: chunkGeneration
                     )
                 }
             } else {
-                await audioScheduler.schedule(pcm: pcm, serverTimestamp: adjustedTs, generation: streamGeneration)
+                await audioScheduler.schedule(pcm: pcm, serverTimestamp: adjustedTs, generation: chunkGeneration)
             }
         } catch {
             // Per-chunk decode failures are silent; stream-start failures are reported separately.
@@ -875,7 +955,11 @@ actor AudioEngine {
                     Log.audio.debug("\(invalidatedLog, privacy: .public)")
                     return
                 }
-                try await output.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+                try await output.playPCM(
+                    chunk.pcmData,
+                    serverTimestamp: chunk.originalTimestamp,
+                    playTimeMicroseconds: chunk.playTimeMicroseconds
+                )
             }
             guard startupReleaseInProgress, startupSequence == sequence, !outputHasStarted else {
                 let invalidatedLog = "startup priming invalidated engine=\(engineID) sequence=\(sequence) invocation=\(invocation) stage=before-start"
@@ -928,24 +1012,45 @@ actor AudioEngine {
         }
     }
 
-    /// Apply a seamless format change (engine-internal, no MainActor.run).
-    private func applyFormatChange(format: AudioFormatSpec, codecHeader: Data?) async {
-        streamGeneration &+= 1
+    /// Apply a format change at an output boundary (engine-internal, no MainActor.run).
+    ///
+    /// The public binary stream still receives every wire chunk, but already-scheduled PCM
+    /// belongs to the old output format and cannot safely remain ahead of the new AudioQueue.
+    /// Stop and flush that private output state here; the first new-generation chunk starts the
+    /// replacement queue, avoiding a period where decoded 44.1 kHz data follows a 48 kHz queue.
+    private func applyFormatChange(
+        format: AudioFormatSpec,
+        codecHeader: Data?,
+        generation: UInt64?
+    ) async {
+        if let generation {
+            streamGeneration = generation
+        } else {
+            streamGeneration &+= 1
+        }
         chunkTimingFormat = format
         chunkTimingDiagnostics = ChunkTimingDiagnostics()
+        playbackTimeline = AudioChunkPlaybackTimeline()
+        playbackTimelineTransitionEnabled = true
         pendingFormat = format
         pendingCodecHeader = codecHeader
+        pendingFormatGeneration = streamGeneration
+
+        await audioScheduler.clear()
+        await output.stop()
+        outputHasStarted = false
+
         do {
             try await output.swapDecoder(format: format, codecHeader: codecHeader)
-            // On success, .formatApplied is yielded when runSchedulerOutput processes
-            // the first new-generation chunk (the deferred AudioQueue rebuild).
+            // The replacement AudioQueue starts when runSchedulerOutput receives the first
+            // new-generation chunk. Keeping the decoder ready avoids decoding on the old format.
         } catch {
-            // Swap failed: fall back to a full restart so new-format chunks are not
-            // decoded by the stale decoder. The deferred rebuild is now moot, so
-            // clear the pending transition and surface the format directly here.
+            // Swap failed: fall back to a full restart so new-format chunks are not decoded by
+            // the stale decoder. The queue is already flushed, so this starts from a clean path.
             Log.audio.error("Decoder swap failed, full restart: \(error.localizedDescription)")
             pendingFormat = nil
             pendingCodecHeader = nil
+            pendingFormatGeneration = nil
             do {
                 try await output.start(format: format, codecHeader: codecHeader)
                 outputHasStarted = true
@@ -989,6 +1094,11 @@ actor AudioEngine {
             startupFormat = nil
             chunkTimingFormat = nil
             chunkTimingDiagnostics = ChunkTimingDiagnostics()
+            playbackTimeline = AudioChunkPlaybackTimeline()
+            playbackTimelineTransitionEnabled = false
+            pendingFormat = nil
+            pendingCodecHeader = nil
+            pendingFormatGeneration = nil
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupReleaseInProgress = false
             cancelStartupDeadline()
@@ -1022,8 +1132,23 @@ actor AudioEngine {
         // `audioScheduler.finish()` fired mid-transition.
         let stream = audioScheduler.scheduledChunks
         var iterator = stream.makeAsyncIterator()
+        var deferredChunk: ScheduledChunk?
 
-        while let chunk = await iterator.next() {
+        while true {
+            let chunk: ScheduledChunk?
+            if let pendingChunk = deferredChunk {
+                chunk = pendingChunk
+                deferredChunk = nil
+            } else {
+                chunk = await iterator.next()
+            }
+            guard let chunk else { break }
+
+            // `clear()` cannot retract values already yielded by the AsyncStream. The
+            // engine generation is the authoritative boundary, so discard those values
+            // even when the output loop has not observed the new generation yet.
+            guard chunk.generation >= streamGeneration else { continue }
+
             if chunk.generation != currentGeneration {
                 if chunk.generation < currentGeneration {
                     // Old generation after format change; discard
@@ -1033,9 +1158,19 @@ actor AudioEngine {
                 // New generation — first chunk in new format
                 currentGeneration = chunk.generation
 
-                // Read the pending format engine-internally (no MainActor.run)
-                guard let format = pendingFormat else {
-                    try? await output.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+                // Read the pending format engine-internally (no MainActor.run). A newer
+                // transition may have superseded this yielded chunk while it was waiting
+                // in the AsyncStream; never pair that chunk with the newer decoder.
+                guard let format = pendingFormat,
+                      pendingFormatGeneration == currentGeneration else {
+                    if let pendingFormatGeneration, pendingFormatGeneration > currentGeneration {
+                        continue
+                    }
+                    try? await output.playPCM(
+                        chunk.pcmData,
+                        serverTimestamp: chunk.originalTimestamp,
+                        playTimeMicroseconds: chunk.playTimeMicroseconds
+                    )
                     continue
                 }
 
@@ -1048,13 +1183,26 @@ actor AudioEngine {
                 yield(.formatApplied(format))
 
                 // Pre-buffer before switching, pulling from the same iterator.
-                var preBuffer: [(pcm: Data, timestamp: Int64)] = [
-                    (chunk.pcmData, chunk.originalTimestamp)
+                var preBuffer: [(pcm: Data, timestamp: Int64, playTime: Int64)] = [
+                    (chunk.pcmData, chunk.originalTimestamp, chunk.playTimeMicroseconds)
                 ]
 
                 let formatTransitionPreBuffer = 2
                 while preBuffer.count < formatTransitionPreBuffer, let nextChunk = await iterator.next() {
-                    preBuffer.append((nextChunk.pcmData, nextChunk.originalTimestamp))
+                    if nextChunk.generation < streamGeneration || nextChunk.generation < currentGeneration {
+                        continue
+                    }
+                    if nextChunk.generation > currentGeneration {
+                        deferredChunk = nextChunk
+                        break
+                    }
+                    preBuffer.append((nextChunk.pcmData, nextChunk.originalTimestamp, nextChunk.playTimeMicroseconds))
+                }
+
+                // A newer format command may have superseded this transition while its
+                // prebuffer was being assembled. Do not start the old queue or consume its PCM.
+                guard pendingFormatGeneration == currentGeneration, streamGeneration == currentGeneration else {
+                    continue
                 }
 
                 // Rebuild AudioQueue
@@ -1070,23 +1218,37 @@ actor AudioEngine {
                     // and applyFormatChange. Skip feeding a queue that failed to start.
                     Log.audio.error("Seamless rebuild failed: \(error.localizedDescription)")
                     yield(.startFailed(reason: error.localizedDescription))
-                    pendingFormat = nil
-                    pendingCodecHeader = nil
+                    if pendingFormatGeneration == currentGeneration {
+                        pendingFormat = nil
+                        pendingCodecHeader = nil
+                        pendingFormatGeneration = nil
+                    }
                     continue
                 }
 
                 // Feed pre-buffered chunks
                 for buffered in preBuffer {
-                    try? await output.playPCM(buffered.pcm, serverTimestamp: buffered.timestamp)
+                    try? await output.playPCM(
+                        buffered.pcm,
+                        serverTimestamp: buffered.timestamp,
+                        playTimeMicroseconds: buffered.playTime
+                    )
                 }
 
-                pendingFormat = nil
-                pendingCodecHeader = nil
+                if pendingFormatGeneration == currentGeneration {
+                    pendingFormat = nil
+                    pendingCodecHeader = nil
+                    pendingFormatGeneration = nil
+                }
 
                 continue
             }
 
-            try? await output.playPCM(chunk.pcmData, serverTimestamp: chunk.originalTimestamp)
+            try? await output.playPCM(
+                chunk.pcmData,
+                serverTimestamp: chunk.originalTimestamp,
+                playTimeMicroseconds: chunk.playTimeMicroseconds
+            )
         }
     }
 

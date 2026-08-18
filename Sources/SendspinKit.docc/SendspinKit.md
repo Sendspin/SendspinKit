@@ -10,6 +10,8 @@ The library supports multiple client roles (player, controller, metadata, artwor
 
 Built with Swift 6 strict concurrency — all public types are ``Sendable``, mutable state is actor-isolated, and events flow through ``AsyncStream``.
 
+A client can reuse ``SendspinClient/disconnect(reason:)`` across sessions. When its owner is finished with the instance, call and await ``SendspinClient/close()`` instead. Closing is permanent and idempotent: it tears down the connection and output-route listener, clears retained state, finishes all public streams, and makes later connection and command APIs throw ``TerminatedError``.
+
 ```swift
 import SendspinKit
 
@@ -50,6 +52,10 @@ for await servers in discovery.servers {
 - ``ArtworkConfiguration``
 - ``AudioFormatSpec``
 - ``AudioCodec``
+- ``OutputSampleRatePolicy``
+- ``AudioOutputSnapshot``
+- ``OutputFormatStatus``
+- ``AudioSessionActivationState``
 - ``VersionedRole``
 
 ### Discovery and Connection
@@ -85,5 +91,6 @@ for await servers in discovery.servers {
 ### Errors
 
 - ``SendspinClientError``
+- ``OutputFormatError``
 - ``StreamingError``
 - ``TerminatedError``

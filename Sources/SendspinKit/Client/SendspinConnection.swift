@@ -60,6 +60,26 @@ actor SendspinConnection {
     /// competing-connection arbitration.
     let clientHelloPayload: ClientHelloPayload
 
+    /// Exact player catalog advertised for this session. `nil` for non-player clients.
+    nonisolated let effectivePlayerFormats: [AudioFormatSpec]?
+    let outputSampleRatePolicy: OutputSampleRatePolicy?
+
+    /// Session-scoped route negotiation state. Snapshot ownership remains on the facade;
+    /// this actor retains only the latest value needed to make protocol decisions.
+    var outputSnapshot: AudioOutputSnapshot?
+    var latestOutputSnapshotSequence: UInt64
+    var settledOutputSampleRate: Int?
+    var outputFormatStatus: OutputFormatStatus?
+    var pendingOutputFormatRequest: PendingOutputFormatRequest?
+    var automaticRequestsSuppressed = false
+    var handledAutomaticSampleRate: Int?
+    var outputSettleTask: Task<Void, Never>?
+    var outputRequestDeadlineTask: Task<Void, Never>?
+    var outputNegotiationGeneration: UInt64 = 0
+    let outputSettleInterval: Duration
+    let outputRequestTimeout: Duration
+    let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
+
     /// Clock-sync sender task. Started on `server/hello` — no client messages may
     /// precede handshake completion — and cancelled on teardown.
     var clockSyncTask: Task<Void, Never>?
@@ -139,6 +159,15 @@ actor SendspinConnection {
         transport: any SendspinTransport,
         parsedHello: ServerHelloMessage?,
         clientHelloPayload: ClientHelloPayload,
+        effectivePlayerFormats: [AudioFormatSpec]? = nil,
+        outputSampleRatePolicy: OutputSampleRatePolicy? = nil,
+        initialOutputSnapshot: AudioOutputSnapshot? = nil,
+        initialOutputSnapshotSequence: UInt64 = 0,
+        outputSettleInterval: Duration = .milliseconds(250),
+        outputRequestTimeout: Duration = .seconds(3),
+        outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
+            try await Task.sleep(for: duration)
+        },
         audioSink: AsyncStream<AudioChunk>.Continuation = AsyncStream<AudioChunk>.makeStream().1,
         artworkSink: AsyncStream<ArtworkData>.Continuation = AsyncStream<ArtworkData>.makeStream().1,
         visualizerSink: AsyncStream<VisualizerData>.Continuation = AsyncStream<VisualizerData>.makeStream().1,
@@ -160,6 +189,14 @@ actor SendspinConnection {
         self.transport = transport
         self.parsedHello = parsedHello
         self.clientHelloPayload = clientHelloPayload
+        self.effectivePlayerFormats = effectivePlayerFormats
+        self.outputSampleRatePolicy = outputSampleRatePolicy
+        outputSnapshot = initialOutputSnapshot
+        latestOutputSnapshotSequence = initialOutputSnapshotSequence
+        settledOutputSampleRate = initialOutputSnapshot?.sampleRate
+        self.outputSettleInterval = outputSettleInterval
+        self.outputRequestTimeout = outputRequestTimeout
+        self.outputNegotiationSleep = outputNegotiationSleep
         self.audioSink = audioSink
         self.artworkSink = artworkSink
         self.visualizerSink = visualizerSink

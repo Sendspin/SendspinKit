@@ -217,6 +217,7 @@ actor AudioPlayer {
     /// Process callback for local visualization / audio effects.
     /// Set once at init, never mutated — `@Sendable` and safe to read from any context.
     private nonisolated let processCallback: AudioProcessCallback?
+    private let outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)?
 
     var isPlaying: Bool {
         _isPlaying
@@ -239,10 +240,12 @@ actor AudioPlayer {
     init(
         pcmBufferCapacity: Int = 524_288,
         volumeControl: VolumeControl = SoftwareVolumeControl(),
-        processCallback: AudioProcessCallback? = nil
+        processCallback: AudioProcessCallback? = nil,
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
     ) {
         self.volumeControl = volumeControl
         self.processCallback = processCallback
+        self.outputTransitionCallback = outputTransitionCallback
         lockedState = OSAllocatedUnfairLock(
             initialState: LockedState(pcmRingBuffer: PCMRingBuffer(capacity: pcmBufferCapacity))
         )
@@ -279,6 +282,7 @@ actor AudioPlayer {
         let prepareLog = "prepare player=\(currentPlayerID) format=\(format.codec.rawValue) isPlaying=\(currentlyPlaying)"
         Log.audio.debug("\(prepareLog, privacy: .public)")
         stop()
+        outputTransitionCallback?(.willBegin(sampleRate: format.sampleRate))
 
         decoder = try AudioDecoderFactory.create(
             codec: format.codec,
@@ -443,6 +447,7 @@ actor AudioPlayer {
             decoder = nil
             throw AudioPlayerError.queueStartFailed(prewarmStatus)
         }
+        outputTransitionCallback?(.didStart)
     }
 
     /// Delay between handing a frame to the output and hearing it: the depth of the AudioQueue
@@ -526,6 +531,7 @@ actor AudioPlayer {
                 decoder = nil
                 throw AudioPlayerError.queueStartFailed(status)
             }
+            outputTransitionCallback?(.didStart)
         }
         let desc = "\(format.codec.rawValue) \(format.sampleRate)Hz"
             + " \(format.channels)ch \(format.bitDepth)bit (output: \(format.effectiveOutputBitDepth)-bit)"
@@ -590,7 +596,11 @@ actor AudioPlayer {
     }
 
     /// Enqueue PCM data into the ring buffer for consumption by the AudioQueue callback.
-    func playPCM(_ pcmData: Data, serverTimestamp: Int64) async throws {
+    func playPCM(
+        _ pcmData: Data,
+        serverTimestamp: Int64,
+        playTimeMicroseconds: Int64? = nil
+    ) async throws {
         guard let queue = audioQueue, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
@@ -608,10 +618,13 @@ actor AudioPlayer {
             if state.prewarming {
                 Self.placeFirstFrame(
                     state: &state,
-                    serverTimestamp: serverTimestamp,
-                    framesPlayed: Self.framesPlayed(queue: queue),
-                    nowAbsolute: MonotonicClock.absoluteMicroseconds(),
-                    silence: silence
+                    placement: FirstFramePlacement(
+                        serverTimestamp: serverTimestamp,
+                        localPlayTime: playTimeMicroseconds,
+                        framesPlayed: Self.framesPlayed(queue: queue),
+                        nowAbsolute: MonotonicClock.absoluteMicroseconds(),
+                        silence: silence
+                    )
                 )
             }
             state.prewarming = false
@@ -673,6 +686,14 @@ actor AudioPlayer {
         return Int64(timestamp.mSampleTime)
     }
 
+    private struct FirstFramePlacement {
+        let serverTimestamp: Int64
+        let localPlayTime: Int64?
+        let framesPlayed: Int64
+        let nowAbsolute: Int64
+        let silence: Data
+    }
+
     /// Pad the ring with silence so the first real frame lands on its due instant.
     ///
     /// Once the queue is running the device consumes at exactly the sample rate, so a frame's
@@ -683,30 +704,38 @@ actor AudioPlayer {
     ///
     /// A negative pad means the release instant has already passed; those frames can never be
     /// audible on time, so they are dropped rather than played late.
-    private static func placeFirstFrame(
-        state: inout LockedState,
-        serverTimestamp: Int64,
-        framesPlayed: Int64,
-        nowAbsolute: Int64,
-        silence: Data
-    ) {
+    private static func placeFirstFrame(state: inout LockedState, placement: FirstFramePlacement) {
+        let serverTimestamp = placement.serverTimestamp
+        let localPlayTime = placement.localPlayTime
+        let framesPlayed = placement.framesPlayed
+        let nowAbsolute = placement.nowAbsolute
+        let silence = placement.silence
         let sampleRate = Int64(state.sampleRate)
-        guard sampleRate > 0, state.frameSize > 0, let snapshot = state.timeSnapshot else {
-            // Without clock sync there is no due instant to place against.
+        guard sampleRate > 0, state.frameSize > 0 else {
             state.cursorMicroseconds = serverTimestamp
             return
         }
 
         let framesInFlight = max(0, state.totalFramesEnqueued - framesPlayed)
-        let audibleServerTime = snapshot.localTimeToServer(nowAbsolute)
-            + framesInFlight * 1_000_000 / sampleRate
-            + state.deviceLatencyUs
-
+        let pipelineDelayUs = framesInFlight * 1_000_000 / sampleRate + state.deviceLatencyUs
         let padCapacityFrames = Int64(silence.count / state.frameSize)
-        let padFrames = min(
-            max((serverTimestamp - audibleServerTime) * sampleRate / 1_000_000, 0),
-            padCapacityFrames
-        )
+        let padFrames: Int64
+        if let localPlayTime {
+            padFrames = min(
+                max((localPlayTime - nowAbsolute - pipelineDelayUs) * sampleRate / 1_000_000, 0),
+                padCapacityFrames
+            )
+        } else if let snapshot = state.timeSnapshot {
+            let audibleServerTime = snapshot.localTimeToServer(nowAbsolute) + pipelineDelayUs
+            padFrames = min(
+                max((serverTimestamp - audibleServerTime) * sampleRate / 1_000_000, 0),
+                padCapacityFrames
+            )
+        } else {
+            // Without clock sync there is no server-time due instant to place against.
+            state.cursorMicroseconds = serverTimestamp
+            return
+        }
         if padFrames > 0 {
             state.pcmRingBuffer.writeFrames(
                 silence.prefix(Int(padFrames) * state.frameSize),

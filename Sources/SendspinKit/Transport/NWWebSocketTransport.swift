@@ -6,7 +6,7 @@ import os
 ///
 /// Supports both inbound connections accepted by `ClientAdvertiser` and outbound
 /// client-initiated dials to `ws://` / `wss://` URLs.
-actor NWWebSocketTransport: SendspinTransport {
+actor NWWebSocketTransport: ClientDialingTransport {
     private var connection: NWConnection?
     /// `nonisolated` so the receive callback feeds frames directly in arrival order.
     /// Hopping onto the actor via a per-frame `Task` would let independent tasks run
