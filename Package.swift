@@ -33,7 +33,10 @@ let package = Package(
         ),
         .testTarget(
             name: "SendspinKitTests",
-            dependencies: ["SendspinKit"]
+            dependencies: ["SendspinKit"],
+            resources: [
+                .copy("Resources")
+            ]
         )
     ]
 )
