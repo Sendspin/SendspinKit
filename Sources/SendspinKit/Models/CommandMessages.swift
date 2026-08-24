@@ -50,7 +50,7 @@ struct ControllerCommand: Codable, Equatable {
     }
 }
 
-/// Command sent from server to client (e.g. volume, mute, set_static_delay)
+/// Command sent from server to client (e.g. volume, mute, set_output_delay)
 struct ServerCommandMessage: SendspinMessage, Equatable {
     static let typeString = "server/command"
     let type = Self.typeString
@@ -75,20 +75,20 @@ struct PlayerCommandObject: Codable, Equatable {
     let volume: Int?
     /// Mute state, present when command is `.mute`
     let mute: Bool?
-    /// Static delay in ms (0-5000), present when command is `.setStaticDelay`
-    let staticDelayMs: Int?
+    /// Output delay in ms (0-5000), present when command is `.setOutputDelay`
+    let outputDelayMs: Int?
 
     enum CodingKeys: String, CodingKey {
         case command
         case volume
         case mute
-        case staticDelayMs = "static_delay_ms"
+        case outputDelayMs = "output_delay_ms"
     }
 
-    init(command: PlayerCommand, volume: Int? = nil, mute: Bool? = nil, staticDelayMs: Int? = nil) {
+    init(command: PlayerCommand, volume: Int? = nil, mute: Bool? = nil, outputDelayMs: Int? = nil) {
         self.command = command
         self.volume = volume
         self.mute = mute
-        self.staticDelayMs = staticDelayMs
+        self.outputDelayMs = outputDelayMs
     }
 }

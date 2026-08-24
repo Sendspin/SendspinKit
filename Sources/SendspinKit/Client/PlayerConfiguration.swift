@@ -10,9 +10,9 @@ public let defaultRequiredLeadTimeMs: Int = 100
 /// Sent to the server in the `client/state` player object.
 public let defaultMinBufferMs: Int = 500
 
-/// Maximum static delay in milliseconds. Server-provided and local `setStaticDelay`
-/// values are clamped to `0...maxStaticDelayMs` rather than trusted blindly.
-public let maxStaticDelayMs: Int = 5_000
+/// Maximum output delay in milliseconds. Server-provided and local `setOutputDelay`
+/// values are clamped to `0...maxOutputDelayMs` rather than trusted blindly.
+public let maxOutputDelayMs: Int = 5_000
 
 /// Controls how the player's supported sample-rate formats are ordered against the
 /// current output route. The policy never invents formats or changes the application's
@@ -174,18 +174,18 @@ public struct PlayerConfiguration: Sendable {
     /// Controls how ``supportedFormats`` is matched to the current output sample rate.
     public let outputSampleRatePolicy: OutputSampleRatePolicy
 
-    /// Initial static delay in milliseconds (0-5000).
+    /// Initial output delay in milliseconds (0-5000).
     /// Per spec: compensates for delay beyond the audio port (external speakers,
     /// amplifiers). The host app is responsible for persisting this value across
     /// reboots — pass the last-known value here on startup. The server may change
-    /// it at runtime via `server/command`; listen for `.staticDelayChanged` events.
+    /// it at runtime via `server/command`; listen for `.outputDelayChanged` events.
     ///
-    /// **Design note:** The spec says "clients must persist static_delay_ms locally
+    /// **Design note:** The spec says "clients must persist output_delay_ms locally
     /// across reboots." That persistence belongs in the host app, NOT in this library.
     /// Different apps store settings differently (UserDefaults, Core Data, files, etc.)
     /// and may persist per-output-device delays. The library's job is to accept the
     /// initial value, apply it, and notify the app when the server changes it.
-    public let initialStaticDelayMs: Int
+    public let initialOutputDelayMs: Int
 
     /// How the player handles volume/mute commands.
     /// Defaults to `.software` which uses AudioQueue gain and always advertises
@@ -222,7 +222,7 @@ public struct PlayerConfiguration: Sendable {
     public init(
         bufferCapacity: Int,
         supportedFormats: [AudioFormatSpec],
-        initialStaticDelayMs: Int = 0,
+        initialOutputDelayMs: Int = 0,
         volumeMode: VolumeMode = .software,
         processCallback: AudioProcessCallback? = nil,
         emitRawAudioEvents: Bool = false,
@@ -232,15 +232,15 @@ public struct PlayerConfiguration: Sendable {
     ) throws(ConfigurationError) {
         guard bufferCapacity > 0 else { throw .nonPositiveBufferCapacity }
         guard !supportedFormats.isEmpty else { throw .emptySupportedFormats }
-        guard initialStaticDelayMs >= 0, initialStaticDelayMs <= maxStaticDelayMs else {
-            throw .staticDelayOutOfRange(initialStaticDelayMs)
+        guard initialOutputDelayMs >= 0, initialOutputDelayMs <= maxOutputDelayMs else {
+            throw .outputDelayOutOfRange(initialOutputDelayMs)
         }
         guard requiredLeadTimeMs >= 0 else { throw .negativeRequiredLeadTime(requiredLeadTimeMs) }
         guard minBufferMs >= 0 else { throw .negativeMinBuffer(minBufferMs) }
 
         self.bufferCapacity = bufferCapacity
         self.supportedFormats = supportedFormats
-        self.initialStaticDelayMs = initialStaticDelayMs
+        self.initialOutputDelayMs = initialOutputDelayMs
         self.volumeMode = volumeMode
         self.processCallback = processCallback
         self.emitRawAudioEvents = emitRawAudioEvents

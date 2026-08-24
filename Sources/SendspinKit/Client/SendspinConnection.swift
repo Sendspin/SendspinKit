@@ -130,7 +130,7 @@ actor SendspinConnection {
     // Player state for reporting
     var currentVolume: Int = 100
     var currentMuted: Bool = false
-    var currentStaticDelayMs: Int = 0
+    var currentOutputDelayMs: Int = 0
     let requiredLeadTimeMs: Int
     let minBufferMs: Int
 
@@ -152,7 +152,7 @@ actor SendspinConnection {
     ///   - validity: Token guarding data-plane event emission
     ///   - advertisedCommands: The set of commands to accept from the server (gate in `handleServerCommand`)
     ///   - roles: The client roles for state reporting
-    ///   - initialStaticDelayMs: Initial static delay in milliseconds
+    ///   - initialOutputDelayMs: Initial output delay in milliseconds
     ///   - clock: Clock sync instance (injected for testing; default creates a new `ClockSynchronizer`)
     ///   - engine: Audio engine (injected for testing; default creates a production engine)
     init(
@@ -174,9 +174,9 @@ actor SendspinConnection {
         emitRawAudio: Bool = true,
         artworkObserver: (@Sendable (ArtworkData) -> Void)? = nil,
         validity: SessionValidityToken,
-        advertisedCommands: Set<PlayerCommand> = [.setStaticDelay],
+        advertisedCommands: Set<PlayerCommand> = [.setOutputDelay],
         roles: Set<VersionedRole> = [],
-        initialStaticDelayMs: Int = 0,
+        initialOutputDelayMs: Int = 0,
         initialVolume: Int = 100,
         initialMuted: Bool = false,
         requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
@@ -206,7 +206,7 @@ actor SendspinConnection {
         self.advertisedCommands = advertisedCommands
         playerRoleActive = roles.contains(.playerV1)
         self.roles = roles
-        currentStaticDelayMs = initialStaticDelayMs
+        currentOutputDelayMs = initialOutputDelayMs
         currentVolume = initialVolume
         currentMuted = initialMuted
         self.requiredLeadTimeMs = requiredLeadTimeMs
@@ -256,9 +256,9 @@ actor SendspinConnection {
     }
 
     /// Enqueue an optimistic static-delay change in engine order, then report it to the server.
-    func setStaticDelay(_ delayMs: Int) async throws {
-        currentStaticDelayMs = delayMs
-        audioEngine.commands.enqueue(.setStaticDelay(delayMs))
+    func setOutputDelay(_ delayMs: Int) async throws {
+        currentOutputDelayMs = delayMs
+        audioEngine.commands.enqueue(.setOutputDelay(delayMs))
         try await sendClientStateIfChanged()
     }
 

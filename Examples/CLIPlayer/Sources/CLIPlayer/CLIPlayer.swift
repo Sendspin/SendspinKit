@@ -194,7 +194,7 @@ final class CLIPlayer {
              .colorStateCleared,
              .artworkStreamStarted,
              .streamCleared,
-             .staticDelayChanged,
+             .outputDelayChanged,
              .lastPlayedServerChanged,
              .disconnected:
             break
@@ -250,8 +250,8 @@ final class CLIPlayer {
         case .streamCleared:
             print("[EVENT] Stream cleared (seek)")
 
-        case let .staticDelayChanged(delayMs):
-            print("[EVENT] Static delay changed: \(delayMs)ms")
+        case let .outputDelayChanged(delayMs):
+            print("[EVENT] Output delay changed: \(delayMs)ms")
 
         case let .lastPlayedServerChanged(serverId):
             print("[EVENT] Last played server: \(serverId)")

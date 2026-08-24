@@ -50,8 +50,8 @@ enum ConnectionEvent: Equatable {
     /// Audio stream cleared (buffers flushed without ending), roles optional
     case streamCleared(roles: [String]?)
 
-    /// Static delay changed (command from server)
-    case staticDelayChanged(milliseconds: Int)
+    /// Output delay changed (command from server)
+    case outputDelayChanged(milliseconds: Int)
 
     /// Last server with playback active (multi-server tracking)
     case lastPlayedServerChanged(serverId: String)

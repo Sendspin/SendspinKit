@@ -29,8 +29,8 @@ enum DataPlaneCommand {
     /// Change format at an explicitly announced input generation.
     case formatChangeAtGeneration(AudioFormatSpec, codecHeader: Data?, generation: UInt64)
 
-    /// Set static delay in milliseconds (subtracted from scheduled timestamps).
-    case setStaticDelay(Int)
+    /// Set output delay in milliseconds (subtracted from scheduled timestamps).
+    case setOutputDelay(Int)
 }
 
 /// Payload-free tag for a DataPlaneCommand, used to record apply order without retaining audio Data.
@@ -40,7 +40,7 @@ enum DataPlaneCommandKind {
     case streamClear
     case streamEnd
     case formatChange
-    case setStaticDelay
+    case setOutputDelay
 }
 
 extension DataPlaneCommand {
@@ -59,8 +59,8 @@ extension DataPlaneCommand {
             .streamEnd
         case .formatChange, .formatChangeAtGeneration:
             .formatChange
-        case .setStaticDelay:
-            .setStaticDelay
+        case .setOutputDelay:
+            .setOutputDelay
         }
     }
 }

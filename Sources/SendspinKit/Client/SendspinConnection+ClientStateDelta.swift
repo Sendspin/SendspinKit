@@ -11,7 +11,7 @@ extension SendspinConnection {
     struct SentPlayerState: Equatable {
         var volume: Int
         var muted: Bool
-        var staticDelayMs: Int
+        var outputDelayMs: Int
         var supportedCommands: [PlayerCommand]
         var requiredLeadTimeMs: Int
         var minBufferMs: Int
@@ -29,7 +29,7 @@ extension SendspinConnection {
         if let p = current.player {
             let volume = p.volume != previousPlayer?.volume ? p.volume : nil
             let muted = p.muted != previousPlayer?.muted ? p.muted : nil
-            let delay = p.staticDelayMs != previousPlayer?.staticDelayMs ? p.staticDelayMs : nil
+            let delay = p.outputDelayMs != previousPlayer?.outputDelayMs ? p.outputDelayMs : nil
             let commands = p.supportedCommands != previousPlayer?.supportedCommands ? p.supportedCommands : nil
             let leadTime = p.requiredLeadTimeMs != previousPlayer?.requiredLeadTimeMs ? p.requiredLeadTimeMs : nil
             let buffer = p.minBufferMs != previousPlayer?.minBufferMs ? p.minBufferMs : nil
@@ -37,7 +37,7 @@ extension SendspinConnection {
                 player = try PlayerStateObject(
                     volume: volume,
                     muted: muted,
-                    staticDelayMs: delay,
+                    outputDelayMs: delay,
                     supportedCommands: commands,
                     requiredLeadTimeMs: leadTime,
                     minBufferMs: buffer

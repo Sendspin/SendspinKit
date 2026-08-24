@@ -98,7 +98,7 @@ struct SendspinConnectionTests {
             clientHelloPayload: testClientHelloPayload(),
             audioSink: audioCont,
             validity: token,
-            advertisedCommands: [.setStaticDelay],
+            advertisedCommands: [.setOutputDelay],
             roles: [.playerV1],
             clock: clock,
             engine: engine
@@ -182,7 +182,7 @@ struct SendspinConnectionTests {
             parsedHello: nil,
             clientHelloPayload: testClientHelloPayload(),
             validity: SessionValidityToken(),
-            advertisedCommands: [.setStaticDelay],
+            advertisedCommands: [.setOutputDelay],
             engine: engine
         )
 
@@ -667,7 +667,7 @@ struct SendspinConnectionTests {
             parsedHello: nil,
             clientHelloPayload: testClientHelloPayload(),
             validity: SessionValidityToken(),
-            advertisedCommands: [.setStaticDelay],
+            advertisedCommands: [.setOutputDelay],
             engine: engine
         )
 
@@ -709,13 +709,13 @@ struct SendspinConnectionTests {
         )
 
         // Player role so client/state carries a player object; advertise ONLY
-        // setStaticDelay (no volume/mute) so a volume command is unlisted.
+        // setOutputDelay (no volume/mute) so a volume command is unlisted.
         let connection = SendspinConnection(
             transport: transport,
             parsedHello: nil,
             clientHelloPayload: testClientHelloPayload(),
             validity: SessionValidityToken(),
-            advertisedCommands: [.setStaticDelay],
+            advertisedCommands: [.setOutputDelay],
             roles: [.playerV1],
             engine: engine
         )
@@ -746,10 +746,10 @@ struct SendspinConnectionTests {
         let baseline = await sentClientStateCount()
 
         // Inject an UNLISTED command (volume — not in advertised set), then a LISTED one
-        // (set_static_delay). The message loop is ordered, so when the listed command's
+        // (set_output_delay). The message loop is ordered, so when the listed command's
         // client/state appears the unlisted command has already been fully processed.
         try await transport.injectText(serverCommandJSON(PlayerCommandObject(command: .volume, volume: 75)))
-        try await transport.injectText(serverCommandJSON(PlayerCommandObject(command: .setStaticDelay, staticDelayMs: 500)))
+        try await transport.injectText(serverCommandJSON(PlayerCommandObject(command: .setOutputDelay, outputDelayMs: 500)))
 
         // The listed command must produce exactly one client/state; the unlisted one none.
         // If the unlisted command had wrongly sent state, the delta would be 2.
@@ -1200,7 +1200,7 @@ struct SendspinConnectionTests {
                 parsedHello: nil,
                 clientHelloPayload: testClientHelloPayload(),
                 validity: token,
-                advertisedCommands: [.setStaticDelay],
+                advertisedCommands: [.setOutputDelay],
                 engine: engine
             )
             connectionRef = connection
@@ -1547,7 +1547,7 @@ private func makeConnectionWithTransport(
         parsedHello: nil,
         clientHelloPayload: testClientHelloPayload(),
         validity: token,
-        advertisedCommands: [.setStaticDelay],
+        advertisedCommands: [.setOutputDelay],
         engine: engine
     )
 }
@@ -1570,7 +1570,7 @@ private func makeConnectionWithClockAndTransport(
         parsedHello: nil,
         clientHelloPayload: testClientHelloPayload(),
         validity: token,
-        advertisedCommands: [.setStaticDelay],
+        advertisedCommands: [.setOutputDelay],
         clock: clock,
         engine: engine
     )
@@ -1584,7 +1584,7 @@ private func makeConnectionWithSpyEngine(
     _ transport: MockTransport,
     initialVolume: Int = 100,
     initialMuted: Bool = false,
-    advertisedCommands: Set<PlayerCommand> = [.setStaticDelay]
+    advertisedCommands: Set<PlayerCommand> = [.setOutputDelay]
 ) -> (
     connection: SendspinConnection,
     output: SpyAudioOutput,

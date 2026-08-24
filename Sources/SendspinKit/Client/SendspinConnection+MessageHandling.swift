@@ -362,7 +362,7 @@ extension SendspinConnection {
         case .volume:
             if let volume = playerCmd.volume {
                 // Clamp to the spec's 0–100 range rather than trusting the server,
-                // matching set_static_delay below and the local setVolume API.
+                // matching set_output_delay below and the local setVolume API.
                 let clamped = max(0, min(100, volume))
                 currentVolume = clamped
                 await audioEngine.setGain(Float(clamped) / 100.0)
@@ -378,13 +378,13 @@ extension SendspinConnection {
                 try? await sendClientStateIfChanged()
             }
 
-        case .setStaticDelay:
-            if let delayMs = playerCmd.staticDelayMs {
+        case .setOutputDelay:
+            if let delayMs = playerCmd.outputDelayMs {
                 // Clamp to the spec range rather than trusting the server.
-                let clamped = max(0, min(maxStaticDelayMs, delayMs))
-                currentStaticDelayMs = clamped
-                audioEngine.commands.enqueue(.setStaticDelay(clamped))
-                controlSink.enqueue(.staticDelayChanged(milliseconds: clamped))
+                let clamped = max(0, min(maxOutputDelayMs, delayMs))
+                currentOutputDelayMs = clamped
+                audioEngine.commands.enqueue(.setOutputDelay(clamped))
+                controlSink.enqueue(.outputDelayChanged(milliseconds: clamped))
                 try? await sendClientStateIfChanged()
             }
         }

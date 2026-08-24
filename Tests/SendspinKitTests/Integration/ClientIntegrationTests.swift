@@ -33,11 +33,11 @@ private func groupUpdateJSON(
     return String(bytes: data, encoding: .utf8) ?? ""
 }
 
-/// Encode a `server/command` `set_static_delay` message using the actual Codable types.
-private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
+/// Encode a `server/command` `set_output_delay` message using the actual Codable types.
+private func setOutputDelayCommandJSON(_ delayMs: Int) throws -> String {
     let message = ServerCommandMessage(
         payload: ServerCommandPayload(
-            player: PlayerCommandObject(command: .setStaticDelay, staticDelayMs: delayMs)
+            player: PlayerCommandObject(command: .setOutputDelay, outputDelayMs: delayMs)
         )
     )
     let data = try JSONEncoder().encode(message)
@@ -604,7 +604,7 @@ struct ClientIntegrationTests {
     @Test
     func repeatedIdenticalSettersSendNoDuplicateClientState() async throws {
         // Spec sends client/state when state CHANGES; an unchanged set is not a
-        // change. setStaticDelay already early-returns — volume and mute must too.
+        // change. setOutputDelay already early-returns — volume and mute must too.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
@@ -660,27 +660,27 @@ struct ClientIntegrationTests {
     }
 
     @Test
-    func setStaticDelayAppliesObservableStateAndReachesEngine() async throws {
+    func setOutputDelayAppliesObservableStateAndReachesEngine() async throws {
         // Observable state updates immediately AND the delay reaches the engine via
         // the ordered command channel.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
-        let newDelay = client.staticDelayMs == 0 ? 250 : 0
+        let newDelay = client.outputDelayMs == 0 ? 250 : 0
 
-        try await client.setStaticDelay(newDelay)
-        #expect(client.staticDelayMs == newDelay)
+        try await client.setOutputDelay(newDelay)
+        #expect(client.outputDelayMs == newDelay)
 
         // The delay is enqueued to the engine's ordered channel and applied.
         var sawDelayCommand = false
         for _ in 0 ..< 50 {
             if let kinds = await client.connection?.audioEngineForTesting.appliedCommandKinds(),
-               kinds.contains(.setStaticDelay) {
+               kinds.contains(.setOutputDelay) {
                 sawDelayCommand = true
                 break
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        #expect(sawDelayCommand, "setStaticDelay must reach the engine via the ordered channel")
+        #expect(sawDelayCommand, "setOutputDelay must reach the engine via the ordered channel")
 
         await client.disconnect()
         _ = mock
@@ -695,15 +695,15 @@ struct ClientIntegrationTests {
 
         let newVolume = client.currentVolume == 100 ? 33 : 100
         let newMuted = !client.currentMuted
-        let newDelay = client.staticDelayMs == 0 ? 175 : 0
+        let newDelay = client.outputDelayMs == 0 ? 175 : 0
 
         try await client.setVolume(newVolume)
         try await client.setMute(newMuted)
-        try await client.setStaticDelay(newDelay)
+        try await client.setOutputDelay(newDelay)
 
         #expect(client.currentVolume == newVolume, "volume must stand despite a failed client/state send")
         #expect(client.currentMuted == newMuted, "mute must stand despite a failed client/state send")
-        #expect(client.staticDelayMs == newDelay, "delay must stand despite a failed client/state send")
+        #expect(client.outputDelayMs == newDelay, "delay must stand despite a failed client/state send")
 
         await client.disconnect()
     }
@@ -715,15 +715,15 @@ struct ClientIntegrationTests {
         let client = try makeTestClient()
         let volumeBefore = client.currentVolume
         let mutedBefore = client.currentMuted
-        let delayBefore = client.staticDelayMs
+        let delayBefore = client.outputDelayMs
 
         await #expect(throws: SendspinClientError.notConnected) { try await client.setVolume(50) }
         await #expect(throws: SendspinClientError.notConnected) { try await client.setMute(true) }
-        await #expect(throws: SendspinClientError.notConnected) { try await client.setStaticDelay(300) }
+        await #expect(throws: SendspinClientError.notConnected) { try await client.setOutputDelay(300) }
 
         #expect(client.currentVolume == volumeBefore)
         #expect(client.currentMuted == mutedBefore)
-        #expect(client.staticDelayMs == delayBefore)
+        #expect(client.outputDelayMs == delayBefore)
     }
 
     @Test
@@ -737,11 +737,11 @@ struct ClientIntegrationTests {
 
         await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setVolume(50) }
         await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setMute(true) }
-        await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setStaticDelay(300) }
+        await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setOutputDelay(300) }
 
         #expect(client.currentVolume == 100)
         #expect(client.currentMuted == false)
-        #expect(client.staticDelayMs == 0)
+        #expect(client.outputDelayMs == 0)
 
         await client.disconnect()
         _ = mock
@@ -984,7 +984,7 @@ struct ClientIntegrationTests {
 
         try await client.setVolume(42)
         try await client.setMute(true)
-        try await client.setStaticDelay(250)
+        try await client.setOutputDelay(250)
 
         // A playback-reason competitor wins over the discovery incumbent.
         let mockB = try await acceptCompeting(client, serverId: "server-b", connectionReason: .playback)
@@ -996,7 +996,7 @@ struct ClientIntegrationTests {
         let player = await lastClientState(from: mockB, after: 0)?.player
         #expect(player?.volume == 42, "the carried volume must survive the switch")
         #expect(player?.muted == true, "the carried mute must survive the switch")
-        #expect(player?.staticDelayMs == 250, "the carried static delay must survive the switch")
+        #expect(player?.outputDelayMs == 250, "the carried output delay must survive the switch")
 
         await client.disconnect()
     }
@@ -1392,55 +1392,55 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: set_static_delay server command drives state and notifies the host
+    // MARK: set_output_delay server command drives state and notifies the host
 
     @Test
-    func serverSetStaticDelay_updatesStateAndEmitsChangedEvent() async throws {
+    func serverSetOutputDelay_updatesStateAndEmitsChangedEvent() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         let newDelayMs = 250
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event {
+                if case .outputDelayChanged = event {
                     return true
                 }
                 return false
             }
         }
 
-        try await mock.injectText(setStaticDelayCommandJSON(newDelayMs))
+        try await mock.injectText(setOutputDelayCommandJSON(newDelayMs))
 
         let event = await eventTask.value
-        #expect(event == .staticDelayChanged(milliseconds: newDelayMs))
-        #expect(client.staticDelayMs == newDelayMs)
+        #expect(event == .outputDelayChanged(milliseconds: newDelayMs))
+        #expect(client.outputDelayMs == newDelayMs)
 
         await client.disconnect()
     }
 
-    // MARK: set_static_delay clamps out-of-range server input to the spec maximum
+    // MARK: set_output_delay clamps out-of-range server input to the spec maximum
 
     @Test
-    func serverSetStaticDelay_clampsAboveMaximumToSpecLimit() async throws {
+    func serverSetOutputDelay_clampsAboveMaximumToSpecLimit() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        // Spec range is 0–5000; setStaticDelay clamps rather than trusting the server.
+        // Spec range is 0–5000; setOutputDelay clamps rather than trusting the server.
         let maxDelayMs = 5_000
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event {
+                if case .outputDelayChanged = event {
                     return true
                 }
                 return false
             }
         }
 
-        try await mock.injectText(setStaticDelayCommandJSON(maxDelayMs + 1_000))
+        try await mock.injectText(setOutputDelayCommandJSON(maxDelayMs + 1_000))
 
         let event = await eventTask.value
-        #expect(event == .staticDelayChanged(milliseconds: maxDelayMs))
-        #expect(client.staticDelayMs == maxDelayMs)
+        #expect(event == .outputDelayChanged(milliseconds: maxDelayMs))
+        #expect(client.outputDelayMs == maxDelayMs)
 
         await client.disconnect()
     }

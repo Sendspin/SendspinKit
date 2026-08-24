@@ -50,7 +50,7 @@ extension SendspinConnection {
             ? SentPlayerState(
                 volume: currentVolume,
                 muted: currentMuted,
-                staticDelayMs: currentStaticDelayMs,
+                outputDelayMs: currentOutputDelayMs,
                 supportedCommands: advertisedCommands
                     .intersection(PlayerStateObject.validStateCommands)
                     .sorted(by: { $0.rawValue < $1.rawValue }),

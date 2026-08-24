@@ -28,15 +28,15 @@ struct ClientStateDeltaTests {
         let player = try #require(initial.player, "Initial state must include the full player object")
         #expect(player.volume == client.currentVolume)
         #expect(player.muted == client.currentMuted)
-        #expect(player.staticDelayMs == client.staticDelayMs)
+        #expect(player.outputDelayMs == client.outputDelayMs)
         #expect(player.requiredLeadTimeMs == defaultRequiredLeadTimeMs, "Should send default required_lead_time_ms")
         #expect(player.minBufferMs == defaultMinBufferMs, "Should send default min_buffer_ms")
 
         // Per the player role, client/state supported_commands is a subset of
-        // {set_static_delay} only — volume/mute are advertised in client/hello, never here.
+        // {set_output_delay} only — volume/mute are advertised in client/hello, never here.
         #expect(
-            Set(player.supportedCommands ?? []) == [.setStaticDelay],
-            "client/state supported_commands must be {set_static_delay}, got \(player.supportedCommands ?? [])"
+            Set(player.supportedCommands ?? []) == [.setOutputDelay],
+            "client/state supported_commands must be {set_output_delay}, got \(player.supportedCommands ?? [])"
         )
 
         await client.disconnect()
@@ -102,7 +102,7 @@ struct ClientStateDeltaTests {
         #expect(delta.state == nil)
         #expect(delta.player?.volume == newVolume)
         #expect(delta.player?.muted == nil)
-        #expect(delta.player?.staticDelayMs == nil)
+        #expect(delta.player?.outputDelayMs == nil)
         #expect(delta.player?.supportedCommands == nil)
 
         await client.disconnect()

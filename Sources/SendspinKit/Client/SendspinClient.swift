@@ -55,9 +55,9 @@ public final class SendspinClient {
     /// Current player mute state. Observable for UI binding (mute buttons).
     /// Updated by ``setMute(_:)`` and by the server via `server/command`.
     public private(set) var currentMuted: Bool = false
-    /// Current static delay in milliseconds. Initialized from `PlayerConfiguration.initialStaticDelayMs`,
-    /// updated when the server sends a `set_static_delay` command.
-    public private(set) var staticDelayMs: Int
+    /// Current output delay in milliseconds. Initialized from `PlayerConfiguration.initialOutputDelayMs`,
+    /// updated when the server sends a `set_output_delay` command.
+    public private(set) var outputDelayMs: Int
     /// Observability mirrors of server-declared stream activity. These do NOT
     /// gate `stream/request-format`: per spec, those requests are allowed before
     /// a stream starts and after it ends. The mirrors are render-applied (player:
@@ -242,7 +242,7 @@ public final class SendspinClient {
         self.outputNegotiationSleep = outputNegotiationSleep
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
-        staticDelayMs = playerConfig?.initialStaticDelayMs ?? 0
+        outputDelayMs = playerConfig?.initialOutputDelayMs ?? 0
 
         // Resolve volume mode into concrete capabilities (the control is built by AudioEngine)
         volumeCapabilities = VolumeControlFactory.resolve(mode: playerConfig?.volumeMode ?? .software).capabilities
@@ -528,10 +528,10 @@ public final class SendspinClient {
 
         let audioEngine = makeAudioEngine(clock: clockSync, validity: validity)
 
-        // A player always advertises set_static_delay; volume/mute depend on
+        // A player always advertises set_output_delay; volume/mute depend on
         // the resolved VolumeMode capabilities. Non-player roles advertise nothing.
         let advertisedCommands: Set<PlayerCommand> = roleSet.contains(.playerV1)
-            ? Set(volumeCapabilities.playerCommands).union([.setStaticDelay])
+            ? Set(volumeCapabilities.playerCommands).union([.setOutputDelay])
             : []
 
         let newConnection = SendspinConnection(
@@ -567,8 +567,8 @@ public final class SendspinClient {
             advertisedCommands: advertisedCommands,
             roles: roleSet,
             // Live facade state, not playerConfig defaults: a multi-server switch
-            // (and any runtime setStaticDelay) must carry into the new session.
-            initialStaticDelayMs: staticDelayMs,
+            // (and any runtime setOutputDelay) must carry into the new session.
+            initialOutputDelayMs: outputDelayMs,
             initialVolume: currentVolume,
             initialMuted: currentMuted,
             requiredLeadTimeMs: playerConfig?.requiredLeadTimeMs ?? defaultRequiredLeadTimeMs,
@@ -867,9 +867,9 @@ public final class SendspinClient {
             // chunks received after this message continue to play.
             emitEvent(.streamCleared(roles: roles))
 
-        case let .staticDelayChanged(milliseconds):
-            staticDelayMs = milliseconds
-            emitEvent(.staticDelayChanged(milliseconds: milliseconds))
+        case let .outputDelayChanged(milliseconds):
+            outputDelayMs = milliseconds
+            emitEvent(.outputDelayChanged(milliseconds: milliseconds))
 
         case let .operationalState(state):
             clientOperationalState = state
@@ -915,7 +915,7 @@ public final class SendspinClient {
     private func applyDisconnected(reason: DisconnectReason) {
         guard connection != nil || connectionState != .disconnected else { return }
         // Terminal event: retire the connection and apply reconnect logic.
-        // Volume/mute/staticDelay deliberately survive (device-user state,
+        // Volume/mute/outputDelay deliberately survive (device-user state,
         // like the spec's static-delay persistence): the next session is
         // seeded from facade state and re-applies them to its fresh engine.
         updateConnectionState(.disconnected)
@@ -1031,28 +1031,28 @@ public final class SendspinClient {
         try? await conn.setMuted(muted)
     }
 
-    /// Set static delay in milliseconds (0-5000).
+    /// Set output delay in milliseconds (0-5000).
     ///
     /// Per spec: compensates for delay beyond the audio port (external speakers,
-    /// amplifiers). Emits `.staticDelayChanged` so the host app can persist the
+    /// amplifiers). Emits `.outputDelayChanged` so the host app can persist the
     /// new value. The server is notified best-effort — a failed `client/state`
     /// send does not prevent the local delay change from taking effect.
     ///
     /// - Throws: ``SendspinClientError/notConnected`` if disconnected, or
     ///   ``SendspinClientError/roleNotActive(_:)`` if not configured as a player.
     @MainActor
-    public func setStaticDelay(_ delayMs: Int) async throws {
+    public func setOutputDelay(_ delayMs: Int) async throws {
         try requireOpen()
         guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let conn = connection else { throw SendspinClientError.notConnected }
         try await conn.requireActiveRole(.playerV1)
-        let clamped = max(0, min(maxStaticDelayMs, delayMs))
-        guard clamped != staticDelayMs else { return }
-        staticDelayMs = clamped
+        let clamped = max(0, min(maxOutputDelayMs, delayMs))
+        guard clamped != outputDelayMs else { return }
+        outputDelayMs = clamped
 
         // Forward to the connection (the client/state and engine authority) best-effort;
         // a failed send does not revert the optimistic local state.
-        try? await conn.setStaticDelay(clamped)
+        try? await conn.setOutputDelay(clamped)
     }
 
     // MARK: - Operational state transitions

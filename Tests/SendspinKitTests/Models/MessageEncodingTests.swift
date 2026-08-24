@@ -124,7 +124,7 @@ struct MessageEncodingTests {
 
     @Test
     func clientState_encodesWithClientStateAndPlayerStateObject() throws {
-        let playerState = try PlayerStateObject(volume: 80, muted: false, staticDelayMs: 0)
+        let playerState = try PlayerStateObject(volume: 80, muted: false, outputDelayMs: 0)
         let payload = ClientStatePayload(state: .synchronized, player: playerState)
         let message = ClientStateMessage(payload: payload)
 
@@ -136,18 +136,18 @@ struct MessageEncodingTests {
         #expect(json.contains("\"state\":\"synchronized\""))
         #expect(json.contains("\"volume\":80"))
         #expect(json.contains("\"muted\":false"))
-        #expect(json.contains("\"static_delay_ms\":0"))
+        #expect(json.contains("\"output_delay_ms\":0"))
     }
 
     @Test
-    func playerStateObject_acceptsSetStaticDelayInSupportedCommands() throws {
-        let state = try PlayerStateObject(staticDelayMs: 0, supportedCommands: [.setStaticDelay])
-        #expect(state.supportedCommands == [.setStaticDelay])
+    func playerStateObject_acceptsSetOutputDelayInSupportedCommands() throws {
+        let state = try PlayerStateObject(outputDelayMs: 0, supportedCommands: [.setOutputDelay])
+        #expect(state.supportedCommands == [.setOutputDelay])
     }
 
     @Test
     func playerStateObject_rejectsVolumeMuteInSupportedCommands() {
-        // client/state supported_commands is a subset of {set_static_delay}.
+        // client/state supported_commands is a subset of {set_output_delay}.
         #expect(throws: ConfigurationError.invalidStateCommands(["volume"])) {
             try PlayerStateObject(supportedCommands: [.volume])
         }
@@ -279,16 +279,16 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func serverCommand_decodesSetStaticDelayCommand() throws {
+    func serverCommand_decodesSetOutputDelayCommand() throws {
         let json = """
-        {"type": "server/command", "payload": {"player": {"command": "set_static_delay", "static_delay_ms": 250}}}
+        {"type": "server/command", "payload": {"player": {"command": "set_output_delay", "output_delay_ms": 250}}}
         """
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
 
         let player = try #require(message.payload.player)
-        #expect(player.command == .setStaticDelay)
-        #expect(player.staticDelayMs == 250)
+        #expect(player.command == .setOutputDelay)
+        #expect(player.outputDelayMs == 250)
     }
 
     // MARK: - server/state
@@ -705,8 +705,8 @@ struct MessageEncodingTests {
             "type": "server/command",
             "payload": {
                 "player": {
-                    "command": "set_static_delay",
-                    "static_delay_ms": 250,
+                    "command": "set_output_delay",
+                    "output_delay_ms": 250,
                     "future_command_field": "ignored"
                 },
                 "future_payload_field": "ignored"
@@ -715,8 +715,8 @@ struct MessageEncodingTests {
         """
         let serverCommandData = try #require(serverCommandJSON.data(using: .utf8))
         let serverCommand = try decoder.decode(ServerCommandMessage.self, from: serverCommandData)
-        #expect(serverCommand.payload.player?.command == .setStaticDelay)
-        #expect(serverCommand.payload.player?.staticDelayMs == 250)
+        #expect(serverCommand.payload.player?.command == .setOutputDelay)
+        #expect(serverCommand.payload.player?.outputDelayMs == 250)
 
         let groupUpdateJSON = """
         {

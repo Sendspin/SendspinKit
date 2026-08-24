@@ -303,8 +303,8 @@ struct AudioEngineTests {
         #expect(stats.received > 0)
     }
 
-    @Test("static delay shifts scheduled timestamps by milliseconds converted to microseconds")
-    func staticDelayAdjustsScheduledChunkTimestamp() async throws {
+    @Test("output delay shifts scheduled timestamps by milliseconds converted to microseconds")
+    func outputDelayAdjustsScheduledChunkTimestamp() async throws {
         let clock = StubClock(offsetMicroseconds: 0)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
@@ -314,7 +314,7 @@ struct AudioEngineTests {
 
         let delayMs = 200
         let serverTimestamp = MonotonicClock.absoluteMicroseconds() + 60_000_000
-        engine.commands.enqueue(.setStaticDelay(delayMs))
+        engine.commands.enqueue(.setOutputDelay(delayMs))
         engine.commands.enqueue(.chunk(Data(repeating: 0, count: 100), ts: serverTimestamp))
 
         let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 1 }

@@ -95,7 +95,7 @@ struct MalformedServerHelloTests {
                 visualizerV1Support: nil
             ),
             validity: SessionValidityToken(),
-            advertisedCommands: [.setStaticDelay],
+            advertisedCommands: [.setOutputDelay],
             roles: [.playerV1],
             handshakeTimeout: .milliseconds(100),
             engine: engine

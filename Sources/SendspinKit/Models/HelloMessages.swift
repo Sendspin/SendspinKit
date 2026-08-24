@@ -82,7 +82,7 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
 
 /// Player command identifiers per spec.
 ///
-/// These are commands that target an individual player (volume, mute, static delay).
+/// These are commands that target an individual player (volume, mute, output delay).
 /// Distinct from ``ControllerCommandType`` which targets the group (play, pause, skip, etc.).
 /// The `volume` and `mute` cases overlap because a player's volume/mute can be set
 /// directly by the server or indirectly via group-level controller commands.
@@ -94,8 +94,8 @@ enum PlayerCommand: String, Codable, Hashable {
     case volume
     /// Set player mute state
     case mute
-    /// Set static delay in milliseconds (0-5000)
-    case setStaticDelay = "set_static_delay"
+    /// Set output delay in milliseconds (0-5000)
+    case setOutputDelay = "set_output_delay"
 }
 
 struct PlayerSupport: Codable, Equatable {
