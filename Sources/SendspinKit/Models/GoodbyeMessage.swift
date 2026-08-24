@@ -21,6 +21,15 @@ public enum GoodbyeReason: String, Codable, Sendable, Hashable {
     case restart
     /// User explicitly requested disconnect
     case userRequest = "user_request"
+    /// The client is no longer authorized for the connection (inadmissible
+    /// activity set, or its own pairing record was removed)
+    case unauthorized
+    /// Unpaired access is disabled and the activation would need it
+    case pairingRequired = "pairing_required"
+    /// A higher-or-equal-priority connection is already active
+    case concurrentAttempt = "concurrent_attempt"
+    /// The client processed `server/unpair` from this server
+    case unpaired
 }
 
 /// Goodbye payload with required reason
