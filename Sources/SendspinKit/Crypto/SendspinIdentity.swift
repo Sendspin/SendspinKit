@@ -9,8 +9,7 @@ import Foundation
 /// Rotating the keypair changes the identity, so the secret key must be persisted
 /// by the host app (see ``SendspinIdentityProvider``).
 public struct SendspinIdentity: Sendable {
-    /// Raw 32-byte Curve25519 secret key. Hand this to the host app's storage;
-    /// treat it like any other long-lived credential.
+    /// Raw 32-byte Curve25519 secret key, for the host app's storage.
     public let secretKeyBytes: Data
 
     let privateKey: Curve25519.KeyAgreement.PrivateKey
@@ -57,17 +56,10 @@ extension SendspinIdentity: CustomStringConvertible, CustomDebugStringConvertibl
     }
 }
 
-/// Storage hook for the client's static identity keypair.
-///
-/// The spec requires the identity to be persistent across reboots (it *is* the
-/// `client_id`), but SendspinKit never persists anything itself: the host app backs
-/// this with the Keychain, a file, or whatever fits its platform. Same contract shape
-/// as ``SendspinPersistenceProvider`` — `async` so implementations may do I/O, and
-/// `Sendable` because the provider crosses concurrency domains.
-///
-/// The expected pattern: `loadIdentitySecret()` returning `nil` means first run —
-/// the caller generates a fresh ``SendspinIdentity`` and hands its
-/// ``SendspinIdentity/secretKeyBytes`` to `saveIdentitySecret(_:)`.
+/// Storage hook for the client's static identity keypair. The identity must survive
+/// reboots (it *is* the `client_id`), and SendspinKit never persists anything itself,
+/// so the host app backs this — Keychain, file, whatever fits. A `nil` load means
+/// first run: generate a fresh identity and save its secret.
 public protocol SendspinIdentityProvider: Sendable {
     /// The persisted 32-byte identity secret key, or `nil` if none has been stored yet.
     func loadIdentitySecret() async -> Data?

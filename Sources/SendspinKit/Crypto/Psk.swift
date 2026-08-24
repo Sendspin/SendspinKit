@@ -94,11 +94,8 @@ extension PskCandidate {
     /// Select the candidate matching the `psk_id` from Noise message 1, enforcing the
     /// stored-pubkey post-match check against the `server_id` from `server/init`.
     /// `nil` means lookup miss → the handshake fails (spec Failure Handling).
-    ///
-    /// Precondition: candidates carry unique `psk_id`s. The spec requires uniqueness
-    /// across all three PSK categories, enforced where records and secrets are
-    /// *configured* — a duplicate reaching this lookup is a configuration bug, and
-    /// this function resolves it arbitrarily to the first match.
+    /// Candidates must carry unique `psk_id`s — the spec enforces uniqueness where
+    /// records are *configured*, so a duplicate here resolves arbitrarily.
     static func select(
         from candidates: [PskCandidate],
         pskId: String,

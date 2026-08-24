@@ -12,18 +12,14 @@ enum NoiseFrameType {
     static let fragmentEnd: UInt8 = 3
 }
 
-/// The encrypted framing layer between the WebSocket and the message loop.
+/// The encrypted framing layer between the WebSocket and the message loop: every
+/// frame is a Noise ciphertext whose plaintext is `[type byte][payload]`, with
+/// fragment frames (types 2/3) splitting and reassembling anything over the
+/// single-message budget.
 ///
-/// After the Noise handshake, every Sendspin message travels as a WebSocket binary
-/// frame whose payload is a Noise transport ciphertext. The AEAD plaintext is
-/// `[type byte][payload]`; a plaintext that cannot fit one Noise message (65535
-/// bytes including the 16-byte tag) is split across fragment frames (types 2/3)
-/// and reassembled here.
-///
-/// Noncopyable on purpose: the cipher states inside carry AEAD nonce counters, and
-/// two live copies would encrypt different plaintexts under the same (key, nonce) —
-/// catastrophic nonce reuse. Ownership moves from the handshake driver to the
-/// connection; the compiler enforces that it never forks.
+/// Noncopyable because the cipher states carry AEAD nonce counters: two live copies
+/// would encrypt under the same (key, nonce). The compiler enforces the single
+/// ownership the nonce safety requires.
 struct NoiseChannel: ~Copyable {
     /// Noise's hard ceiling for one transport message, including the AEAD tag.
     static let maxNoiseMessage = 65_535
@@ -33,9 +29,8 @@ struct NoiseChannel: ~Copyable {
     /// Max payload bytes after the type byte in a non-fragmented frame — the spec's
     /// 65518. A first fragment spends one more byte on `orig_type`.
     static let maxSinglePayload = maxPlaintext - 1
-    /// Reassembly cap. Implementation-defined DoS guard, not spec: sized far above
-    /// the largest legitimate message (full-resolution artwork), matching the
-    /// reference implementation's choice.
+    /// Reassembly cap: an implementation-defined DoS guard (not spec), sized far
+    /// above the largest legitimate message (full-resolution artwork).
     static let maxReassembledSize = 16 * 1_024 * 1_024
 
     private var transport: NoiseTransport

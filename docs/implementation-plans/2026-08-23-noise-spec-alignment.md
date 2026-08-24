@@ -45,6 +45,11 @@ of this effort)
   single writer; no MainActor types below the facade. Where this plan changes a
   documented contract (the facade `performHandshake` exception), the AGENTS.md update
   is part of the phase that changes it, not deferred to Phase 5.
+- **Comment discipline (re-read this every phase).** Comments state present-tense
+  invariants, briefly. One clause of *why*, not a paragraph of justification; no
+  restating the symbol name, no narrating what a review found, no defending a
+  default. The root AGENTS.md filters apply: past tense is a smell, and a comment
+  that would fit every declaration of its kind is noise. When in doubt, delete it.
 - **No plan-artifact references in code.** Code comments, symbol names, and doc
   comments must never cite acceptance-criterion IDs ("AC 0.1"), phase numbers,
   review findings, or anything else that only exists inside this plan or a session.

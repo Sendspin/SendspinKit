@@ -22,9 +22,8 @@ enum HandshakeError: Error, Equatable {
     case noise(NoiseError)
 }
 
-/// Everything a caller needs after the encrypted channel comes up: the channel
-/// itself, the authenticated peer identity, and which PSK admitted the session
-/// (its category constrains the activity sets the server may later declare).
+/// The result of establishment: the channel, the authenticated peer identity, and
+/// which PSK admitted the session (its category constrains later activity sets).
 struct NoiseSessionOutcome: ~Copyable {
     var channel: NoiseChannel
     let serverId: String
@@ -33,14 +32,9 @@ struct NoiseSessionOutcome: ~Copyable {
 
 /// Runs the cleartext establishment phase on a fresh transport:
 /// `client/init` → `server/init` → `noise/handshake` ×2 → transport mode.
-///
 /// The exact bytes of the two init messages, as sent and received, form the Noise
-/// prologue — the raw frames are used directly, never a re-encoding. Any failure
-/// closes the transport without sending an application-level message and rethrows
-/// for the caller's diagnostics.
-///
-/// The encrypted session flow that follows (`server/hello` → `client/hello` →
-/// `server/activate`) belongs to the session layer, not here.
+/// prologue — never a re-encoding. Any failure closes the transport silently and
+/// rethrows. The encrypted session flow that follows belongs to the session layer.
 enum NoiseSessionEstablisher {
     /// Spec-recommended limit for each side to receive the next expected message
     /// during the cleartext and Noise-handshake phases.
@@ -160,13 +154,10 @@ enum NoiseSessionEstablisher {
         )
     }
 
-    /// Pull the next frame, requiring a text frame within `timeout`. A binary frame
-    /// during the cleartext phase is a protocol violation; stream end means the peer
-    /// closed.
-    ///
-    /// The timeout is a watchdog that *disconnects the transport*, not a racing task:
-    /// a parked `nextFrame()` pull is released by `disconnect()` finishing the frame
-    /// stream (the transport contract), never by task cancellation.
+    /// Pull the next frame, requiring a text frame within `timeout`. The timeout is
+    /// a watchdog that *disconnects the transport*: a parked `nextFrame()` pull is
+    /// released by `disconnect()` finishing the frame stream, never by cancellation
+    /// (the FrameInbox contract).
     private static func nextTextFrame(
         from transport: any SendspinTransport,
         timeout: Duration
@@ -183,9 +174,8 @@ enum NoiseSessionEstablisher {
         let frame = await transport.nextFrame()
         watchdog.cancel()
         let timedOut = await watchdog.value
-        // When the deadline and the frame race, the deadline wins: the watchdog has
-        // already disconnected the transport, so proceeding with the frame would run
-        // the next phase on a dead connection and misreport the failure.
+        // The deadline wins a race with an arriving frame: the watchdog already
+        // disconnected, so proceeding would run the next phase on a dead connection.
         if timedOut {
             throw HandshakeError.timeout
         }

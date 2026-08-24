@@ -22,12 +22,10 @@ actor MockNoiseServer {
     var tamperProloguePostSend = false
 
     /// When set, this exact text goes on the wire as `server/init` (and into the
-    /// prologue), letting tests use noncanonical-but-valid JSON spellings to prove
-    /// the client hashes received bytes rather than a re-encoding.
+    /// prologue), so tests can prove the client hashes received bytes as-is.
     var serverInitTextOverride: String?
 
-    /// The decrypted inner payload of Noise message 2 — the spec fixes it as the
-    /// literal two bytes `{}`; tests assert it to pin the client's wire behavior.
+    /// The decrypted inner payload of Noise message 2 (spec: the literal `{}`).
     private(set) var message2Payload: Data?
 
     /// The server-side encrypted channel, available once the handshake completes.
