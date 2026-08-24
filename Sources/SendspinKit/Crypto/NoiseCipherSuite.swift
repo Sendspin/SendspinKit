@@ -5,7 +5,7 @@ import Foundation
 /// protocol name. Both suites share Curve25519 and SHA-256; only the AEAD differs.
 /// The client announces its pick in `client/init`; servers must support both, so no
 /// negotiation happens.
-enum NoiseCipherSuite: String, CaseIterable, Sendable {
+enum NoiseCipherSuite: String, CaseIterable, Sendable, Codable {
     case chaChaPoly = "25519_ChaChaPoly_SHA256"
     case aesGCM = "25519_AESGCM_SHA256"
 
@@ -92,4 +92,10 @@ enum NoiseError: Error, Equatable {
     case nonceExhausted
     /// A handshake step ran out of order (e.g. split before message 2).
     case invalidState
+    /// A fragmentation rule was broken: fragment-end with nothing in flight, a
+    /// non-fragment frame while a fragmented message is in flight, or a fragment
+    /// type used as `orig_type` (spec Fragmentation, malformed sequences).
+    case fragmentationViolation
+    /// A fragmented message grew past the reassembly cap (DoS guard, not spec).
+    case reassemblyLimitExceeded
 }

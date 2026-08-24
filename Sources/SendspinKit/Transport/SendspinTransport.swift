@@ -66,6 +66,16 @@ public protocol SendspinTransport: Actor, Sendable {
     /// Send a JSON-encoded message
     func send(_ message: some Codable & Sendable) async throws
 
+    /// Send a pre-encoded text frame verbatim.
+    ///
+    /// The Noise prologue binds the exact bytes of `client/init` as transmitted, so
+    /// the handshake path must control the frame content byte-for-byte — encoding
+    /// inside `send(_:)` would leave the caller unable to know what went on the wire.
+    /// The String round trip preserves that invariant: for valid UTF-8 (all Sendspin
+    /// JSON), `Data(String(data: bytes)!.utf8) == bytes`, so the wire bytes equal the
+    /// bytes the caller hashed.
+    func sendRawText(_ text: String) async throws
+
     /// Send raw binary data
     func sendBinary(_ data: Data) async throws
 

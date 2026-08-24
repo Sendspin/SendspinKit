@@ -8,6 +8,9 @@ import Foundation
 /// Simulate failures via `setShouldFailOnSend(_:)`.
 actor MockTransport: ClientDialingTransport {
     private let inbox = FrameInbox()
+    /// Client-sent frames, observable as an ordered pull stream so a test-side peer
+    /// (e.g. the mock Noise server) can react to sends as they happen.
+    private let outbox = FrameInbox()
 
     /// JSON-encoded messages sent by the client, captured as raw Data.
     private(set) var sentTextMessages: [Data] = []
@@ -60,11 +63,20 @@ actor MockTransport: ClientDialingTransport {
         sentTextMessages.append(data)
     }
 
+    func sendRawText(_ text: String) async throws {
+        if shouldFailOnSend {
+            throw MockTransportError.simulatedFailure
+        }
+        sentTextMessages.append(Data(text.utf8))
+        outbox.yield(.text(text))
+    }
+
     func sendBinary(_ data: Data) async throws {
         if shouldFailOnSend {
             throw MockTransportError.simulatedFailure
         }
         sentBinaryMessages.append(data)
+        outbox.yield(.binary(data))
     }
 
     /// Full teardown: marks disconnected and finishes both streams.
@@ -101,11 +113,18 @@ actor MockTransport: ClientDialingTransport {
         inbox.yield(.binary(data))
     }
 
+    /// Pull the next client-sent frame in send order. Returns `nil` after the
+    /// transport closes. Single-consumer, like `nextFrame()`.
+    func nextSentFrame() async -> TransportFrame? {
+        await outbox.next()
+    }
+
     /// Finish the frame stream (simulates connection close without changing `isConnected`).
     /// `disconnect()` delegates here for the stream teardown portion.
     /// Safe to call multiple times — `FrameInbox.finish()` is idempotent.
     func finishStreams() {
         inbox.finish()
+        outbox.finish()
     }
 
     /// Enable or disable simulated send failures.

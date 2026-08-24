@@ -183,6 +183,21 @@ actor NWWebSocketTransport: ClientDialingTransport {
         try await timedSend(sendData, context: context, on: connection)
     }
 
+    func sendRawText(_ text: String) async throws {
+        // Same dead-but-non-nil guard as send() above.
+        guard let connection, connection.state == .ready else {
+            throw TransportError.notConnected
+        }
+
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
+        let context = NWConnection.ContentContext(
+            identifier: "wsText",
+            metadata: [metadata]
+        )
+
+        try await timedSend(Data(text.utf8), context: context, on: connection)
+    }
+
     func sendBinary(_ data: Data) async throws {
         // Same dead-but-non-nil guard as send() above.
         guard let connection, connection.state == .ready else {
