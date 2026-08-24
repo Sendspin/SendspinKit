@@ -623,12 +623,19 @@ struct AudioFormatSpecTests {
         await service.audioQueueTransitionDidStart()
         await monitor.emit(.init(sampleRate: 48_000, reportedBitDepth: 24, diagnosticDescription: "Stable"))
         await monitor.emit(.init(sampleRate: 48_000, reportedBitDepth: 24, diagnosticDescription: "Stable"))
-        try await Task.sleep(for: .milliseconds(50))
-
         let stable = AudioOutputSnapshot(sampleRate: 48_000, reportedBitDepth: 24, diagnosticDescription: "Stable")
-        #expect(await service.snapshot() == stable)
+        #expect(
+            await waitUntil(timeout: .seconds(3)) { await service.snapshot() == stable },
+            "the stable post-start observation must eventually be published"
+        )
         await service.stopMonitoring()
-        #expect(await received.value == [stable])
+        let snapshots = try await runUnstructuredWithDeadline(
+            .seconds(1),
+            label: "audio queue transition stream cleanup",
+            onTimeout: { received.cancel() },
+            operation: { await received.value }
+        )
+        #expect(snapshots == [stable])
     }
 
     @Test

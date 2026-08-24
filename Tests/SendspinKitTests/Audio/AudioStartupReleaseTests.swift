@@ -372,6 +372,10 @@ struct AudioStartupReleaseTests {
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
         #expect(await waitUntil { await output.outputDeviceProbeCount >= 1 })
         await engine.commands.enqueue(.chunk(Data(repeating: 0x02, count: 100), ts: secondTimestamp))
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 2 },
+            "the second chunk must be applied while the release probe is suspended"
+        )
         await output.releaseBlockedOutputDeviceProbe()
 
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
