@@ -241,9 +241,13 @@ struct AudioStartupReleaseTests {
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
 
-        let firstTimestamp: Int64 = 50_000
+        let firstTimestamp: Int64 = 1_000_000
+        await output.blockNextOutputDeviceProbe()
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
-        #expect(await waitUntil { await engine.startupDeadlineArms == 1 }, "the first chunk must arm one deadline")
+        #expect(
+            await waitUntil(timeout: .seconds(5)) { await output.outputDeviceProbeCount == 1 },
+            "the first release must reach the device probe before later chunks are processed"
+        )
 
         let laterChunkCount = 32
         for index in 0 ..< laterChunkCount {
@@ -261,7 +265,7 @@ struct AudioStartupReleaseTests {
         )
         let callsBeforeRelease = await output.recordedCalls
         #expect(!callsBeforeRelease.contains("startPrepared()"))
-        #expect(await engine.startupDeadlineArms == 1)
+        await output.releaseBlockedOutputDeviceProbe()
 
         #expect(
             await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },

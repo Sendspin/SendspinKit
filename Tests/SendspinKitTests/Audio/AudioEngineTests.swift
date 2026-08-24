@@ -331,7 +331,9 @@ struct AudioEngineTests {
     func initialStreamPreservesWireCadence() async throws {
         let clock = StubClock()
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        // Keep the future-dated chunks in the scheduler so the assertion observes receipt rather
+        // than racing the scheduler output task, which consumes chunks inside its playback window.
+        let scheduler = AudioScheduler(clockSync: clock)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
         await engine.start()
 
