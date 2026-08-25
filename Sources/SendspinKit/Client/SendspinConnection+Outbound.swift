@@ -4,6 +4,7 @@ extension SendspinConnection {
     // MARK: - Outbound sends
 
     func sendWrapped(_ message: some Codable & Sendable, bypassRehandshakeGate: Bool = false) async throws {
+        // Check the gate before encryption; a post-encryption re-check would consume a nonce before throwing.
         guard bypassRehandshakeGate || !rehandshakeInProgress else {
             throw SendspinClientError.handshakeIncomplete
         }

@@ -124,6 +124,23 @@ struct PskCandidateTests {
         #expect(decoded.pairingPsk == pairingPsk)
     }
 
+    @Test("Pairing token ignores extension bytes")
+    func pairingTokenIgnoresExtensionBytes() throws {
+        let token = try PairingToken(clientKey: Data(repeating: 0x11, count: 32), pairingPsk: #require(Psk(bytes: Data(repeating: 0x22, count: 32))))
+        let extended = try PairingToken(string: token.string + "AA")
+        #expect(extended == token)
+    }
+
+    @Test("Pairing token rejects unknown versions and short payloads")
+    func pairingTokenRejectsInvalidPayloads() throws {
+        #expect(throws: PairingTokenError.invalidVersion) {
+            try PairingToken(string: "SP:1AAAA")
+        }
+        #expect(throws: PairingTokenError.invalidPayload) {
+            try PairingToken(string: "SP:0AAA")
+        }
+    }
+
     @Test("Pairing store rejects reserved and duplicate PSK identifiers")
     func pairingStoreUniquenessAndUsed() async throws {
         let pairingPsk = Psk.generate()

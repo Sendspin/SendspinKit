@@ -1452,7 +1452,7 @@ struct ClientIntegrationTests {
                 }
             }
         )
-        #expect(await waitUntil { await client.connection?.activeRoles.isEmpty == true })
+        #expect(await waitUntil { await client.connection?.activeRoles == [.playerV1] })
         #expect(client.connectionState == .connected)
 
         let beforeRestore = await mock.sentTextMessages.count

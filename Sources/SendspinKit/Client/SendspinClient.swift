@@ -127,6 +127,7 @@ public final class SendspinClient {
     let outputSettleInterval: Duration
     let outputRequestTimeout: Duration
     let handshakeTimeout: Duration
+    let pairingAttemptTimeout: Duration
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
     let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
     let sessionNegotiationHook: @Sendable () async -> Void
@@ -221,6 +222,7 @@ public final class SendspinClient {
         outputSettleInterval: Duration = .milliseconds(250),
         outputRequestTimeout: Duration = .seconds(3),
         handshakeTimeout: Duration = defaultHandshakeTimeout,
+        pairingAttemptTimeout: Duration = .seconds(120),
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
@@ -253,6 +255,7 @@ public final class SendspinClient {
         self.outputSettleInterval = outputSettleInterval
         self.outputRequestTimeout = outputRequestTimeout
         self.handshakeTimeout = handshakeTimeout
+        self.pairingAttemptTimeout = pairingAttemptTimeout
         self.outputNegotiationSleep = outputNegotiationSleep
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
@@ -595,11 +598,12 @@ public final class SendspinClient {
             pskCategory: outcomeCategory,
             matchedPskId: outcomePskId,
             pairingStore: pairingConfiguration?.store,
+            pairingAttemptTimeout: pairingAttemptTimeout,
             identityPrivateKey: outcomeIdentityPrivateKey,
             serverStaticPublicKey: outcomeServerStaticPublicKey,
             suite: outcomeSuite,
-            candidateProvider: { @MainActor [weak self] in
-                await self?.pairingCandidates() ?? []
+            candidateProvider: { [pairingConfiguration] in
+                await PairingCandidateBuilder.candidates(configuration: pairingConfiguration)
             },
             clientHelloPayload: buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats),
             unpairedAccessEnabled: unpairedAccessEnabled,

@@ -66,7 +66,9 @@ extension SendspinConnection {
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
 
-            if msgType == ServerActivateMessage.typeString {
+            if msgType == ServerActivateMessage.typeString
+                || msgType == NoiseHandshakeMessage.typeString
+                || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
             }
@@ -116,13 +118,14 @@ extension SendspinConnection {
             let reply = NoiseHandshakeMessage(
                 payload: NoiseHandshakePayload(data: Base64URL.encode(message2))
             )
-            // The gate blocks every other outbound path while this handler suspends for
-            // the old-key write; the actor resumes this continuation before another
-            // connection operation can pass the gate, then swaps keys synchronously.
+            // The gate covers the old-key reply and the synchronous key swap.
             try await sendWrapped(reply, bypassRehandshakeGate: true)
             channel.rekey(to: newTransport)
             pskCategory = candidate.category
             matchedPskId = candidate.psk.pskId
+            if candidate.category == .longTerm, let pairingStore {
+                await pairingStore.markUsed(pskId: candidate.psk.pskId)
+            }
             sessionContext = ActivationAdmissibility.SessionContext(
                 category: candidate.category,
                 unpairedAccessEnabled: sessionContext.unpairedAccessEnabled,
@@ -156,13 +159,6 @@ extension SendspinConnection {
         } catch {
             return
         }
-        controlSink.enqueue(.serverConnected(ServerInfo(
-            serverId: currentServerId ?? "",
-            name: serverName,
-            trustLevel: hello.trustLevel,
-            activeRoles: activeRoles,
-            activities: activities
-        )))
     }
 
     func handleServerActivate(_ message: ServerActivateMessage) async {
@@ -204,7 +200,7 @@ extension SendspinConnection {
             }
             controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
             if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.pairingPsk {
-                beginPairingAttempt()
+                await beginPairingAttempt()
             } else if pendingPairingPsk != nil {
                 clearPairingAttempt()
             }
@@ -214,23 +210,20 @@ extension SendspinConnection {
             await transport.disconnect()
         case .abortPairing:
             try? await sendWrapped(
-                PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported))
+                PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)),
+                bypassRehandshakeGate: awaitingRehandshakeActivation
             )
-            activities = nextActivities
-            let rolesChanged = nextRoles != activeRoles
-            activeRoles = nextRoles
-            if rolesChanged {
-                lastSentClientState = nil
+            if awaitingRehandshakeActivation {
+                awaitingRehandshakeActivation = false
+                rehandshakeInProgress = false
             }
-            try? await sendClientStateIfChanged()
-            controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
         }
     }
 
-    func beginPairingAttempt() {
+    func beginPairingAttempt() async {
         guard pskCategory == .pairing, pendingPairingPsk == nil else {
             if pskCategory != .pairing {
-                Task { try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported))) }
+                try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)))
             }
             return
         }
@@ -238,15 +231,13 @@ extension SendspinConnection {
         pendingPairingPsk = generated
         pairingAttemptTask?.cancel()
         pairingAttemptTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(120))
+            try? await Task.sleep(for: self?.pairingAttemptTimeout ?? .seconds(120))
             guard !Task.isCancelled else { return }
             await self?.pairingAttemptTimedOut()
         }
-        Task { [weak self] in
-            try? await self?.sendWrapped(ClientPairFinalizeMessage(
-                payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)
-            ))
-        }
+        try? await sendWrapped(ClientPairFinalizeMessage(
+            payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)
+        ))
     }
 
     func pairingAttemptTimedOut() async {
@@ -269,6 +260,8 @@ extension SendspinConnection {
             controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
         } catch {
             Log.client.error("Pairing record persistence failed: \(error.localizedDescription)")
+            disconnectReason = .connectionLost(nil)
+            await transport.disconnect()
         }
     }
 

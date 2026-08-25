@@ -7,17 +7,23 @@ struct SessionFormatNegotiation: Sendable {
     let effectivePlayerFormats: [AudioFormatSpec]?
 }
 
-extension SendspinClient {
-    /// Build the live candidate set for one connection attempt.
-    func pairingCandidates() async -> [PskCandidate] {
+enum PairingCandidateBuilder {
+    static func candidates(configuration: PairingConfiguration?) async -> [PskCandidate] {
         var candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]
-        guard let pairingConfiguration, pairingConfiguration.enabled else { return candidates }
-        candidates.append(PskCandidate(psk: pairingConfiguration.pairingPsk, category: .pairing))
-        let records = await pairingConfiguration.store.listRecords()
+        guard let configuration, configuration.enabled else { return candidates }
+        candidates.append(PskCandidate(psk: configuration.pairingPsk, category: .pairing))
+        let records = await configuration.store.listRecords()
         candidates.append(contentsOf: records.map {
             PskCandidate(psk: $0.psk, category: .longTerm, requiredServerId: $0.serverId)
         })
         return candidates
+    }
+}
+
+extension SendspinClient {
+    /// Build the live candidate set for one connection attempt.
+    func pairingCandidates() async -> [PskCandidate] {
+        await PairingCandidateBuilder.candidates(configuration: pairingConfiguration)
     }
 
     /// Capture one capability snapshot and derive the player catalog for a session.

@@ -161,7 +161,7 @@ public struct PairingToken: Sendable, Equatable, Hashable {
         let body = normalized.hasPrefix("SP:") ? String(normalized.dropFirst(3)) : normalized
         guard body.first == "0" else { throw PairingTokenError.invalidVersion }
         let bytes = try Self.decode(String(body.dropFirst()))
-        guard bytes.count >= 64, let psk = Psk(bytes: Data(bytes.dropFirst(32))) else {
+        guard bytes.count >= 64, let psk = Psk(bytes: Data(bytes.dropFirst(32).prefix(32))) else {
             throw PairingTokenError.invalidPayload
         }
         clientKey = Data(bytes.prefix(32))
