@@ -71,7 +71,7 @@ extension SendspinConnection {
     }
 
     func currentClientStateSnapshot() -> SentClientState {
-        let player = playerRoleActive
+        let player = activeRoles.contains(.playerV1)
             ? SentPlayerState(
                 volume: currentVolume,
                 muted: currentMuted,
@@ -84,7 +84,6 @@ extension SendspinConnection {
             )
             : nil
         return SentClientState(
-            state: clientOperationalState,
             available: isClockSynced && clientOperationalState != .externalSource,
             player: player
         )

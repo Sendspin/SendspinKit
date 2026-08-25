@@ -64,8 +64,8 @@ actor SendspinConnection {
     let outputRequestTimeout: Duration
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
 
-    /// Clock-sync sender task. Started on `server/hello` — no client messages may
-    /// precede handshake completion — and cancelled on teardown.
+    /// Clock-sync sender task. Starts when the message loop begins after handoff
+    /// and is cancelled on teardown.
     var clockSyncTask: Task<Void, Never>?
 
     // Protocol-intent gates for inbound stream data. Internal so same-module
@@ -316,7 +316,7 @@ actor SendspinConnection {
     func start() {
         guard lifecycle == .idle else { return }
         lifecycle = .running
-        if lastSentClientState == nil {
+        if lastSentClientState == nil, !playerRoleActive {
             Task { [weak self] in
                 try? await self?.sendClientStateIfChanged()
             }

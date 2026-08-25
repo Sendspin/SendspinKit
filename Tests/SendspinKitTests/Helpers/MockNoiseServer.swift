@@ -206,11 +206,15 @@ actor MockNoiseServer {
         startReadback()
     }
 
-    func sendActivation(activities: Set<Activity> = [], activeRoles: [VersionedRole] = []) async throws {
+    func sendActivation(
+        activities: Set<Activity> = [],
+        activeRoles: [VersionedRole] = [],
+        includeActiveRoles: Bool = true
+    ) async throws {
         let activate = ServerActivateMessage(
             payload: ServerActivatePayload(
                 activities: Array(activities),
-                activeRoles: activeRoles
+                activeRoles: includeActiveRoles ? activeRoles : nil
             )
         )
         let data = try JSONEncoder().encode(activate)

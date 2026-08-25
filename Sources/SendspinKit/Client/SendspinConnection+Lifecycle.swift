@@ -128,8 +128,8 @@ extension SendspinConnection {
     /// then cancel the rest.
     func runLoop() async {
         await withTaskGroup(of: Void.self) { group in
-            // The message loop owns the handshake; clock sync is started from
-            // handleServerHello once server/hello arrives, not here.
+            // The message loop owns post-handoff sequencing; clock sync starts
+            // when the loop begins.
             group.addTask { await self.messageLoop() }
             group.addTask { await self.reportDrain() }
 

@@ -282,10 +282,6 @@ struct SendspinConnectionTests {
         let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
-        #expect(
-            await waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport),
-            "server/hello should complete the handshake before a graceful disconnect sends goodbye"
-        )
 
         await connection.disconnect(reason: .userRequest)
 
@@ -303,10 +299,6 @@ struct SendspinConnectionTests {
         let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
-        #expect(
-            await waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport),
-            "server/hello should complete the handshake before a graceful disconnect sends goodbye"
-        )
 
         async let firstDisconnect: Void = connection.disconnect(reason: .userRequest)
         async let secondDisconnect: Void = connection.disconnect(reason: .shutdown)
@@ -396,11 +388,6 @@ struct SendspinConnectionTests {
         let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
-
-        #expect(
-            await waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport),
-            "server/hello should complete the handshake before the graceful disconnect"
-        )
 
         await connection.disconnect(reason: .userRequest)
 
@@ -662,9 +649,8 @@ struct SendspinConnectionTests {
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
-        // Wait for the hello's initial client/state, then baseline (deterministic — avoids
-        // a delayed hello send racing into the measurement window under parallel load).
-        #expect(await waitForClientStateCount(atLeast: 1), "hello should send an initial client/state")
+        // The first player client/state is emitted after clock synchronization; the
+        // command below provides the first state transition in this fixture.
         let baseline = await sentClientStateCount()
 
         // Inject an UNLISTED command (volume — not in advertised set), then a LISTED one
@@ -930,6 +916,16 @@ struct SendspinConnectionTests {
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
+        let now = MonotonicClock.nowMicroseconds()
+        try await transport.injectText(serverTimeJSON(
+            clientTransmitted: now,
+            serverReceived: now,
+            serverTransmitted: now
+        ))
+        #expect(
+            await waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport),
+            "first synchronization should send the initial client/state"
+        )
         let baselineState = await sentJSONMessages(on: transport)
             .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
         try await transport.injectText(streamStartJSON(codec: "pcm"))

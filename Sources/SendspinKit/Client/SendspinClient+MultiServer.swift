@@ -29,6 +29,7 @@ extension SendspinClient {
         }
         arbitrationInProgress = true
         defer { arbitrationInProgress = false }
+        let arbitrationEpoch = sessionEpoch
 
         do {
             let negotiation = try await makeSessionFormatNegotiation()
@@ -41,8 +42,12 @@ extension SendspinClient {
                     supportedRoles: roleSet,
                     unpairedAccessEnabled: unpairedAccessEnabled
                 ),
-                phaseTimeout: defaultHandshakeTimeout
+                phaseTimeout: handshakeTimeout
             )
+            guard sessionEpoch == arbitrationEpoch else {
+                await HandshakeDriver.reject(outcome, reason: .concurrentAttempt, on: transport)
+                return
+            }
             let existingCandidate = MultiServerAdmission.Candidate(
                 serverId: currentServerId ?? "",
                 activities: currentActivities
@@ -58,13 +63,7 @@ extension SendspinClient {
                 lastPlaybackServerId: lastPlayback
             ) {
             case .keepExisting:
-                var candidate = outcome
-                try? await sendGoodbye(
-                    reason: .concurrentAttempt,
-                    on: transport,
-                    channel: &candidate.channel
-                )
-                await transport.disconnect()
+                await HandshakeDriver.reject(outcome, reason: .concurrentAttempt, on: transport)
             case .acceptIncoming:
                 if let incumbent = retireSession() {
                     await incumbent.disconnect(reason: .anotherServer)
@@ -75,21 +74,6 @@ extension SendspinClient {
         } catch {
             await transport.disconnect()
             throw error
-        }
-    }
-
-    private func sendGoodbye(
-        reason: GoodbyeReason,
-        on transport: any SendspinTransport,
-        channel: inout NoiseChannel
-    ) async throws {
-        let data = try SendspinEncoding.makeEncoder().encode(
-            ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason))
-        )
-        var plaintext = Data([NoiseFrameType.json])
-        plaintext.append(data)
-        for frame in try channel.encryptMessage(plaintext) {
-            try await transport.sendBinary(frame)
         }
     }
 }

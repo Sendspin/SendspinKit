@@ -56,7 +56,8 @@ private func serverStateControllerJSON(_ controller: ServerControllerState) thro
 func makeTestClient(
     roles: [VersionedRole] = [.playerV1, .controllerV1],
     persistenceProvider: (any SendspinPersistenceProvider)? = nil,
-    unpairedAccessEnabled: Bool = true
+    unpairedAccessEnabled: Bool = true,
+    handshakeTimeout: Duration = .seconds(3)
 ) throws -> SendspinClient {
     var playerConfig: PlayerConfiguration?
     if roles.contains(.playerV1) {
@@ -75,7 +76,8 @@ func makeTestClient(
         playerConfig: playerConfig,
         unpairedAccessEnabled: unpairedAccessEnabled,
         persistenceProvider: persistenceProvider,
-        audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
+        audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
+        handshakeTimeout: handshakeTimeout
     )
 }
 
@@ -1026,6 +1028,7 @@ struct ClientIntegrationTests {
 
         // A playback-reason competitor wins over the discovery incumbent.
         let mockB = try await acceptCompeting(client, serverId: "server-b", connectionReason: .playback)
+        try await establishClockSync(client, via: mockB)
 
         let stateArrived = await waitUntil(timeout: .seconds(5)) {
             await lastClientState(from: mockB, after: 0)?.player != nil
@@ -1429,6 +1432,67 @@ struct ClientIntegrationTests {
         #expect(info.hasRole(.controllerV1) == true)
         #expect(info.hasRole(.artworkV1) == false)
 
+        await client.disconnect()
+    }
+
+    @Test
+    func omittedActiveRolesDropPersistedRolesForNonPlaybackActivation() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client, activeRoles: [.playerV1], activities: [.playback])
+
+        let beforePairing = await mock.sentTextMessages.count
+        try await mock.sendActivation(activities: [.pairing], includeActiveRoles: false)
+        #expect(
+            await waitUntil {
+                await mock.sentTextMessages.dropFirst(beforePairing).contains {
+                    guard SendspinEncoding.messageType(of: $0) == PairAbortMessage.typeString,
+                          let message = try? JSONDecoder().decode(PairAbortMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.reason == .methodNotSupported
+                }
+            }
+        )
+        #expect(await waitUntil { await client.connection?.activeRoles.isEmpty == true })
+        #expect(client.connectionState == .connected)
+
+        let beforeRestore = await mock.sentTextMessages.count
+        try await mock.sendActivation(activities: [.playback], activeRoles: [.playerV1])
+        #expect(await waitUntil { await client.connection?.activeRoles == [.playerV1] })
+        #expect(
+            await waitUntil {
+                let messages = await mock.sentTextMessages.dropFirst(beforeRestore)
+                return messages.contains {
+                    guard SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString,
+                          let message = try? JSONDecoder().decode(ClientStateMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.player != nil
+                }
+            }
+        )
+        #expect(client.connectionState == .connected)
+        await client.disconnect()
+    }
+
+    @Test
+    func explicitRoleRemovalOmitsPlayerObjectFromClientState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client, activeRoles: [.playerV1], activities: [.playback])
+        let before = await mock.sentTextMessages.count
+
+        try await mock.sendActivation(activities: [.playback], activeRoles: [])
+        #expect(await waitUntil { await client.connection?.activeRoles.isEmpty == true })
+        #expect(
+            await waitUntil {
+                let messages = await mock.sentTextMessages.dropFirst(before)
+                return messages.contains {
+                    guard SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString,
+                          let message = try? JSONDecoder().decode(ClientStateMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.player == nil
+                }
+            }
+        )
+        #expect(client.connectionState == .connected)
         await client.disconnect()
     }
 

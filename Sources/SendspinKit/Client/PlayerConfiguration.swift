@@ -158,7 +158,7 @@ public enum VolumeMode: Sendable, Hashable {
 ///
 /// The spec sets no bound. This matches the budget multi-server arbitration applies to
 /// its own handshake, so both paths give a server the same grace.
-let defaultHandshakeTimeout: Duration = .seconds(5)
+let defaultHandshakeTimeout: Duration = .seconds(30)
 
 /// Configuration for player role
 public struct PlayerConfiguration: Sendable {

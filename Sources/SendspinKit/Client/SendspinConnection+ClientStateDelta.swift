@@ -4,7 +4,6 @@ extension SendspinConnection {
     /// Last-sent / current `client/state` snapshot (kept separate from the wire
     /// types so delta comparison is field-by-field and exhaustive).
     struct SentClientState: Equatable {
-        var state: EngineSyncState
         var available: Bool
         var player: SentPlayerState?
     }

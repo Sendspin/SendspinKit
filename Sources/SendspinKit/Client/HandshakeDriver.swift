@@ -104,12 +104,27 @@ enum HandshakeDriver {
         }
     }
 
+    static func reject(
+        _ outcome: consuming Result,
+        reason: GoodbyeReason,
+        on transport: any SendspinTransport
+    ) async {
+        let outcome = outcome
+        var channel = outcome.channel
+        try? await sendJSON(
+            ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)),
+            on: transport,
+            channel: &channel
+        )
+        await transport.disconnect()
+    }
+
     private static func sendJSON(
         _ message: some Codable & Sendable,
         on transport: any SendspinTransport,
         channel: inout NoiseChannel
     ) async throws {
-        var encoder = SendspinEncoding.makeEncoder()
+        let encoder = SendspinEncoding.makeEncoder()
         let json = try encoder.encode(message)
         var plaintext = Data([NoiseFrameType.json])
         plaintext.append(json)

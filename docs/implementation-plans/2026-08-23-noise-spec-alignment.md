@@ -228,6 +228,7 @@ live run against Music Assistant (unpaired access).
   API for the host app (Music Assistant ingests it via its login flow — no operator
   paste; the library just produces/consumes the token string).
 - Silent-discard rules for stale pairing messages; protocol-error close semantics.
+- Live arbitration sets `MultiServerAdmission.Candidate.isPairingAttempt` for the incumbent once pairing attempts exist; Phase 2 has no pairing attempts.
 - Re-handshake end-to-end: server-initiated key swap (sentinel→pairing PSK before
   a pairing activate; pairing→long-term after finalize), fresh
   `server/hello` → `client/hello` (re-assert `trust_level`) → `server/activate`

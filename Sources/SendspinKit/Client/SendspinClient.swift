@@ -112,9 +112,7 @@ public final class SendspinClient {
     /// Dependencies.
     /// Note: the facade deliberately holds NO transport reference. The connection
     /// is the transport's sole owner and single writer; all outbound protocol I/O
-    /// goes through `SendspinConnection` methods. (The only facade-level send is
-    /// `performHandshake`, which writes to a candidate transport during
-    /// multi-server arbitration, before a connection exists for it.)
+    /// goes through `SendspinConnection` methods.
     /// The active connection, or nil if disconnected.
     /// When a new connection replaces the old one, the old is shutdown.
     var connection: SendspinConnection?
@@ -124,6 +122,7 @@ public final class SendspinClient {
     let audioOutputCapabilityProvider: any AudioOutputCapabilityProviding
     let outputSettleInterval: Duration
     let outputRequestTimeout: Duration
+    let handshakeTimeout: Duration
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
     let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
     let sessionNegotiationHook: @Sendable () async -> Void
@@ -214,6 +213,7 @@ public final class SendspinClient {
         audioOutputCapabilityProvider: any AudioOutputCapabilityProviding,
         outputSettleInterval: Duration = .milliseconds(250),
         outputRequestTimeout: Duration = .seconds(3),
+        handshakeTimeout: Duration = defaultHandshakeTimeout,
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
@@ -244,6 +244,7 @@ public final class SendspinClient {
         self.audioOutputCapabilityProvider = audioOutputCapabilityProvider
         self.outputSettleInterval = outputSettleInterval
         self.outputRequestTimeout = outputRequestTimeout
+        self.handshakeTimeout = handshakeTimeout
         self.outputNegotiationSleep = outputNegotiationSleep
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
@@ -431,7 +432,7 @@ public final class SendspinClient {
                     supportedRoles: roleSet,
                     unpairedAccessEnabled: unpairedAccessEnabled
                 ),
-                phaseTimeout: defaultHandshakeTimeout
+                phaseTimeout: handshakeTimeout
             )
             try requireOpen()
             guard sessionEpoch == dialEpoch else {
@@ -476,7 +477,7 @@ public final class SendspinClient {
                         supportedRoles: roleSet,
                         unpairedAccessEnabled: unpairedAccessEnabled
                     ),
-                    phaseTimeout: defaultHandshakeTimeout
+                    phaseTimeout: handshakeTimeout
                 )
                 try requireOpen()
                 await setupConnection(with: transport, outcome: outcome, negotiation: negotiation)

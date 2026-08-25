@@ -81,8 +81,17 @@ extension SendspinConnection {
 
     func handleServerActivate(_ message: ServerActivateMessage) async {
         let nextActivities = Set(message.payload.activities)
-        let announcedRoles = message.payload.activeRoles ?? Array(activeRoles)
-        let nextRoles = Set(announcedRoles).intersection(roles)
+        let nextRoles: Set<VersionedRole> = if let announcedRoles = message.payload.activeRoles {
+            Set(announcedRoles).intersection(roles)
+        } else if ActivationAdmissibility.isPlaybackCapable(
+            nextActivities,
+            category: sessionContext.category,
+            unpairedAccessEnabled: sessionContext.unpairedAccessEnabled
+        ) {
+            activeRoles
+        } else {
+            []
+        }
         switch ActivationAdmissibility.evaluate(
             activities: nextActivities,
             activeRoles: nextRoles,
@@ -108,6 +117,14 @@ extension SendspinConnection {
             try? await sendWrapped(
                 PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported))
             )
+            activities = nextActivities
+            let rolesChanged = nextRoles != activeRoles
+            activeRoles = nextRoles
+            if rolesChanged {
+                lastSentClientState = nil
+            }
+            try? await sendClientStateIfChanged()
+            controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
         }
     }
 

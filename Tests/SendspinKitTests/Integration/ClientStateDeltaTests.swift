@@ -31,13 +31,14 @@ struct ClientStateDeltaTests {
     func initialSendIsFullPayload() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
         let initial = try #require(
             await clientStatePayloads(from: mock).first,
-            "Expected an initial client/state after server/hello"
+            "Expected an initial client/state after clock synchronization"
         )
 
-        #expect(initial.available == false, "Availability is false until clock synchronization establishes")
+        #expect(initial.available == true, "Availability is true after clock synchronization establishes")
         let player = try #require(initial.player, "Initial state must include the full player object")
         #expect(player.volume == client.currentVolume)
         #expect(player.muted == client.currentMuted)
@@ -84,10 +85,11 @@ struct ClientStateDeltaTests {
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
         let initial = try #require(
             await clientStatePayloads(from: mock).first,
-            "Expected an initial client/state after server/hello"
+            "Expected an initial client/state after clock synchronization"
         )
 
         let player = try #require(initial.player, "Initial state must include the full player object")
@@ -101,6 +103,7 @@ struct ClientStateDeltaTests {
     func subsequentChangeSendsOnlyChangedFields() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
         let countBefore = await clientStateCount(from: mock)
         let newVolume = client.currentVolume == 100 ? 42 : 100
