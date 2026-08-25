@@ -99,7 +99,7 @@ struct ControllerClient: AsyncParsableCommand {
         let url = try await resolveServerURL(server: server, discover: discover, timeout: timeout)
 
         let client = try SendspinClient(
-            clientId: "controller-example-\(UUID().uuidString.prefix(8))",
+            identity: .generate(),
             name: "Controller Client",
             roles: [.controllerV1, .metadataV1]
         )

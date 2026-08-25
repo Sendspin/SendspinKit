@@ -256,10 +256,11 @@ struct ArtworkModelTests {
     @Test
     func clientHello_withArtworkV1SupportEncodesCorrectly() throws {
         let payload = try ClientHelloPayload(
-            clientId: "test-client",
             name: "Test Display",
             deviceInfo: nil,
-            version: 1,
+            trustLevel: .none,
+            supportedPairMethods: [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
             supportedRoles: [.artworkV1],
             playerV1Support: nil,
             artworkV1Support: ArtworkSupport(channels: [

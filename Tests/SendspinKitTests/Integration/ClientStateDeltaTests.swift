@@ -5,10 +5,18 @@ import Testing
 /// Decode every `client/state` payload sent after `offset`, dispatching on the wire
 /// `type` tag. Necessary because `ClientStatePayload`'s fields are all optional, so
 /// other message types decode "successfully" as an empty payload.
-private func clientStatePayloads(from mock: MockTransport, after offset: Int = 0) async -> [ClientStatePayload] {
-    let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset)
-        .filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+private func clientStatePayloads(from mock: MockNoiseServer, after offset: Int = 0) async -> [ClientStatePayload] {
+    let deadline = ContinuousClock.now + .milliseconds(500)
+    var messages: [Data] = []
+    repeat {
+        messages = await mock.sentTextMessages
+        if messages.contains(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }) {
+            break
+        }
+        try? await Task.sleep(for: .milliseconds(5))
+    } while ContinuousClock.now < deadline
+    let stateMessages = messages.filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+    return stateMessages.dropFirst(offset)
         .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
 }
 
@@ -24,7 +32,7 @@ struct ClientStateDeltaTests {
             "Expected an initial client/state after server/hello"
         )
 
-        #expect(initial.state == .synchronized)
+        #expect(initial.available == false, "Availability is false until clock synchronization establishes")
         let player = try #require(initial.player, "Initial state must include the full player object")
         #expect(player.volume == client.currentVolume)
         #expect(player.muted == client.currentMuted)
@@ -99,7 +107,7 @@ struct ClientStateDeltaTests {
         )
 
         // Only the changed field is present; unchanged fields are omitted.
-        #expect(delta.state == nil)
+        #expect(delta.available == nil)
         #expect(delta.player?.volume == newVolume)
         #expect(delta.player?.muted == nil)
         #expect(delta.player?.outputDelayMs == nil)
@@ -113,7 +121,7 @@ struct ClientStateDeltaTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStatePayloads(from: mock).count
         // Re-set the current values: nothing changed, so nothing should be sent.
         try await client.setVolume(client.currentVolume)
         try await client.setMute(client.currentMuted)

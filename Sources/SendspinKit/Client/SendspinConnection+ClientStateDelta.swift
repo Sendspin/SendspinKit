@@ -4,7 +4,8 @@ extension SendspinConnection {
     /// Last-sent / current `client/state` snapshot (kept separate from the wire
     /// types so delta comparison is field-by-field and exhaustive).
     struct SentClientState: Equatable {
-        var state: ClientOperationalState
+        var state: EngineSyncState
+        var available: Bool
         var player: SentPlayerState?
     }
 
@@ -23,7 +24,8 @@ extension SendspinConnection {
         to current: SentClientState
     ) throws -> ClientStatePayload? {
         let previousPlayer = previous?.player
-        let state = current.state != previous?.state ? current.state : nil
+        let currentAvailable = current.available
+        let available = previous == nil || currentAvailable != previous?.available ? currentAvailable : nil
 
         var player: PlayerStateObject?
         if let p = current.player {
@@ -45,7 +47,7 @@ extension SendspinConnection {
             }
         }
 
-        guard state != nil || player != nil else { return nil }
-        return ClientStatePayload(state: state, player: player)
+        guard available != nil || player != nil else { return nil }
+        return ClientStatePayload(available: available, player: player)
     }
 }

@@ -4,7 +4,7 @@ import Foundation
 
 /// Client operational state per Sendspin protocol spec.
 /// This is a top-level field in client/state, independent of any role.
-public enum ClientOperationalState: String, Codable, Equatable, Sendable {
+enum EngineSyncState: String, Codable, Equatable, Sendable {
     /// Client is operational and synchronized with server timestamps
     case synchronized
     /// Client has a problem preventing normal operation
@@ -25,13 +25,13 @@ struct ClientStateMessage: SendspinMessage, Equatable {
 /// Client state payload containing client-level state and role-specific state objects.
 /// Per spec: must be sent after server/hello and whenever any state changes.
 struct ClientStatePayload: Codable, Equatable {
-    /// Client operational state (required on initial send, optional on deltas)
-    let state: ClientOperationalState?
+    /// Whether the client is available (required initially, optional on deltas).
+    let available: Bool?
     /// Player role state (only if client has player role)
     let player: PlayerStateObject?
 
-    init(state: ClientOperationalState? = nil, player: PlayerStateObject? = nil) {
-        self.state = state
+    init(available: Bool? = nil, player: PlayerStateObject? = nil) {
+        self.available = available
         self.player = player
     }
 }

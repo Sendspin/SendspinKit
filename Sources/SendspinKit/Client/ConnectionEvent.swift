@@ -65,8 +65,11 @@ enum ConnectionEvent: Equatable {
     /// Player mute state changed (server command or local `setMute`)
     case playerMutedChanged(Bool)
 
+    /// Server changed admitted activities or active roles.
+    case serverActivated(activities: Set<Activity>, activeRoles: Set<VersionedRole>)
+
     /// Client operational state (synchronized, error, etc.)
-    case operationalState(ClientOperationalState)
+    case operationalState(EngineSyncState)
 
     /// Clock synchronization established (first `server/time` convergence).
     case clockSyncEstablished
@@ -81,10 +84,4 @@ enum ConnectionLifecycle {
     case running
     case shuttingDown
     case stopped
-}
-
-/// Protocol handshake phase for the connection's message loop and outbound gates.
-enum HandshakePhase {
-    case awaitingServerHello
-    case complete
 }

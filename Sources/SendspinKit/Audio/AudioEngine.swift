@@ -197,7 +197,7 @@ actor AudioEngine {
     }
 
     /// Operational state tracking for telemetry (engine maintains the state, client drains reports)
-    private var operationalState: ClientOperationalState = .synchronized
+    private var operationalState: EngineSyncState = .synchronized
 
     /// User/server-commanded mute (visible state, reported via `client/state`).
     private var userMuted = false

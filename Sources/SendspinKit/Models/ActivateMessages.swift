@@ -2,7 +2,7 @@ import Foundation
 
 /// A server purpose declared on a connection via `server/activate`. Multi-server
 /// admission ranks connections by their highest-ranked declared activity.
-enum Activity: String, Codable, Sendable, Hashable, CaseIterable {
+public enum Activity: String, Codable, Sendable, Hashable, CaseIterable {
     case playback
     case pairing
     case management

@@ -12,16 +12,16 @@ struct ArbitrationConcurrencyTests {
     func concurrentArbitrationDropsTheSecondCandidate() async throws {
         let client = try makeTestClient()
         let incumbent = try await connectClient(client, connectionReason: .discovery)
+        let incumbentServerId = await incumbent.serverId
 
         // Candidate A stays silent, so its arbitration is still in flight.
         let candidateA = MockTransport()
         let candidateB = MockTransport()
-
         let taskA = Task { try? await client.acceptConnection(candidateA) }
 
         // Ensure A owns the arbitration before B arrives.
         #expect(
-            await waitUntil { await !candidateA.sentTextMessages.isEmpty },
+            await waitUntil { await candidateA.hasSentFrames },
             "candidate A's handshake should be in flight"
         )
 
@@ -40,7 +40,7 @@ struct ArbitrationConcurrencyTests {
         // The incumbent is untouched throughout.
         #expect(await !incumbent.disconnectCalled)
         #expect(client.connectionState == .connected)
-        #expect(client.currentServerId == testServerId)
+        #expect(client.currentServerId == incumbentServerId)
 
         taskA.cancel()
         await candidateA.finishStreams()
@@ -77,10 +77,11 @@ struct ArbitrationConcurrencyTests {
         let incumbent = try await connectClient(client, connectionReason: .playback)
 
         let candidate = MockTransport()
+        let server = MockNoiseServer(transport: candidate, psk: .sentinel)
         let arbitration = Task { try? await client.acceptConnection(candidate) }
 
         #expect(
-            await waitUntil { await !candidate.sentTextMessages.isEmpty },
+            await waitUntil { await candidate.hasSentFrames },
             "the candidate's handshake should be in flight"
         )
 
@@ -92,8 +93,8 @@ struct ArbitrationConcurrencyTests {
             "the incumbent should have been retired"
         )
 
-        // Now let the candidate finish its handshake.
-        try await candidate.injectText(serverHelloJSON(connectionReason: .discovery))
+        // Now let the candidate finish its Noise handshake and activation.
+        try await server.establishSession(activities: [.playback], activeRoles: [.playerV1, .controllerV1])
         _ = await arbitration.value
 
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
@@ -111,17 +112,17 @@ struct ArbitrationConcurrencyTests {
         // First candidate: closes immediately, so arbitration ends fast (handshake fails).
         let first = MockTransport()
         await first.finishStreams()
-        try await client.acceptConnection(first)
+        await #expect(throws: HandshakeError.transportClosed) {
+            try await client.acceptConnection(first)
+        }
 
         // Second candidate must actually be arbitrated, not rejected by a stuck gate.
         let second = MockTransport()
-        await second.finishStreams()
-        try await client.acceptConnection(second)
-
-        #expect(
-            await second.sentTextMessages.contains { SendspinEncoding.messageType(of: $0) == "client/hello" },
-            "the gate must have reopened, letting the second candidate begin its handshake"
-        )
+        let secondServer = MockNoiseServer(transport: second, psk: .sentinel)
+        let secondAttempt = Task { try? await client.acceptConnection(second) }
+        #expect(await waitUntil { await second.hasSentFrames }, "the gate must have reopened")
+        try await secondServer.establishSession(activities: [.playback], activeRoles: [.playerV1, .controllerV1])
+        _ = await secondAttempt.value
 
         await client.disconnect()
     }

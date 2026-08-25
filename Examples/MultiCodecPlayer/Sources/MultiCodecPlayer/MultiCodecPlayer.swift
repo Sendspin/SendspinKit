@@ -117,7 +117,7 @@ struct MultiCodecPlayer: AsyncParsableCommand {
 
         // 4. Create client with playerV1 role
         let client = try SendspinClient(
-            clientId: "multicodec-example-\(UUID().uuidString.prefix(8))",
+            identity: .generate(),
             name: "MultiCodecPlayer",
             roles: [.playerV1],
             playerConfig: playerConfig
@@ -139,7 +139,7 @@ struct MultiCodecPlayer: AsyncParsableCommand {
         for await event in client.events() {
             switch event {
             case let .serverConnected(info):
-                print("[connected] \(info.name) (v\(info.version))")
+                print("[connected] \(info.name) (\(info.serverId))")
                 let roles = info.activeRoles.map(\.identifier).sorted().joined(separator: ", ")
                 print("[roles] \(roles)")
 

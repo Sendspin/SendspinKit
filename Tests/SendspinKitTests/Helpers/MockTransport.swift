@@ -11,11 +11,17 @@ actor MockTransport: ClientDialingTransport {
     /// Client-sent frames, observable as an ordered pull stream so a test-side peer
     /// (e.g. the mock Noise server) can react to sends as they happen.
     private let outbox = FrameInbox()
+    private var encryptedTextSender: (@Sendable (String) async throws -> Void)?
+    private var encryptedBinarySender: (@Sendable (Data) async throws -> Void)?
 
     /// JSON-encoded messages sent by the client, captured as raw Data.
     private(set) var sentTextMessages: [Data] = []
     /// Binary messages sent by the client.
     private(set) var sentBinaryMessages: [Data] = []
+
+    var hasSentFrames: Bool {
+        !sentTextMessages.isEmpty || !sentBinaryMessages.isEmpty
+    }
 
     /// When true, `send` and `sendBinary` throw to simulate transport failure.
     /// Mutate via `setShouldFailOnSend(_:)` from outside the actor.
@@ -103,14 +109,31 @@ actor MockTransport: ClientDialingTransport {
 
     // MARK: - Test helpers
 
+    /// Install an encrypted server-message sender for an established session.
+    func installEncryptedTextSender(_ sender: @escaping @Sendable (String) async throws -> Void) {
+        encryptedTextSender = sender
+    }
+
     /// Inject a JSON text message as if the server sent it.
-    func injectText(_ json: String) {
-        inbox.yield(.text(json))
+    func injectText(_ json: String) async {
+        if let sender = encryptedTextSender {
+            try? await sender(json)
+        } else {
+            inbox.yield(.text(json))
+        }
     }
 
     /// Inject raw binary data as if the server sent it.
     func injectBinary(_ data: Data) {
         inbox.yield(.binary(data))
+    }
+
+    func installEncryptedBinarySender(_ sender: @escaping @Sendable (Data) async throws -> Void) {
+        encryptedBinarySender = sender
+    }
+
+    func injectEncryptedBinary(_ data: Data) async {
+        try? await encryptedBinarySender?(data)
     }
 
     /// Pull the next client-sent frame in send order. Returns `nil` after the

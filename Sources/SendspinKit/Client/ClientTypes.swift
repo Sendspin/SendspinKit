@@ -176,11 +176,11 @@ public enum ClientEvent: Sendable, Equatable {
 public struct ServerInfo: Sendable, Hashable {
     public let serverId: String
     public let name: String
-    public let version: Int
-    public let connectionReason: ConnectionReason
     /// Roles the server actually activated for this client.
     /// Use ``hasRole(_:)`` to check whether a specific capability is available.
     public let activeRoles: Set<VersionedRole>
+    /// Activities currently admitted for this connection.
+    public let activities: Set<Activity>
 
     /// Whether the server activated the given role for this client.
     ///

@@ -6,10 +6,11 @@ struct MessageEncodingTests {
     @Test
     func clientHello_encodesWithVersionedRoles() throws {
         let payload = try ClientHelloPayload(
-            clientId: "test-client",
             name: "Test Client",
             deviceInfo: nil,
-            version: 1,
+            trustLevel: .none,
+            supportedPairMethods: [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
             supportedRoles: [.playerV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
@@ -30,13 +31,12 @@ struct MessageEncodingTests {
 
         // Swift escapes forward slashes in JSON, so we check for both possibilities
         #expect(json.contains("\"type\":\"client/hello\"") || json.contains("\"type\":\"client\\/hello\""))
-        #expect(json.contains("\"client_id\":\"test-client\""))
         #expect(json.contains("\"supported_roles\":[\"player@v1\"]"))
         #expect(json.contains("\"player@v1_support\""))
     }
 
     @Test
-    func serverHello_decodesWithActiveRolesAndConnectionReason() throws {
+    func serverHello_decodesNameOnlyPayload() throws {
         let json = """
         {
             "type": "server/hello",
@@ -55,54 +55,7 @@ struct MessageEncodingTests {
         let message = try decoder.decode(ServerHelloMessage.self, from: data)
 
         #expect(message.type == "server/hello")
-        #expect(message.payload.serverId == "test-server")
         #expect(message.payload.name == "Test Server")
-        #expect(message.payload.version == 1)
-        #expect(message.payload.activeRoles.count == 2)
-        #expect(message.payload.activeRoles.contains(.playerV1))
-        #expect(message.payload.activeRoles.contains(.metadataV1))
-        #expect(message.payload.connectionReason == .playback)
-    }
-
-    @Test
-    func serverHello_decodesMissingConnectionReasonAsPlayback() throws {
-        let json = """
-        {
-            "type": "server/hello",
-            "payload": {
-                "server_id": "test-server",
-                "name": "Test Server",
-                "version": 1,
-                "active_roles": ["controller@v1"]
-            }
-        }
-        """
-
-        let data = try #require(json.data(using: .utf8))
-        let message = try JSONDecoder().decode(ServerHelloMessage.self, from: data)
-
-        #expect(message.payload.connectionReason == .playback)
-    }
-
-    @Test
-    func serverHello_preservesExplicitDiscoveryConnectionReason() throws {
-        let json = """
-        {
-            "type": "server/hello",
-            "payload": {
-                "server_id": "test-server",
-                "name": "Test Server",
-                "version": 1,
-                "active_roles": ["controller@v1"],
-                "connection_reason": "discovery"
-            }
-        }
-        """
-
-        let data = try #require(json.data(using: .utf8))
-        let message = try JSONDecoder().decode(ServerHelloMessage.self, from: data)
-
-        #expect(message.payload.connectionReason == .discovery)
     }
 
     @Test
@@ -125,7 +78,7 @@ struct MessageEncodingTests {
     @Test
     func clientState_encodesWithClientStateAndPlayerStateObject() throws {
         let playerState = try PlayerStateObject(volume: 80, muted: false, outputDelayMs: 0)
-        let payload = ClientStatePayload(state: .synchronized, player: playerState)
+        let payload = ClientStatePayload(available: true, player: playerState)
         let message = ClientStateMessage(payload: payload)
 
         let encoder = JSONEncoder()
@@ -133,7 +86,7 @@ struct MessageEncodingTests {
         let json = try #require(String(data: data, encoding: .utf8))
 
         #expect(json.contains("\"type\":\"client/state\"") || json.contains("\"type\":\"client\\/state\""))
-        #expect(json.contains("\"state\":\"synchronized\""))
+        #expect(json.contains("\"available\":true"))
         #expect(json.contains("\"volume\":80"))
         #expect(json.contains("\"muted\":false"))
         #expect(json.contains("\"output_delay_ms\":0"))
@@ -617,8 +570,7 @@ struct MessageEncodingTests {
         """
         let serverHelloData = try #require(serverHelloJSON.data(using: .utf8))
         let serverHello = try decoder.decode(ServerHelloMessage.self, from: serverHelloData)
-        #expect(serverHello.payload.serverId == "test-server")
-        #expect(serverHello.payload.connectionReason == .discovery)
+        #expect(serverHello.payload.name == "Test Server")
 
         let serverTimeJSON = """
         {

@@ -16,8 +16,9 @@ struct CompetingHandshakeCancellationTests {
         let client = try makeTestClient()
         let existing = try await connectClient(client, connectionReason: .discovery)
 
-        // Accepts the client/hello but never answers: leaves the reader child parked.
+        // Complete Noise establishment, then leave the encrypted server/hello unanswered.
         let candidate = MockTransport()
+        let server = MockNoiseServer(transport: candidate, psk: .sentinel)
         let finished = TestBox<Bool>(false)
 
         let task = Task {
@@ -27,10 +28,9 @@ struct CompetingHandshakeCancellationTests {
         }
 
         // Cancelling before the handshake starts would pass trivially.
-        #expect(
-            await waitUntil { await !candidate.sentTextMessages.isEmpty },
-            "the handshake must have sent client/hello on the candidate before cancelling"
-        )
+        let handshakeStarted = await waitUntil { await candidate.hasSentFrames }
+        #expect(handshakeStarted, "the handshake must have started before cancelling")
+        try await server.respondToHandshake()
 
         task.cancel()
 
@@ -46,7 +46,8 @@ struct CompetingHandshakeCancellationTests {
         // The incumbent connection must be entirely undisturbed by the cancelled candidate.
         #expect(await !existing.disconnectCalled)
         #expect(client.connectionState == .connected)
-        #expect(client.currentServerId == testServerId)
+        let incumbentServerId = await existing.serverId
+        #expect(client.currentServerId == incumbentServerId)
 
         await client.disconnect()
     }

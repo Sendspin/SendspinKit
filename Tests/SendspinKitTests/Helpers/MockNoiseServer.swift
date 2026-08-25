@@ -1,6 +1,7 @@
 import CryptoKit
 import Foundation
 @testable import SendspinKit
+import Testing
 
 /// A test-side Sendspin server speaking real Noise as the KKpsk2 initiator over a
 /// ``MockTransport``. Drives the cleartext establishment (`client/init` →
@@ -27,12 +28,72 @@ actor MockNoiseServer {
 
     /// The decrypted inner payload of Noise message 2 (spec: the literal `{}`).
     private(set) var message2Payload: Data?
+    private(set) var decryptedMessages: [Data] = []
+    private var nextClientMessageIndex = 0
+    private var readbackTask: Task<Void, Never>?
 
     /// The server-side encrypted channel, available once the handshake completes.
     private(set) var channel: NoiseChannel?
 
     var serverId: String {
         Base64URL.encode(staticKey.publicKey.rawRepresentation)
+    }
+
+    var sentTextMessages: [Data] {
+        get async {
+            let deadline = ContinuousClock.now + .milliseconds(500)
+            while !decryptedMessages.contains(where: { $0.first == NoiseFrameType.json }), ContinuousClock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(5))
+            }
+            return decryptedMessages.compactMap { message in
+                guard message.first == NoiseFrameType.json else { return nil }
+                return Data(message.dropFirst())
+            }
+        }
+    }
+
+    var sentBinaryMessages: [Data] {
+        get async { await transport.sentBinaryMessages }
+    }
+
+    func injectText(_ text: String) async {
+        try? await sendJSON(text)
+    }
+
+    func injectBinary(_ data: Data) async {
+        try? await sendEncrypted(data)
+    }
+
+    func sendBinary(_ data: Data) async {
+        await transport.injectBinary(data)
+    }
+
+    func finishStreams() async {
+        await transport.finishStreams()
+    }
+
+    var disconnectCalled: Bool {
+        get async { await transport.disconnectCalled }
+    }
+
+    func setShouldFailOnSend(_ value: Bool) async {
+        await transport.setShouldFailOnSend(value)
+    }
+
+    func enableGoodbyeGate() async {
+        await transport.enableGoodbyeGate()
+    }
+
+    var isGoodbyeGateWaiting: Bool {
+        get async { await transport.isGoodbyeGateWaiting }
+    }
+
+    func releaseGoodbyeGate() async {
+        await transport.releaseGoodbyeGate()
+    }
+
+    func simulateClose(_ reason: TransportCloseReason) async {
+        await transport.simulateClose(reason)
     }
 
     init(
@@ -129,6 +190,78 @@ actor MockNoiseServer {
         channel = try NoiseChannel(transport: handshake.makeTransport())
     }
 
+    /// Send the server hello and consume the client's hello, leaving activation
+    /// for the caller so tests can queue encrypted frames behind the handshake.
+    func beginAdmission(name: String = "Test Server") async throws {
+        try await respondToHandshake()
+        try await sendJSON(#"{"type":"server/hello","payload":{"name":"\#(name)"}}"#)
+        let hello = try await nextClientJSON()
+        let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        #expect(object["type"] as? String == ClientHelloMessage.typeString)
+        #expect(payload["name"] is String)
+        #expect(payload["trust_level"] as? String == TrustLevel.none.rawValue)
+        #expect((payload["supported_pair_methods"] as? [Any])?.isEmpty == true)
+        #expect(payload["unpaired_access"] is [String: Any])
+        startReadback()
+    }
+
+    func sendActivation(activities: Set<Activity> = [], activeRoles: [VersionedRole] = []) async throws {
+        let activate = ServerActivateMessage(
+            payload: ServerActivatePayload(
+                activities: Array(activities),
+                activeRoles: activeRoles
+            )
+        )
+        let data = try JSONEncoder().encode(activate)
+        try await sendJSON(String(bytes: data, encoding: .utf8) ?? "")
+    }
+
+    /// Establish the encrypted session through the first admitted activation.
+    func establishSession(
+        name: String = "Test Server",
+        activities: Set<Activity> = [],
+        activeRoles: [VersionedRole] = []
+    ) async throws {
+        try await beginAdmission(name: name)
+        try await sendActivation(activities: activities, activeRoles: activeRoles)
+    }
+
+    /// Record and decrypt one client-sent encrypted frame for observational readback.
+    func startReadback() {
+        readbackTask = Task { [self] in
+            while !Task.isCancelled {
+                guard case let .binary(frame) = await transport.nextSentFrame() else { return }
+                observeClientFrame(frame)
+            }
+        }
+    }
+
+    func observeClientFrame(_ frame: Data) {
+        if let message = try? channel?.decryptFrame(frame) {
+            decryptedMessages.append(message)
+        }
+    }
+
+    /// Encrypt and deliver one JSON message to the client.
+    func encryptedTextSender() -> @Sendable (String) async throws -> Void {
+        { [self] text in
+            try await sendJSON(text)
+        }
+    }
+
+    func encryptedBinarySender() -> @Sendable (Data) async throws -> Void {
+        { [self] data in
+            try await sendEncrypted(data)
+        }
+    }
+
+    func sendJSON(_ text: String) async throws {
+        var message = Data([NoiseFrameType.json])
+        message.append(contentsOf: text.utf8)
+        try await sendEncrypted(message)
+    }
+
     /// Encrypt and deliver one plaintext message (`[type][payload]`) to the client,
     /// fragmenting as needed.
     func sendEncrypted(_ message: Data) async throws {
@@ -138,13 +271,28 @@ actor MockNoiseServer {
         }
     }
 
+    /// Pull client-sent binary frames until one complete JSON message reassembles.
+    func nextClientJSON() async throws -> Data {
+        let message = try await nextDecryptedMessage()
+        guard message.first == NoiseFrameType.json else { throw Failure.unexpectedFrame }
+        return Data(message.dropFirst())
+    }
+
     /// Pull client-sent binary frames until one complete plaintext message reassembles.
     func nextDecryptedMessage() async throws -> Data {
+        if nextClientMessageIndex < decryptedMessages.count {
+            let message = decryptedMessages[nextClientMessageIndex]
+            nextClientMessageIndex += 1
+            return message
+        }
+
         while true {
             guard case let .binary(frame) = await transport.nextSentFrame() else {
                 throw Failure.unexpectedFrame
             }
             if let message = try channel!.decryptFrame(frame) {
+                decryptedMessages.append(message)
+                nextClientMessageIndex += 1
                 return message
             }
         }

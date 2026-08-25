@@ -52,14 +52,15 @@ extension SendspinClient {
         }
 
         return ClientHelloPayload(
-            clientId: clientId,
             name: name,
             deviceInfo: deviceInfo,
-            version: 1,
+            trustLevel: .none,
+            supportedPairMethods: [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,
             artworkV1Support: artworkV1Support,
-            visualizerV1Support: roleSet.contains(.visualizerV1) ? VisualizerSupport() : nil
+            visualizerV1Support: nil
         )
     }
 }

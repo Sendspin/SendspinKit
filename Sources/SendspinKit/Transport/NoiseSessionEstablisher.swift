@@ -28,6 +28,10 @@ struct NoiseSessionOutcome: ~Copyable {
     var channel: NoiseChannel
     let serverId: String
     let matchedCandidate: PskCandidate
+
+    consuming func takeChannel() -> NoiseChannel {
+        channel
+    }
 }
 
 /// Runs the cleartext establishment phase on a fresh transport:

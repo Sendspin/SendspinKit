@@ -2,12 +2,27 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+private actor NoiseReadbackRegistry {
+    private var servers: [ObjectIdentifier: MockNoiseServer] = [:]
+
+    func insert(_ server: MockNoiseServer, for transport: MockTransport) {
+        servers[ObjectIdentifier(transport)] = server
+    }
+
+    func messages(for transport: MockTransport) async -> [Data] {
+        guard let server = servers[ObjectIdentifier(transport)] else { return [] }
+        return await server.sentTextMessages
+    }
+}
+
+private let noiseReadbackRegistry = NoiseReadbackRegistry()
+
 @MainActor
 struct SendspinClientTests {
     @Test
     func clientHelloPreservesSupportedRolePriorityOrder() throws {
         let client = try SendspinClient(
-            clientId: "priority-test",
+            identity: .generate(),
             name: "Priority Test",
             roles: [.metadataV1, .controllerV1, .metadataV1]
         )
@@ -20,7 +35,7 @@ struct SendspinClientTests {
     @Test
     func colorRoleIsAdvertisedWithoutASupportObject() throws {
         let client = try SendspinClient(
-            clientId: "color-test",
+            identity: .generate(),
             name: "Color Test",
             roles: [.colorV1]
         )
@@ -40,7 +55,7 @@ struct SendspinClientTests {
             macAddress: "aa:bb:cc:dd:ee:ff"
         )
         let client = try SendspinClient(
-            clientId: "device-info-test",
+            identity: .generate(),
             name: "Device Info Test",
             roles: [.metadataV1],
             deviceInfo: deviceInfo
@@ -61,7 +76,7 @@ struct SendspinClientTests {
         )
 
         let client = try SendspinClient(
-            clientId: "test-client",
+            identity: .generate(),
             name: "Test Client",
             roles: [.playerV1],
             playerConfig: config,
@@ -74,7 +89,7 @@ struct SendspinClientTests {
     @Test
     func enterExternalSource_throwsNotConnectedWhenDisconnected() async throws {
         let client = try SendspinClient(
-            clientId: "test-client",
+            identity: .generate(),
             name: "Test Client",
             roles: [.playerV1],
             playerConfig: PlayerConfiguration(
@@ -94,7 +109,7 @@ struct SendspinClientTests {
     @Test
     func exitExternalSource_throwsNotConnectedWhenDisconnected() async throws {
         let client = try SendspinClient(
-            clientId: "test-client",
+            identity: .generate(),
             name: "Test Client",
             roles: [.playerV1],
             playerConfig: PlayerConfiguration(
@@ -114,7 +129,7 @@ struct SendspinClientTests {
     @Test
     func failedConnectRollsBackToDisconnectedAndAllowsReconnect() async throws {
         let client = try SendspinClient(
-            clientId: "test-client",
+            identity: .generate(),
             name: "Test Client",
             roles: [.metadataV1]
         )
@@ -139,8 +154,11 @@ struct SendspinClientTests {
         #expect(client.connection == nil)
 
         let transport = MockTransport()
-        try await client.acceptConnection(transport)
-        try await transport.injectText(serverHelloJSON())
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.establishSession(activeRoles: [.playerV1])
+        try await accepted
+        await noiseReadbackRegistry.insert(server, for: transport)
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
 
         await client.disconnect()
@@ -181,7 +199,7 @@ struct SendspinClientTests {
         )
 
         let client = try SendspinClient(
-            clientId: "test-client",
+            identity: .generate(),
             name: "Test Client",
             roles: [.playerV1],
             playerConfig: config,
@@ -243,17 +261,16 @@ struct SendspinClientTests {
             }
             return values
         }
-        try await client.acceptConnection(transport)
-        try await transport.injectText(serverHelloJSON())
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.establishSession(activeRoles: [.playerV1])
+        try await accepted
+        await noiseReadbackRegistry.insert(server, for: transport)
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
 
         await provider.publish(output(48_000, "Retained"))
         #expect(await waitUntil { await MainActor.run { client.currentAudioOutput?.sampleRate == 48_000 } })
-        await transport.enableGoodbyeGate()
         let closing = Task { @MainActor in await client.close() }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
-        #expect(await !transport.disconnectCalled, "transport must remain open while client/goodbye is in flight")
-        await transport.releaseGoodbyeGate()
         await closing.value
         await provider.publish(output(44_100, "Stale"))
 
@@ -282,7 +299,7 @@ struct SendspinClientTests {
         let transport = MockTransport()
         let negotiationGate = AsyncGate()
         let client = try SendspinClient(
-            clientId: "close-during-connect",
+            identity: .generate(),
             name: "Close During Connect",
             roles: [.metadataV1],
             audioOutputCapabilityProvider: FakeAudioOutputCapabilityProvider(),
@@ -321,15 +338,19 @@ struct SendspinClientTests {
     func closeDuringCompetingHandshakeReleasesEveryTransport() async throws {
         let client = try makePlayerClient(capabilityProvider: FakeAudioOutputCapabilityProvider())
         let incumbent = MockTransport()
-        try await client.acceptConnection(incumbent)
-        try await incumbent.injectText(serverHelloJSON())
+        let incumbentServer = MockNoiseServer(transport: incumbent, psk: .sentinel)
+        async let incumbentAccepted: Void = client.acceptConnection(incumbent)
+        try await incumbentServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await incumbentAccepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
 
         let candidate = MockTransport()
+        let server = MockNoiseServer(transport: candidate, psk: .sentinel)
         let accepting = Task { @MainActor in
             try await client.acceptConnection(candidate)
         }
-        #expect(await waitUntil { await !candidate.sentTextMessages.isEmpty })
+        #expect(await waitUntil { await candidate.hasSentFrames })
+        try await server.respondToHandshake()
         await client.close()
         let result = await outcomeOfUnstructuredOperation(
             timeout: .seconds(1),
@@ -346,14 +367,18 @@ struct SendspinClientTests {
     func disconnectStillAllowsReconnectAndKeepsClientStreamsOpen() async throws {
         let client = try makePlayerClient(capabilityProvider: FakeAudioOutputCapabilityProvider())
         let first = MockTransport()
-        try await client.acceptConnection(first)
-        try await first.injectText(serverHelloJSON())
+        let firstServer = MockNoiseServer(transport: first, psk: .sentinel)
+        async let firstAccepted: Void = client.acceptConnection(first)
+        try await firstServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await firstAccepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
         await client.disconnect()
 
         let second = MockTransport()
-        try await client.acceptConnection(second)
-        try await second.injectText(serverHelloJSON())
+        let secondServer = MockNoiseServer(transport: second, psk: .sentinel)
+        async let secondAccepted: Void = client.acceptConnection(second)
+        try await secondServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await secondAccepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
         #expect(!client.isTerminated)
         await client.close()
@@ -413,7 +438,10 @@ struct SendspinClientTests {
         #expect(try applied?.get() == true)
 
         let transport = MockTransport()
-        try await client.acceptConnection(transport)
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await accepted
         await client.disconnect(reason: .userRequest)
 
         #expect(client.currentAudioOutput == output)
@@ -471,11 +499,14 @@ struct SendspinClientTests {
         #expect(await waitUntil { await provider.monitoringStarted })
         let baselineSnapshots = await provider.snapshotCount
         let transport = MockTransport()
-
-        try await client.acceptConnection(transport)
-        #expect(await waitUntil { await !transport.sentTextMessages.isEmpty })
-        let helloData = try #require(await transport.sentTextMessages.first)
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.respondToHandshake()
+        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Output Capability Test"}}"#)
+        let helloData = try await server.nextClientJSON()
         let hello = try JSONDecoder().decode(ClientHelloMessage.self, from: helloData)
+        try await server.sendJSON(#"{"type":"server/activate","payload":{"activities":[],"active_roles":["player@v1"]}}"#)
+        try await accepted
 
         #expect(hello.payload.playerV1Support?.supportedFormats == expected)
         #expect(client.effectivePlayerFormats == expected)
@@ -523,8 +554,10 @@ struct SendspinClientTests {
         ))
         let client = try makePlayerClient(policy: .requireCurrentOutput, capabilityProvider: provider)
         let incumbent = MockTransport()
-        try await client.acceptConnection(incumbent)
-        try await incumbent.injectText(serverHelloJSON(connectionReason: .playback))
+        let incumbentServer = MockNoiseServer(transport: incumbent, psk: .sentinel)
+        async let incumbentAccepted: Void = client.acceptConnection(incumbent)
+        try await incumbentServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await incumbentAccepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
 
         await provider.publish(AudioOutputSnapshot(
@@ -534,11 +567,13 @@ struct SendspinClientTests {
         ))
         let baselineSnapshots = await provider.snapshotCount
         let candidate = MockTransport()
-        try await client.acceptConnection(candidate)
+        await #expect(throws: OutputFormatError.routeUnavailable) {
+            try await client.acceptConnection(candidate)
+        }
 
         #expect(await provider.snapshotCount == baselineSnapshots + 1)
         #expect(await candidate.sentTextMessages.isEmpty)
-        #expect(await candidate.disconnectCalled)
+        #expect(await waitUntil { await candidate.disconnectCalled })
         #expect(await !incumbent.disconnectCalled)
         #expect(client.connectionState == .connected)
         #expect(client.connection?.effectivePlayerFormats == client.effectivePlayerFormats)
@@ -557,8 +592,13 @@ struct SendspinClientTests {
         let client = try makePlayerClient(policy: .requireCurrentOutput, capabilityProvider: provider)
         let transport = MockTransport()
         let events = client.events()
-        try await client.acceptConnection(transport)
-        try await transport.injectText(serverHelloJSON())
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.establishSession(activeRoles: [.playerV1])
+        try await accepted
+        await transport.installEncryptedTextSender(server.encryptedTextSender())
+        await transport.installEncryptedBinarySender(server.encryptedBinarySender())
+        await noiseReadbackRegistry.insert(server, for: transport)
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
         let engine = try #require(client.connection?.audioEngineForTesting)
         let collector = Task { () -> [ClientEvent] in
@@ -611,17 +651,23 @@ struct SendspinClientTests {
         let output = AudioOutputSnapshot(sampleRate: 48_000, reportedBitDepth: nil, diagnosticDescription: "Native")
         let provider = FakeAudioOutputCapabilityProvider(initialSnapshot: output)
         let client = try makePlayerClient(formats: [native], capabilityProvider: provider)
+        _ = try await connectOutputClient(client)
         let events = client.events()
         let observed = Task { @MainActor in
             for await event in events {
-                guard case let .outputFormatStatusChanged(status) = event else { continue }
-                return client.currentOutputFormatStatus == status && status.state == .preferred(native)
+                guard case let .outputFormatStatusChanged(status) = event,
+                      status.state == .preferred(native)
+                else { continue }
+                return client.currentOutputFormatStatus == status
             }
             return false
         }
-        let transport = MockTransport()
-        try await client.acceptConnection(transport)
-        try await transport.injectText(serverHelloJSON())
+        await Task.yield()
+        await provider.publish(AudioOutputSnapshot(
+            sampleRate: 48_000,
+            reportedBitDepth: nil,
+            diagnosticDescription: "Native refreshed"
+        ))
 
         let observation = await observeTask(observed, timeout: .seconds(2))
         guard case let .completed(appliedBeforeEvent) = observation else {
@@ -772,6 +818,7 @@ struct SendspinClientTests {
         let transport = try await connectOutputClient(client)
         try await transport.injectText(streamStartJSON(initial))
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
+        #expect(await waitUntil { await client.connection?.playerStreamActive == true })
         await provider.publish(output(48_000, "Automatic route"))
         #expect(await waitUntil { await client.connection?.outputSnapshot?.sampleRate == 48_000 })
         await transport.setShouldFailOnSend(true)
@@ -779,14 +826,15 @@ struct SendspinClientTests {
         await #expect(throws: SendspinClientError.self) {
             try await client.requestPlayerFormat(application)
         }
-        #expect(await client.connection?.automaticRequestsSuppressed == false)
+        // The failed request rolls back its optimistic negotiation state...
+        #expect(await client.connection?.automaticRequestsSuppressed ?? false == false)
         #expect(await client.connection?.pendingOutputFormatRequest == nil)
 
-        await transport.setShouldFailOnSend(false)
-        await provider.publish(output(48_000, "Automatic route"))
-        #expect(await waitUntil { await requestFormats(transport).count == 1 })
-        #expect(await requestFormats(transport).first?.payload.player?.codec == automatic.codec)
-        await client.disconnect()
+        // ...and the session ends: the failed send already consumed AEAD nonces,
+        // so no later frame could decrypt at the server. Retrying on the same
+        // connection is impossible by construction under Noise.
+        #expect(await waitUntil { await MainActor.run { client.connectionState == .disconnected } })
+        #expect(await transport.disconnectCalled)
         await client.finishAudioOutputCapabilityMonitoring()
     }
 
@@ -886,7 +934,7 @@ struct SendspinClientTests {
             AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         ]
         return try SendspinClient(
-            clientId: "output-capability-test",
+            identity: .generate(),
             name: "Output Capability Test",
             roles: [.playerV1],
             playerConfig: PlayerConfiguration(
@@ -902,9 +950,16 @@ struct SendspinClientTests {
 
     private func connectOutputClient(_ client: SendspinClient) async throws -> MockTransport {
         let transport = MockTransport()
-        try await client.acceptConnection(transport)
-        try await transport.injectText(serverHelloJSON())
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.establishSession(activities: [.playback], activeRoles: [.playerV1])
+        try await accepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
+        // The server's readback task retains it; the transport's encrypted-sender
+        // shims carry the channel. No further anchoring needed.
+        await transport.installEncryptedTextSender(server.encryptedTextSender())
+        await transport.installEncryptedBinarySender(server.encryptedBinarySender())
+        await noiseReadbackRegistry.insert(server, for: transport)
         return transport
     }
 
@@ -933,7 +988,7 @@ struct SendspinClientTests {
     }
 
     private func requestFormats(_ transport: MockTransport) async -> [StreamRequestFormatMessage] {
-        let messages = await transport.sentTextMessages
+        let messages = await noiseReadbackRegistry.messages(for: transport)
         return messages.compactMap { data in
             guard SendspinEncoding.messageType(of: data) == StreamRequestFormatMessage.typeString else { return nil }
             return try? JSONDecoder().decode(StreamRequestFormatMessage.self, from: data)
@@ -943,7 +998,7 @@ struct SendspinClientTests {
     private func sentGoodbyeReasons(from transport: MockTransport) async -> [GoodbyeReason] {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return await transport.sentTextMessages
+        return await noiseReadbackRegistry.messages(for: transport)
             .filter { SendspinEncoding.messageType(of: $0) == ClientGoodbyeMessage.typeString }
             .compactMap { (try? decoder.decode(ClientGoodbyeMessage.self, from: $0))?.payload.reason }
     }

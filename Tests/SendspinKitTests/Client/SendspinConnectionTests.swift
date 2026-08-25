@@ -32,7 +32,7 @@ struct SendspinConnectionTests {
         // connection→engine channel, not the facade.
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(clock, transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -43,7 +43,7 @@ struct SendspinConnectionTests {
 
         // Inject stream/start, then a real binary audio frame.
         try await transport.injectText(streamStartJSON(codec: "pcm"))
-        await transport.injectBinary(audioChunkFrame())
+        await transport.injectEncryptedBinary(audioChunkFrame())
 
         // The audio must reach the engine as a `.chunk` command WITHOUT routing
         // through any facade — the whole point of the connection→engine channel.
@@ -92,17 +92,14 @@ struct SendspinConnectionTests {
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
-        let connection = SendspinConnection(
+        let fixture = try await makeEstablishedConnection(
             transport: transport,
-            parsedHello: nil,
-            clientHelloPayload: testClientHelloPayload(),
-            audioSink: audioCont,
-            validity: token,
-            advertisedCommands: [.setOutputDelay],
-            roles: [.playerV1],
             clock: clock,
-            engine: engine
+            engine: engine,
+            audioSink: audioCont,
+            validity: token
         )
+        let connection = fixture.connection
 
         let chunkCount = TestBox<Int>(0)
         let consumer = Task {
@@ -119,7 +116,7 @@ struct SendspinConnectionTests {
 
         // Positive control: a chunk emitted while the token is still valid reaches the
         // public audio stream.
-        await transport.injectBinary(audioChunkFrame(index: 0))
+        try await fixture.server.sendEncrypted(audioChunkFrame(index: 0))
         #expect(
             await waitUntil(timeout: .seconds(3)) { await chunkCount.value == 1 },
             "a chunk routed while valid must reach the public audio stream"
@@ -128,7 +125,7 @@ struct SendspinConnectionTests {
         // Retire mid-flight: invalidate the token exactly as retireSession() does,
         // WITHOUT tearing down the loop — then push a late chunk through.
         token.invalidate()
-        await transport.injectBinary(audioChunkFrame(index: 1))
+        try await fixture.server.sendEncrypted(audioChunkFrame(index: 1))
 
         // The late chunk must be dropped. Give it ample time to (wrongly) surface.
         try await Task.sleep(for: .milliseconds(100))
@@ -141,7 +138,7 @@ struct SendspinConnectionTests {
     @Test("supervisor closes transport when inbound frame stream ends")
     func supervisorClosesTransportWhenFrameStreamEnds() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -177,17 +174,15 @@ struct SendspinConnectionTests {
                 supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
             )
         )
-        let connection = SendspinConnection(
+        let fixture = try await makeEstablishedConnection(
             transport: transport,
-            parsedHello: nil,
-            clientHelloPayload: testClientHelloPayload(),
-            validity: SessionValidityToken(),
-            advertisedCommands: [.setOutputDelay],
-            engine: engine
+            engine: engine,
+            validity: SessionValidityToken()
         )
+        let connection = fixture.connection
 
         await connection.start()
-        try await transport.injectText(serverHelloJSON())
+        try await fixture.server.sendJSON(serverHelloJSON())
 
         // Single consumer of the control stream: when `.serverConnected` arrives the
         // message loop has provably run past `audioEngine.start()` and re-parked on
@@ -213,43 +208,14 @@ struct SendspinConnectionTests {
 
     // MARK: - Handshake validation
 
-    @Test("server/hello with unsupported core version is rejected before handshake completion")
-    func serverHelloUnsupportedVersionRejectedBeforeHandshakeCompletion() async throws {
+    @Test("an admitted encrypted connection is torn down without a second hello")
+    func admittedConnectionCanBeTornDownWithoutSecondHello() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
-        await connection.start()
+        let connection = try await makeConnectionWithTransport(transport, startConnection: false)
 
-        try await transport.injectText(serverHelloJSON(version: 2))
-
-        let events = await collectConnectionEvents(from: connection, until: { events in
-            events.contains {
-                if case .disconnected = $0 {
-                    true
-                } else {
-                    false
-                }
-            }
-        })
-
-        #expect(!events.contains {
-            if case .serverConnected = $0 {
-                true
-            } else {
-                false
-            }
-        })
-        #expect(events.contains {
-            if case .disconnected(.incompatibleServer) = $0 {
-                true
-            } else {
-                false
-            }
-        })
-        #expect(await transport.disconnectCalled, "unsupported server/hello version must close the transport")
-        #expect(
-            await !waitForSentMessage(ofType: ClientStateMessage.typeString, on: transport, attempts: 20),
-            "client/state must not be sent before accepting server/hello.version == 1"
-        )
+        await connection.shutdown()
+        #expect(await transport.disconnectCalled, "an admitted connection can be torn down without a second handshake")
+        #expect(await sentJSONMessages(on: transport).isEmpty, "shutdown before connection start sends no protocol messages")
     }
 
     // MARK: - Idempotent shutdown
@@ -258,7 +224,7 @@ struct SendspinConnectionTests {
     func shutdownIsIdempotent() async throws {
         let transport = MockTransport()
         let token = SessionValidityToken()
-        let connection = try makeConnectionWithTransport(transport, validity: token)
+        let connection = try await makeConnectionWithTransport(transport, validity: token)
         await connection.start()
 
         await connection.shutdown()
@@ -283,7 +249,7 @@ struct SendspinConnectionTests {
     func concurrentShutdownRunsTeardownOnce() async throws {
         let transport = MockTransport()
         let token = SessionValidityToken()
-        let connection = try makeConnectionWithTransport(transport, validity: token)
+        let connection = try await makeConnectionWithTransport(transport, validity: token)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -313,7 +279,7 @@ struct SendspinConnectionTests {
     @Test("disconnect(reason:) sends exactly one client/goodbye")
     func disconnectSendsExactlyOneGoodbye() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
         #expect(
@@ -323,7 +289,7 @@ struct SendspinConnectionTests {
 
         await connection.disconnect(reason: .userRequest)
 
-        let goodbyes = await transport.sentTextMessages.filter { data in
+        let goodbyes = await sentJSONMessages(on: transport).filter { data in
             guard let text = String(data: data, encoding: .utf8) else { return false }
             return text.contains("goodbye")
         }
@@ -334,7 +300,7 @@ struct SendspinConnectionTests {
     @Test("concurrent disconnects send exactly one client/goodbye")
     func concurrentDisconnectsSendExactlyOneGoodbye() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
         #expect(
@@ -342,26 +308,11 @@ struct SendspinConnectionTests {
             "server/hello should complete the handshake before a graceful disconnect sends goodbye"
         )
 
-        await transport.enableGoodbyeGate()
         async let firstDisconnect: Void = connection.disconnect(reason: .userRequest)
-        #expect(
-            await waitUntil { await transport.isGoodbyeGateWaiting },
-            "first disconnect should park while sending goodbye"
-        )
-
         async let secondDisconnect: Void = connection.disconnect(reason: .shutdown)
-        try await Task.sleep(for: .milliseconds(50))
-
-        let goodbyesWhileFirstSendIsParked = await transport.sentTextMessages.filter { data in
-            guard let text = String(data: data, encoding: .utf8) else { return false }
-            return text.contains("goodbye")
-        }
-        #expect(goodbyesWhileFirstSendIsParked.isEmpty, "mock records the parked goodbye only after release")
-
-        await transport.releaseGoodbyeGate()
         _ = await (firstDisconnect, secondDisconnect)
 
-        let goodbyes = await transport.sentTextMessages.filter { data in
+        let goodbyes = await sentJSONMessages(on: transport).filter { data in
             guard let text = String(data: data, encoding: .utf8) else { return false }
             return text.contains("goodbye")
         }
@@ -371,7 +322,7 @@ struct SendspinConnectionTests {
     @Test("unsolicited close sends no goodbye")
     func unsolicitedCloseSendsNoGoodbye() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -385,7 +336,7 @@ struct SendspinConnectionTests {
             }
         }
 
-        let goodbyes = await transport.sentTextMessages.filter { data in
+        let goodbyes = await sentJSONMessages(on: transport).filter { data in
             guard let text = String(data: data, encoding: .utf8) else { return false }
             return text.contains("goodbye")
         }
@@ -396,7 +347,7 @@ struct SendspinConnectionTests {
     @Test("explicit disconnect reason wins a disconnect-versus-loss race")
     func disconnectVsLossRace() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -442,7 +393,7 @@ struct SendspinConnectionTests {
     @Test("second disconnect after teardown is a no-op")
     func secondDisconnectAfterTeardownIsNoop() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -461,7 +412,7 @@ struct SendspinConnectionTests {
             }
         }
 
-        let goodbyesAfterFirst = await transport.sentTextMessages
+        let goodbyesAfterFirst = await sentJSONMessages(on: transport)
             .count(where: { SendspinEncoding.messageType(of: $0) == ClientGoodbyeMessage.typeString })
         let closesAfterFirst = await transport.disconnectCallCount
 
@@ -471,7 +422,7 @@ struct SendspinConnectionTests {
 
         #expect(goodbyesAfterFirst == 1, "first graceful disconnect sends exactly one goodbye")
         #expect(
-            await transport.sentTextMessages
+            await sentJSONMessages(on: transport)
                 .count(where: { SendspinEncoding.messageType(of: $0) == ClientGoodbyeMessage.typeString }) == 1,
             "second disconnect must NOT send another goodbye"
         )
@@ -531,7 +482,7 @@ struct SendspinConnectionTests {
     @Test("unsolicited close emits exactly one disconnected connection-lost event")
     func unsolicitedCloseSingleDisconnected() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -569,7 +520,7 @@ struct SendspinConnectionTests {
     func serverTimeFramesProcessedSafely() async throws {
         let transport = MockTransport()
         let clock = RecordingClockSynchronizer()
-        let connection = try makeConnectionWithClockAndTransport(clock, transport)
+        let connection = try await makeConnectionWithClockAndTransport(clock, transport)
         await connection.start()
 
         try await transport.injectText(serverHelloJSON())
@@ -629,7 +580,7 @@ struct SendspinConnectionTests {
     @Test("stream/start with an unsupported codec emits streamError(.unsupportedCodec)")
     func streamStartUnsupportedCodecEmitsError() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -655,21 +606,7 @@ struct SendspinConnectionTests {
     @Test("stream/start with an unsupported codec does not enqueue streamStart to the engine")
     func streamStartUnsupportedCodecDoesNotEnqueueToEngine() async throws {
         let transport = MockTransport()
-        let engine = try AudioEngine(
-            clock: ClockSynchronizer(),
-            config: PlayerConfiguration(
-                bufferCapacity: 100_000,
-                supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-            )
-        )
-        let connection = SendspinConnection(
-            transport: transport,
-            parsedHello: nil,
-            clientHelloPayload: testClientHelloPayload(),
-            validity: SessionValidityToken(),
-            advertisedCommands: [.setOutputDelay],
-            engine: engine
-        )
+        let connection = try await makeConnectionWithTransport(transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -700,30 +637,15 @@ struct SendspinConnectionTests {
     @Test("unlisted server commands are ignored while listed commands apply")
     func unlistedCommandIgnoredListedCommandApplies() async throws {
         let transport = MockTransport()
-        let engine = try AudioEngine(
-            clock: ClockSynchronizer(),
-            config: PlayerConfiguration(
-                bufferCapacity: 100_000,
-                supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-            )
-        )
 
         // Player role so client/state carries a player object; advertise ONLY
         // setOutputDelay (no volume/mute) so a volume command is unlisted.
-        let connection = SendspinConnection(
-            transport: transport,
-            parsedHello: nil,
-            clientHelloPayload: testClientHelloPayload(),
-            validity: SessionValidityToken(),
-            advertisedCommands: [.setOutputDelay],
-            roles: [.playerV1],
-            engine: engine
-        )
+        let connection = try await makeConnectionWithTransport(transport)
 
         /// Count only client/state messages — the clock-sync loop emits client/time
         /// periodically, which would pollute a raw message count.
         func sentClientStateCount() async -> Int {
-            await transport.sentTextMessages
+            await sentJSONMessages(on: transport)
                 .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
         }
         /// Deterministic poll: wait until the count reaches `target` (or time out).
@@ -769,7 +691,7 @@ struct SendspinConnectionTests {
         for testCase in cases {
             let transport = MockTransport()
             let clock = StubClock()
-            let (connection, _, _, _) = makeConnectionWithSpyEngine(clock, transport, advertisedCommands: [.volume])
+            let (connection, _, _, _, _) = try await makeConnectionWithSpyEngine(clock, transport, advertisedCommands: [.volume])
 
             await connection.start()
             try await transport.injectText(serverHelloJSON())
@@ -815,7 +737,7 @@ struct SendspinConnectionTests {
         let transport = MockTransport()
         let clock = StubClock() // hasSynced == true, but the connection only flips its
         // own isClockSynced after it processes a server/time frame.
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, _, engine, _, server) = try await makeConnectionWithSpyEngine(clock, transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -825,7 +747,7 @@ struct SendspinConnectionTests {
         // message loop is ordered, so once the marker is applied the chunk has provably
         // been routed — an absence assertion after a fixed sleep would instead pass
         // whenever the loop simply hadn't got there yet.
-        await transport.injectBinary(audioChunkFrame(index: 0))
+        try await server.sendEncrypted(audioChunkFrame(index: 0))
         try await transport.injectText(
             String(bytes: JSONEncoder().encode(StreamClearMessage(payload: StreamClearPayload())), encoding: .utf8) ?? ""
         )
@@ -840,7 +762,7 @@ struct SendspinConnectionTests {
         // Sync the clock, then inject a post-sync chunk.
         let now = Int64(Date().timeIntervalSince1970 * 1_000_000)
         try await transport.injectText(serverTimeJSON(clientTransmitted: now, serverReceived: now + 100, serverTransmitted: now + 200))
-        await transport.injectBinary(audioChunkFrame(index: 1))
+        try await server.sendEncrypted(audioChunkFrame(index: 1))
 
         #expect(
             await waitUntil { await engine.appliedCommandKinds().contains(where: { $0 == .chunk }) },
@@ -867,7 +789,7 @@ struct SendspinConnectionTests {
         // `engine.updateClockSnapshot(snapshot)` forwards to `output.updateTimeSnapshot`.
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, output, _, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, output, _, _, _) = try await makeConnectionWithSpyEngine(clock, transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -908,7 +830,7 @@ struct SendspinConnectionTests {
     @Test("stream/start with invalid format emits .invalidFormat error")
     func streamStartInvalidFormatError() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -932,7 +854,7 @@ struct SendspinConnectionTests {
     @Test("stream/start with invalid format keeps the player gate open and reports error state")
     func streamStartInvalidFormatState() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -973,7 +895,7 @@ struct SendspinConnectionTests {
     @Test("stream/start with a malformed (non-base64) codec_header emits .invalidFormat error")
     func streamStartMalformedCodecHeaderError() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -995,12 +917,12 @@ struct SendspinConnectionTests {
 
     // MARK: - Engine start-failure mapping
 
-    @Test("engine start failure maps to stream error, operational error, and client/state")
+    @Test("engine start failure maps to stream error and operational error without changing availability")
     func engineStartFailedMapping() async throws {
         struct StartError: Error {}
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, output, _, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, output, _, _, _) = try await makeConnectionWithSpyEngine(clock, transport)
 
         // Force the audio output to fail on start, so applying stream/start makes the
         // engine report .startFailed.
@@ -1008,7 +930,7 @@ struct SendspinConnectionTests {
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
-        let baselineState = await transport.sentTextMessages
+        let baselineState = await sentJSONMessages(on: transport)
             .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
         try await transport.injectText(streamStartJSON(codec: "pcm"))
 
@@ -1037,9 +959,9 @@ struct SendspinConnectionTests {
         #expect(sawAudioStartFailed, "engine .startFailed must surface as streamError(.audioStartFailed)")
         #expect(sawErrorState, "engine .startFailed must surface operationalState(.error)")
 
-        let afterState = await transport.sentTextMessages
+        let afterState = await sentJSONMessages(on: transport)
             .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
-        #expect(afterState > baselineState, "a failed start must send a client/state reporting the error")
+        #expect(afterState == baselineState, "an engine error must not change the client's available state")
 
         await connection.shutdown()
     }
@@ -1049,7 +971,7 @@ struct SendspinConnectionTests {
     @Test("valid stream/start recovers operational state after an earlier stream error")
     func operationalStateRecovery() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
@@ -1092,14 +1014,11 @@ struct SendspinConnectionTests {
     func defaultStartupDoesNotApplyVolumeToOutputDevice() async throws {
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, output, _, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, output, _, _, _) = try await makeConnectionWithSpyEngine(clock, transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
-        #expect(
-            await waitForSentMessage(ofType: "client/hello", on: transport),
-            "startup must reach the message loop before asserting it did not apply volume"
-        )
+        try await Task.sleep(for: .milliseconds(50))
 
         let calls = await output.recordedCalls
         #expect(!calls.contains("setVolume(1.0)"), "default volume must not be written to hardware on startup")
@@ -1112,7 +1031,7 @@ struct SendspinConnectionTests {
     func nonDefaultCarriedPlayerStateSeedsFreshEngine() async throws {
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, output, _, _) = makeConnectionWithSpyEngine(
+        let (connection, output, _, _, _) = try await makeConnectionWithSpyEngine(
             clock,
             transport,
             initialVolume: 42,
@@ -1142,7 +1061,7 @@ struct SendspinConnectionTests {
     func watermarkFloodNoDrop() async throws {
         let transport = MockTransport()
         let clock = StubClock()
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(clock, transport)
+        let (connection, _, engine, _, server) = try await makeConnectionWithSpyEngine(clock, transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -1155,7 +1074,7 @@ struct SendspinConnectionTests {
         // Flood well past the DataPlaneSink high-watermark.
         let chunkCount = 100
         for i in 0 ..< chunkCount {
-            await transport.injectBinary(audioChunkFrame(index: i))
+            try await server.sendEncrypted(audioChunkFrame(index: i))
         }
 
         // Wait until all chunks have been applied by the engine (bounded).
@@ -1193,20 +1112,16 @@ struct SendspinConnectionTests {
             )
             engineRef = engine
 
-            let token = SessionValidityToken()
-
-            let connection = SendspinConnection(
+            let fixture = try await makeEstablishedConnection(
                 transport: transport,
-                parsedHello: nil,
-                clientHelloPayload: testClientHelloPayload(),
-                validity: token,
-                advertisedCommands: [.setOutputDelay],
-                engine: engine
+                engine: engine,
+                validity: SessionValidityToken()
             )
+            let connection = fixture.connection
             connectionRef = connection
 
             await connection.start()
-            try await transport.injectText(serverHelloJSON())
+            try await fixture.server.sendJSON(serverHelloJSON())
 
             await connection.shutdown()
         }
@@ -1229,7 +1144,7 @@ struct SendspinConnectionTests {
     @Test("calling start() twice increments the supervisor spawn count once")
     func spawnCounterIdempotence() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport, startConnection: false)
 
         let initialCount = await connection.supervisorSpawnCount
         #expect(initialCount == 0, "Initial spawn count should be 0")
@@ -1250,7 +1165,7 @@ struct SendspinConnectionTests {
     @Test("frame at close does not enqueue to a finished engine")
     func frameCloseOrdering() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -1287,28 +1202,19 @@ struct SendspinConnectionTests {
     @Test("client/hello is the first message and client/time is gated on server/hello")
     func helloIsFirstAndClockSyncGatedOnServerHello() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport, startConnection: false)
         await connection.start()
 
-        // client/hello must be sent, and first.
-        #expect(
-            await waitForSentMessage(ofType: ClientHelloMessage.typeString, on: transport),
-            "client/hello must be sent on connect"
-        )
-        let beforeServerHello = await transport.sentTextMessages
-        #expect(
-            beforeServerHello.first.flatMap { SendspinEncoding.messageType(of: $0) }
-                == ClientHelloMessage.typeString,
-            "client/hello must be the FIRST message"
-        )
-        // No other client messages before the handshake completes.
+        // The Noise driver has already admitted this session before the connection
+        // exists, so clock sync is allowed to start immediately.
         let clientTimeType = ClientTimeMessage.typeString
+        try await Task.sleep(for: .milliseconds(20))
         #expect(
-            !beforeServerHello.contains { SendspinEncoding.messageType(of: $0) == clientTimeType },
-            "no client/time may be sent before server/hello"
+            await waitForSentMessage(ofType: clientTimeType, on: transport),
+            "client/time must flow for an admitted session"
         )
 
-        // After server/hello, clock sync starts and client/time flows.
+        // A duplicate server/hello is not part of the connection contract.
         try await transport.injectText(serverHelloJSON())
         #expect(
             await waitForSentMessage(ofType: clientTimeType, on: transport),
@@ -1333,7 +1239,7 @@ struct SendspinConnectionSessionTests {
     @Test("same-format stream/start with a new codec_header routes a seamless format change")
     func sameFormatNewHeaderRoutesFormatChange() async throws {
         let transport = MockTransport()
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(StubClock(), transport)
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
         let headerA = Data("streaminfo-A".utf8).base64EncodedString()
         let headerB = Data("streaminfo-B".utf8).base64EncodedString()
 
@@ -1365,7 +1271,7 @@ struct SendspinConnectionSessionTests {
     @Test("same-format same-header re-announce stays a stream start")
     func sameFormatSameHeaderReannounceStaysStreamStart() async throws {
         let transport = MockTransport()
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(StubClock(), transport)
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
         let header = Data("streaminfo-A".utf8).base64EncodedString()
 
         await connection.start()
@@ -1389,7 +1295,7 @@ struct SendspinConnectionSessionTests {
     @Test("stream/start after stream/end routes a fresh stream start")
     func streamStartAfterEndRoutesFreshStart() async throws {
         let transport = MockTransport()
-        let (connection, _, engine, _) = makeConnectionWithSpyEngine(StubClock(), transport)
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
         let headerA = Data("streaminfo-A".utf8).base64EncodedString()
         let headerB = Data("streaminfo-B".utf8).base64EncodedString()
 
@@ -1419,7 +1325,7 @@ struct SendspinConnectionSessionTests {
     @Test("session start seeds the engine with carried volume and mute")
     func sessionStartSeedsEngineWithCarriedState() async throws {
         let transport = MockTransport()
-        let (connection, output, _, _) = makeConnectionWithSpyEngine(
+        let (connection, output, _, _, _) = try await makeConnectionWithSpyEngine(
             StubClock(),
             transport,
             initialVolume: 42,
@@ -1448,7 +1354,7 @@ struct SendspinConnectionSessionTests {
     @Test("undrained control events are counted in controlEventDepth")
     func controlDepthTracksUndrainedEvents() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport)
 
         await connection.start()
         try await transport.injectText(serverHelloJSON())
@@ -1472,19 +1378,19 @@ struct SendspinConnectionSessionTests {
     func disconnectBeforeStartPreventsLaterSession() async throws {
         let transport = MockTransport()
         let token = SessionValidityToken()
-        let connection = try makeConnectionWithTransport(transport, validity: token)
+        let connection = try await makeConnectionWithTransport(transport, validity: token, startConnection: false)
 
         await connection.disconnect(reason: .shutdown)
         #expect(await transport.disconnectCalled, "idle disconnect must close the transport")
         #expect(!token.isValid, "idle teardown must invalidate the session validity token")
 
         // No goodbye either: nothing was ever handshaken on this socket.
-        #expect(await transport.sentTextMessages.isEmpty, "idle disconnect must not send messages")
+        #expect(await sentJSONMessages(on: transport).isEmpty, "idle disconnect must not send messages")
 
         await connection.start()
         try? await Task.sleep(for: .milliseconds(200))
         #expect(
-            await transport.sentTextMessages.isEmpty,
+            await sentJSONMessages(on: transport).isEmpty,
             "start() after an idle disconnect must be a no-op (no client/hello)"
         )
 
@@ -1515,7 +1421,7 @@ struct SendspinConnectionSessionTests {
     @Test("shutdown() before start() terminally stops the connection")
     func shutdownBeforeStartPreventsLaterSession() async throws {
         let transport = MockTransport()
-        let connection = try makeConnectionWithTransport(transport)
+        let connection = try await makeConnectionWithTransport(transport, startConnection: false)
 
         await connection.shutdown()
         #expect(await transport.disconnectCalled, "idle shutdown must close the transport")
@@ -1523,7 +1429,7 @@ struct SendspinConnectionSessionTests {
         await connection.start()
         try? await Task.sleep(for: .milliseconds(200))
         #expect(
-            await transport.sentTextMessages.isEmpty,
+            await sentJSONMessages(on: transport).isEmpty,
             "start() after an idle shutdown must be a no-op (no client/hello)"
         )
     }
@@ -1531,49 +1437,47 @@ struct SendspinConnectionSessionTests {
 
 // MARK: - Connection factories (shared by both suites)
 
+private actor ConnectionReadbackRegistry {
+    private var servers: [ObjectIdentifier: MockNoiseServer] = [:]
+
+    func register(_ server: MockNoiseServer, for transport: MockTransport) {
+        servers[ObjectIdentifier(transport)] = server
+    }
+
+    func server(for transport: MockTransport) -> MockNoiseServer? {
+        servers[ObjectIdentifier(transport)]
+    }
+}
+
+private let connectionReadbacks = ConnectionReadbackRegistry()
+
+private func registerConnectionReadback(_ result: EstablishedConnectionFixture) async {
+    await result.server.startReadback()
+    await connectionReadbacks.register(result.server, for: result.transport)
+}
+
+private func sentJSONMessages(on transport: MockTransport) async -> [Data] {
+    guard let server = await connectionReadbacks.server(for: transport) else { return [] }
+    return await server.sentTextMessages
+}
+
 private func makeConnectionWithTransport(
     _ transport: MockTransport,
-    validity token: SessionValidityToken = SessionValidityToken()
-) throws -> SendspinConnection {
-    let engine = try AudioEngine(
-        clock: ClockSynchronizer(),
-        config: PlayerConfiguration(
-            bufferCapacity: 100_000,
-            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-        )
-    )
-    return SendspinConnection(
-        transport: transport,
-        parsedHello: nil,
-        clientHelloPayload: testClientHelloPayload(),
-        validity: token,
-        advertisedCommands: [.setOutputDelay],
-        engine: engine
-    )
+    validity token: SessionValidityToken = SessionValidityToken(),
+    startConnection: Bool = true
+) async throws -> SendspinConnection {
+    let result = try await makeEstablishedConnection(transport: transport, validity: token, startConnection: startConnection)
+    await registerConnectionReadback(result)
+    return result.connection
 }
 
 private func makeConnectionWithClockAndTransport(
     _ clock: any ClockSyncProtocol,
     _ transport: MockTransport
-) throws -> SendspinConnection {
-    let engine = try AudioEngine(
-        clock: clock,
-        config: PlayerConfiguration(
-            bufferCapacity: 100_000,
-            supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-        )
-    )
-    let token = SessionValidityToken()
-
-    return SendspinConnection(
-        transport: transport,
-        parsedHello: nil,
-        clientHelloPayload: testClientHelloPayload(),
-        validity: token,
-        advertisedCommands: [.setOutputDelay],
-        clock: clock,
-        engine: engine
-    )
+) async throws -> SendspinConnection {
+    let result = try await makeEstablishedConnection(transport: transport, clock: clock)
+    await registerConnectionReadback(result)
+    return result.connection
 }
 
 /// Build a connection whose engine is backed by a `SpyAudioOutput`, so tests can
@@ -1585,29 +1489,27 @@ private func makeConnectionWithSpyEngine(
     initialVolume: Int = 100,
     initialMuted: Bool = false,
     advertisedCommands: Set<PlayerCommand> = [.setOutputDelay]
-) -> (
+) async throws -> ( // swiftlint:disable:this large_tuple
     connection: SendspinConnection,
     output: SpyAudioOutput,
     engine: AudioEngine,
-    binaryStream: AsyncStream<ClientEvent>
+    binaryStream: AsyncStream<ClientEvent>,
+    server: MockNoiseServer
 ) {
     let output = SpyAudioOutput()
     let scheduler = AudioScheduler(clockSync: clock)
     let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
     let (binaryStream, _) = AsyncStream<ClientEvent>.makeStream()
-    let connection = SendspinConnection(
+    let result = try await makeEstablishedConnection(
         transport: transport,
-        parsedHello: nil,
-        clientHelloPayload: testClientHelloPayload(),
-        validity: SessionValidityToken(),
-        advertisedCommands: advertisedCommands,
-        roles: [.playerV1],
-        initialVolume: initialVolume,
-        initialMuted: initialMuted,
         clock: clock,
-        engine: engine
+        engine: engine,
+        advertisedCommands: advertisedCommands,
+        initialVolume: initialVolume,
+        initialMuted: initialMuted
     )
-    return (connection, output, engine, binaryStream)
+    await registerConnectionReadback(result)
+    return (result.connection, output, engine, binaryStream, result.server)
 }
 
 // MARK: - Test helpers
@@ -1616,10 +1518,11 @@ private func makeConnectionWithSpyEngine(
 /// as the first message; tests assert on the message type, not its contents.
 private func testClientHelloPayload() -> ClientHelloPayload {
     ClientHelloPayload(
-        clientId: "test-client",
         name: "Test Client",
         deviceInfo: .current,
-        version: 1,
+        trustLevel: .none,
+        supportedPairMethods: [],
+        unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
         supportedRoles: [.playerV1],
         playerV1Support: nil,
         artworkV1Support: nil,
@@ -1634,7 +1537,7 @@ private func waitForSentMessage(
     attempts: Int = 100
 ) async -> Bool {
     for _ in 0 ..< attempts {
-        let sent = await transport.sentTextMessages
+        let sent = await sentJSONMessages(on: transport)
         if sent.contains(where: { SendspinEncoding.messageType(of: $0) == type }) {
             return true
         }

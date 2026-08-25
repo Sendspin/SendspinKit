@@ -22,32 +22,42 @@ extension SendspinConnection {
             await audioEngine.setMuted(currentMuted)
         }
 
-        if let hello = parsedHello {
-            // Multi-server handoff: the facade already sent client/hello and read
-            // this server/hello during arbitration. Process it; do not re-send hello.
-            await handleServerHello(hello)
-        } else {
-            // Normal path: client/hello opens the handshake.
-            do {
-                try await sendWrapped(ClientHelloMessage(payload: clientHelloPayload))
-            } catch {
-                // Bound first: `??`'s right side is a non-async autoclosure.
-                let observed = await transport.closeReason
-                disconnectReason = disconnectReason ?? .connectionLost(observed)
-                return
+        controlSink.enqueue(.serverConnected(ServerInfo(
+            serverId: currentServerId ?? "",
+            name: serverName,
+            activeRoles: activeRoles,
+            activities: activities
+        )))
+        if clockSyncTask == nil {
+            clockSyncTask = Task { [weak self] in
+                await self?.clockSyncLoop()
             }
         }
 
         while let frame = await transport.nextFrame() {
-            // Stamp arrival time immediately after nextFrame() returns.
             let clientReceived = MonotonicClock.nowMicroseconds()
-
-            switch frame {
-            case let .text(json):
-                await route(text: json, clientReceived: clientReceived)
-
-            case let .binary(data):
-                await route(binary: data)
+            guard case let .binary(ciphertext) = frame else {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
+            }
+            do {
+                guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
+                guard let type = plaintext.first else { throw NoiseError.malformedMessage }
+                if type == NoiseFrameType.json {
+                    await route(text: String(bytes: plaintext.dropFirst(), encoding: .utf8) ?? "", clientReceived: clientReceived)
+                } else {
+                    await route(binary: plaintext)
+                }
+            } catch let error as NoiseError {
+                Log.client.error("Noise frame rejected: \(String(describing: error))")
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
+            } catch {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
             }
         }
     }
@@ -154,8 +164,6 @@ extension SendspinConnection {
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
 
-        // Release deadline tasks so they cannot outlive the connection they guard.
-        cancelHandshakeDeadline()
         stopOutputFormatNegotiation()
 
         // Invalidate the token

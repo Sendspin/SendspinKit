@@ -7,8 +7,9 @@ import os
 @MainActor
 public final class SendspinClient {
     // Configuration
-    let clientId: String
+    let identity: SendspinIdentity
     let name: String
+    let unpairedAccessEnabled: Bool
     let roles: [VersionedRole]
     let roleSet: Set<VersionedRole>
     let deviceInfo: DeviceInfo?
@@ -38,7 +39,7 @@ public final class SendspinClient {
     /// Written both here and by the control drain's `.operationalState` case, so
     /// `operationalStateEpoch` stamps every write for the rollback in
     /// `transitionOperationalState(to:)`.
-    var clientOperationalState: ClientOperationalState = .synchronized {
+    var clientOperationalState: EngineSyncState = .synchronized {
         didSet { operationalStateEpoch += 1 }
     }
 
@@ -105,8 +106,8 @@ public final class SendspinClient {
     public private(set) var currentOutputFormatStatus: OutputFormatStatus?
 
     // Multi-server state
-    var currentConnectionReason: ConnectionReason?
     var currentServerId: String?
+    var currentActivities: Set<Activity> = []
 
     /// Dependencies.
     /// Note: the facade deliberately holds NO transport reference. The connection
@@ -179,33 +180,36 @@ public final class SendspinClient {
     public let visualizerData: AsyncStream<VisualizerData>
 
     public convenience init(
-        clientId: String,
+        identity: SendspinIdentity,
         name: String,
         roles: some Sequence<VersionedRole>,
         deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
+        unpairedAccessEnabled: Bool = true,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil
     ) throws(ConfigurationError) {
         try self.init(
-            clientId: clientId,
+            identity: identity,
             name: name,
             roles: roles,
             deviceInfo: deviceInfo,
             playerConfig: playerConfig,
             artworkConfig: artworkConfig,
+            unpairedAccessEnabled: unpairedAccessEnabled,
             persistenceProvider: persistenceProvider,
             audioOutputCapabilityProvider: AudioOutputCapabilityService()
         )
     }
 
     init(
-        clientId: String,
+        identity: SendspinIdentity,
         name: String,
         roles: some Sequence<VersionedRole>,
         deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
+        unpairedAccessEnabled: Bool = true,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil,
         audioOutputCapabilityProvider: any AudioOutputCapabilityProviding,
         outputSettleInterval: Duration = .milliseconds(250),
@@ -228,8 +232,9 @@ public final class SendspinClient {
             throw .artworkRoleRequiresConfiguration
         }
 
-        self.clientId = clientId
+        self.identity = identity
         self.name = name
+        self.unpairedAccessEnabled = unpairedAccessEnabled
         self.roles = orderedRoles
         self.roleSet = roleSet
         self.deviceInfo = deviceInfo
@@ -416,17 +421,32 @@ public final class SendspinClient {
 
         do {
             let negotiation = try await makeSessionFormatNegotiation()
+            let hello = buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats)
+            let outcome = try await HandshakeDriver.establish(
+                on: transport,
+                configuration: HandshakeDriver.Configuration(
+                    identity: identity,
+                    candidates: [PskCandidate(psk: .sentinel, category: .sentinel)],
+                    clientHello: hello,
+                    supportedRoles: roleSet,
+                    unpairedAccessEnabled: unpairedAccessEnabled
+                ),
+                phaseTimeout: defaultHandshakeTimeout
+            )
             try requireOpen()
             guard sessionEpoch == dialEpoch else {
                 await transport.disconnect()
                 throw SendspinClientError.alreadyConnected
             }
-            await setupConnection(with: transport, negotiation: negotiation)
+            await setupConnection(with: transport, outcome: outcome, negotiation: negotiation)
             try requireOpen()
         } catch {
             await transport.disconnect()
             if sessionEpoch == dialEpoch, connectionState == .connecting {
                 updateConnectionState(.disconnected)
+            }
+            if isTerminated {
+                throw TerminatedError()
             }
             throw error
         }
@@ -446,15 +466,26 @@ public final class SendspinClient {
             connectionState = .connecting
             do {
                 let negotiation = try await makeSessionFormatNegotiation()
+                let hello = buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats)
+                let outcome = try await HandshakeDriver.establish(
+                    on: transport,
+                    configuration: HandshakeDriver.Configuration(
+                        identity: identity,
+                        candidates: [PskCandidate(psk: .sentinel, category: .sentinel)],
+                        clientHello: hello,
+                        supportedRoles: roleSet,
+                        unpairedAccessEnabled: unpairedAccessEnabled
+                    ),
+                    phaseTimeout: defaultHandshakeTimeout
+                )
                 try requireOpen()
-                await setupConnection(with: transport, negotiation: negotiation)
+                await setupConnection(with: transport, outcome: outcome, negotiation: negotiation)
             } catch {
                 await transport.disconnect()
                 updateConnectionState(.disconnected)
                 throw error
             }
         } else {
-            // Already connected — run handshake on new connection, then decide
             try await handleCompetingConnection(transport)
         }
         try requireOpen()
@@ -494,7 +525,7 @@ public final class SendspinClient {
     @MainActor
     func setupConnection(
         with transport: any SendspinTransport,
-        preReadHello: ServerHelloMessage? = nil,
+        outcome: consuming HandshakeDriver.Result,
         negotiation: SessionFormatNegotiation
     ) async {
         guard !isTerminated else {
@@ -534,12 +565,21 @@ public final class SendspinClient {
             ? Set(volumeCapabilities.playerCommands).union([.setOutputDelay])
             : []
 
+        let outcomeServerId = outcome.serverId
+        let outcomeActivities = outcome.activities
+        let outcomeServerName = outcome.serverName
+        let outcomeActiveRoles = outcome.activeRoles
+        let outcomeCategory = outcome.matchedCandidate.category
+        let sessionChannel = outcome.takeChannel()
         let newConnection = SendspinConnection(
             transport: transport,
-            parsedHello: preReadHello,
-            clientHelloPayload: buildClientHelloPayload(
-                effectivePlayerFormats: negotiation.effectivePlayerFormats
-            ),
+            channel: sessionChannel,
+            serverId: outcomeServerId,
+            serverName: outcomeServerName,
+            activities: outcomeActivities,
+            activeRoles: outcomeActiveRoles,
+            pskCategory: outcomeCategory,
+            unpairedAccessEnabled: unpairedAccessEnabled,
             effectivePlayerFormats: negotiation.effectivePlayerFormats,
             outputSampleRatePolicy: playerConfig?.outputSampleRatePolicy,
             initialOutputSnapshot: negotiation.outputSnapshot,
@@ -609,16 +649,12 @@ public final class SendspinClient {
         // Set should-emit-raw-audio flag
         shouldEmitRawAudio = playerConfig?.emitRawAudioEvents ?? false
 
-        // Promotion path: the `server/hello` was already consumed during competing-
-        // connection arbitration, so apply the connected-state projection synchronously
-        // here. Otherwise the caller would observe `.connecting` until the connection's
-        // async drain delivers `.serverConnected`. The connection still emits the public
-        // `.serverConnected` event via its message loop (single public emission).
-        if let preReadHello {
-            currentServerId = preReadHello.payload.serverId
-            currentConnectionReason = preReadHello.payload.connectionReason
-            updateConnectionState(.connected)
+        currentServerId = outcomeServerId
+        currentActivities = outcomeActivities
+        if outcomeActivities.contains(.playback) {
+            Task { await persistenceProvider?.saveLastPlayedServerId(outcomeServerId) }
         }
+        updateConnectionState(.connected)
     }
 
     private func makeAudioEngine(
@@ -716,7 +752,7 @@ public final class SendspinClient {
         currentArtwork = nil
         effectivePlayerFormats = nil
         currentServerId = nil
-        currentConnectionReason = nil
+        currentActivities = []
         isClockSynced = false
         for continuation in eventSubscribers.values {
             continuation.finish()
@@ -781,6 +817,7 @@ public final class SendspinClient {
         }
     }
 
+    // swiftlint:disable cyclomatic_complexity
     /// Apply one control event to facade state, then re-emit the render-applied
     /// event to the public stream. Called per event by the drain
     /// task, which holds `self` only for the duration of the call.
@@ -790,16 +827,18 @@ public final class SendspinClient {
         switch event {
         case let .serverConnected(info):
             currentServerId = info.serverId
-            currentConnectionReason = info.connectionReason
+            currentActivities = info.activities
             updateConnectionState(.connected)
             emitEvent(.serverConnected(info))
 
         case let .audioOutputChanged(output):
-            guard currentAudioOutput != output else { return }
-            currentAudioOutput = output
+            let changed = currentAudioOutput != output
+            if changed {
+                currentAudioOutput = output
+                emitEvent(.audioOutputChanged(output))
+            }
             audioOutputSnapshotSequence += 1
             let sequence = audioOutputSnapshotSequence
-            emitEvent(.audioOutputChanged(output))
             if let connection {
                 Task { [weak self] in
                     guard self?.connection === connection else { return }
@@ -871,6 +910,18 @@ public final class SendspinClient {
             outputDelayMs = milliseconds
             emitEvent(.outputDelayChanged(milliseconds: milliseconds))
 
+        case let .serverActivated(activities, activeRoles):
+            currentActivities = activities
+            if activities.contains(.playback), let currentServerId {
+                Task { await persistenceProvider?.saveLastPlayedServerId(currentServerId) }
+            }
+            emitEvent(.serverConnected(ServerInfo(
+                serverId: currentServerId ?? "",
+                name: "",
+                activeRoles: activeRoles,
+                activities: activities
+            )))
+
         case let .operationalState(state):
             clientOperationalState = state
                 // Operational state is applied but not re-emitted as a public event
@@ -898,17 +949,16 @@ public final class SendspinClient {
                 // Mute changes are internal state; don't emit
 
         case let .lastPlayedServerChanged(serverId):
-            // Persist the spec's "last played server" bookkeeping (used by the
-            // multi-server arbitration tiebreak).
-            if let persistenceProvider {
-                Task { await persistenceProvider.saveLastPlayedServerId(serverId) }
-            }
+            // Activation persists the last-played server; group/update only emits
+            // the compatibility event and must not write a second time.
             emitEvent(.lastPlayedServerChanged(serverId: serverId))
 
         case let .disconnected(reason):
             applyDisconnected(reason: reason)
         }
     }
+
+    // swiftlint:enable cyclomatic_complexity
 
     /// Apply terminal disconnection state exactly once from either the drain task
     /// or the awaited public `disconnect()` postcondition path.
@@ -923,7 +973,7 @@ public final class SendspinClient {
         currentOutputFormatStatus = nil
         effectivePlayerFormats = nil
         currentServerId = nil
-        currentConnectionReason = nil
+        currentActivities = []
         // Don't clear currentGroup — spec preserves group membership across reconnects
 
         // Synchronously invalidate and release the connection so any late
@@ -960,8 +1010,8 @@ public final class SendspinClient {
     /// `server/state` delta merges onto the *previous* value (absent field = keep
     /// previous), so without this a reconnected server's first partial delta would
     /// inherit the dead connection's metadata/controller. `currentServerId` and
-    /// `currentConnectionReason` are excluded — ``handleServerHello(_:)`` overwrites
-    /// them on every hello. Group id/name survive per spec, but playback state is
+    /// Server identity and activities are excluded because they are replaced with each
+    /// admitted session. Group id/name survive per spec, but playback state is
     /// session-scoped and is cleared to avoid reporting stale playback status.
     func resetServerSessionState() {
         updateMetadata(nil)
@@ -1064,7 +1114,7 @@ public final class SendspinClient {
     /// the server believes.
     ///
     /// Internal (not private) so that `SendspinClient+Commands.swift` can call it.
-    func transitionOperationalState(to newState: ClientOperationalState) async throws {
+    func transitionOperationalState(to newState: EngineSyncState) async throws {
         guard let conn = connection else { throw SendspinClientError.notConnected }
         // Apply optimistically for the synchronous observable, then forward to the
         // connection (the single writer of client/state). Roll back on send failure.

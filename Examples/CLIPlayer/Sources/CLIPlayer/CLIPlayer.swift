@@ -88,7 +88,7 @@ final class CLIPlayer {
         // Create client
         let config = try Self.playerConfig(volumeMode: volumeMode)
         let client = try SendspinClient(
-            clientId: UUID().uuidString,
+            identity: .generate(),
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,
@@ -206,7 +206,7 @@ final class CLIPlayer {
     private nonisolated func handleEventLog(_ event: ClientEvent) {
         switch event {
         case let .serverConnected(info):
-            print("[EVENT] Server connected: \(info.name) (v\(info.version))")
+            print("[EVENT] Server connected: \(info.name) (\(info.serverId))")
 
         case let .audioOutputChanged(output):
             print("[AUDIO OUTPUT] \(output.diagnosticDescription ?? "unknown") rate=\(output.sampleRate.map(String.init) ?? "unknown")")
@@ -410,7 +410,7 @@ final class CLIPlayer {
 
         let config = try Self.playerConfig(volumeMode: volumeMode)
         let client = try SendspinClient(
-            clientId: UUID().uuidString,
+            identity: .generate(),
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,

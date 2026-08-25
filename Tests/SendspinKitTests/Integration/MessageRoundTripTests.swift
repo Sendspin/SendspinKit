@@ -5,16 +5,17 @@ import Testing
 struct MessageRoundTripTests {
     @Test
     func clientHello_roundTripMaintainsAllData() throws {
-        // Create complete ClientHello with all fields populated
+        // Create complete ClientHello with all fields populated.
         let originalPayload = try ClientHelloPayload(
-            clientId: "test-client-123",
             name: "Test Speaker",
             deviceInfo: DeviceInfo(
                 productName: "HomePod",
                 manufacturer: "Apple",
                 softwareVersion: "17.0"
             ),
-            version: 1,
+            trustLevel: .none,
+            supportedPairMethods: [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
             supportedRoles: [.playerV1, .controllerV1, .metadataV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
@@ -40,11 +41,12 @@ struct MessageRoundTripTests {
         let json = try #require(JSONSerialization.jsonObject(with: jsonData) as? [String: Any])
         #expect(json["type"] as? String == ClientHelloMessage.typeString)
         let payloadJSON = try #require(json["payload"] as? [String: Any])
-        #expect(payloadJSON["client_id"] as? String == "test-client-123")
+        #expect(payloadJSON["client_id"] == nil, "client identity is carried by Noise, not client/hello")
         #expect(payloadJSON["name"] as? String == "Test Speaker")
-        #expect(payloadJSON["version"] as? Int == 1)
+        #expect(payloadJSON["trust_level"] as? String == TrustLevel.none.rawValue)
+        #expect(payloadJSON["version"] == nil, "client/hello no longer carries a protocol version")
         #expect(payloadJSON["supported_roles"] as? [String] == ["player@v1", "controller@v1", "metadata@v1"])
-        #expect(payloadJSON["client_id"] != nil, "the spec key is snake_case, not camelCase")
+        #expect(payloadJSON["client_id"] == nil, "identity is carried by Noise, not client/hello")
         #expect(payloadJSON["clientId"] == nil, "a camelCase key would not be understood by a server")
 
         let playerJSON = try #require(payloadJSON["player@v1_support"] as? [String: Any])
@@ -65,9 +67,9 @@ struct MessageRoundTripTests {
 
         // Verify all fields match
         #expect(decodedMessage.type == "client/hello")
-        #expect(decodedMessage.payload.clientId == "test-client-123")
         #expect(decodedMessage.payload.name == "Test Speaker")
-        #expect(decodedMessage.payload.version == 1)
+        #expect(decodedMessage.payload.trustLevel == .none)
+        #expect(decodedMessage.payload.unpairedAccess.enabled)
         #expect(decodedMessage.payload.supportedRoles == [.playerV1, .controllerV1, .metadataV1])
 
         // Verify device info

@@ -82,10 +82,11 @@ struct NextFrameTests {
             )
         }.value
 
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
 
         let reachedConnected = await waitUntil(timeout: .seconds(3)) {
             await Task { @MainActor in client.connectionState == .connected }.value

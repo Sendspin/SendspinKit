@@ -18,8 +18,11 @@ extension SendspinConnection {
         let decoder = inboundDecoder
         do {
             switch msgType {
-            case "server/hello":
-                try await handleServerHello(decoder.decode(ServerHelloMessage.self, from: data))
+            case "server/activate":
+                try await handleServerActivate(decoder.decode(ServerActivateMessage.self, from: data))
+
+            case "server/unpair":
+                break
 
             case "server/time":
                 try await handleServerTime(
@@ -51,11 +54,7 @@ extension SendspinConnection {
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
 
-            // Swallowing is right for ordinary messages, but `server/hello` is the
-            // handshake gate: nothing times it out, so a failure here would leave the
-            // client in `.connecting` forever with the socket open. Fail loudly.
-            if msgType == ServerHelloMessage.typeString, handshakePhase == .awaitingServerHello {
-                Log.client.error("Undecodable server/hello — rejecting the connection rather than wedging")
+            if msgType == ServerActivateMessage.typeString {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
             }
@@ -80,43 +79,35 @@ extension SendspinConnection {
 
     // MARK: - Text message handlers
 
-    func handleServerHello(_ message: ServerHelloMessage) async {
-        guard handshakePhase == .awaitingServerHello else {
-            Log.client.warning("Ignoring duplicate server/hello on an established connection")
-            return
-        }
-
-        guard message.payload.version == 1 else {
-            Log.client.warning("Rejecting server/hello with unsupported core version: \(message.payload.version)")
-            disconnectReason = .incompatibleServer
-            await transport.disconnect()
-            return
-        }
-
-        currentServerId = message.payload.serverId
-        activeRoles = Set(message.payload.activeRoles)
-        handshakePhase = .complete
-        cancelHandshakeDeadline()
-        let info = ServerInfo(
-            serverId: message.payload.serverId,
-            name: message.payload.name,
-            version: message.payload.version,
-            connectionReason: message.payload.connectionReason,
-            activeRoles: activeRoles
-        )
-        controlSink.enqueue(.serverConnected(info))
-        await activateOutputFormatNegotiation()
-
-        // A fresh handshake means the server holds no prior state: clear the delta baseline
-        // so the next send is a full client/state, not an empty delta.
-        lastSentClientState = nil
-        try? await sendClientStateIfChanged()
-
-        // Handshake is complete: now start client/time sampling. Start-once.
-        if clockSyncTask == nil {
-            clockSyncTask = Task { [weak self] in
-                await self?.clockSyncLoop()
+    func handleServerActivate(_ message: ServerActivateMessage) async {
+        let nextActivities = Set(message.payload.activities)
+        let announcedRoles = message.payload.activeRoles ?? Array(activeRoles)
+        let nextRoles = Set(announcedRoles).intersection(roles)
+        switch ActivationAdmissibility.evaluate(
+            activities: nextActivities,
+            activeRoles: nextRoles,
+            pairing: message.payload.pairing,
+            session: sessionContext
+        ) {
+        case .admit:
+            activities = nextActivities
+            // Full state goes out when a role becomes active (spec client/state);
+            // an activate that changes nothing sends nothing.
+            let rolesChanged = nextRoles != activeRoles
+            activeRoles = nextRoles
+            if rolesChanged {
+                lastSentClientState = nil
             }
+            try? await sendClientStateIfChanged()
+            controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
+        case let .close(reason):
+            try? await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
+            disconnectReason = .explicit(reason)
+            await transport.disconnect()
+        case .abortPairing:
+            try? await sendWrapped(
+                PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported))
+            )
         }
     }
 
@@ -130,10 +121,13 @@ extension SendspinConnection {
             serverTransmitted: message.payload.serverTransmitted,
             clientReceived: clientReceived
         )
-        // First-sync flip: once the filter converges, allow chunks through the gate.
+        // First-sync flip: once the filter converges, allow chunks through the gate
+        // and report readiness — `available` becomes true here, and the spec's
+        // initial client/state goes out on this transition.
         if !isClockSynced, await clock.hasSynced {
             isClockSynced = true
             controlSink.enqueue(.clockSyncEstablished)
+            try? await sendClientStateIfChanged()
         }
 
         // Push updated snapshot for sync correction (per-frame cross-boundary).

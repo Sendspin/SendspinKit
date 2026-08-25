@@ -74,7 +74,7 @@ enum EngineReport {
     case formatApplied(AudioFormatSpec)
 
     /// Operational state transition (includes full bidirectional state: synchronized, error, externalSource).
-    case operationalState(ClientOperationalState)
+    case operationalState(EngineSyncState)
 
     /// Audio start failed; the stream could not begin.
     case startFailed(reason: String)

@@ -153,7 +153,7 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
         // the clock sync protocol. The server/hello handshake initiates time exchanges
         // for all connected clients regardless of role.
         let client = try SendspinClient(
-            clientId: "clock-sync-diagnostics",
+            identity: .generate(),
             name: "Clock Sync Diagnostics",
             roles: [.metadataV1]
         )

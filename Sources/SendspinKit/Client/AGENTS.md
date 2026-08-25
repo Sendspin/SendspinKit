@@ -27,9 +27,9 @@ for SwiftUI.
 - **Outbound sends:** the connection is the transport's single writer. Facade APIs
   (`requestPlayerFormat`, `requestArtworkFormat`, controller commands) route through connection
   methods (`requestFormat(player:)`/`requestFormat(artwork:)`/`send(clientMessage:)`). The facade
-  stores NO transport reference at all (structural guarantee, not convention); its only transport
-  write is `performHandshake` on a candidate transport during multi-server arbitration, before a
-  connection exists for it.
+  stores no transport, channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
+  through Noise establishment and the first admitted activation, then transfers the channel to
+  the connection.
 - **Expects:** a `SendspinTransport` (pull interface — `nextFrame()`, single-consumer, returns nil on
   close) and a `ClockSyncProtocol`.
 
@@ -63,7 +63,8 @@ for SwiftUI.
 
 ## Key Files
 - `SendspinClient.swift` — facade; `connect`/`disconnect`, `drainConnectionEvents`, state setters.
-- `SendspinConnection.swift` — message loop, gates, supervisor, `reportDrain`, binary emission.
+- `HandshakeDriver.swift` — candidate Noise establishment, encrypted hello/activate admission, channel handoff.
+- `SendspinConnection.swift` — encrypted message loop, gates, supervisor, `reportDrain`, binary emission.
 - `ConnectionEvent.swift` — control-plane event enum + `ConnectionLifecycle`.
 - `SessionValidityToken.swift` — atomic check-and-yield guard for stale binary events.
 - `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` / `minBufferMs` (player role, `client/state` player object).
