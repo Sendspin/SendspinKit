@@ -65,7 +65,7 @@ struct PlayerStateObject: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case volume
         case muted
-        case outputDelayMs = "output_delay_ms"
+        case outputDelayMs = "static_delay_ms"
         case supportedCommands = "supported_commands"
         case requiredLeadTimeMs = "required_lead_time_ms"
         case minBufferMs = "min_buffer_ms"

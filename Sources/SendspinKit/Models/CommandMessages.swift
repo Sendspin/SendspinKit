@@ -82,7 +82,7 @@ struct PlayerCommandObject: Codable, Equatable {
         case command
         case volume
         case mute
-        case outputDelayMs = "output_delay_ms"
+        case outputDelayMs = "static_delay_ms"
     }
 
     init(command: PlayerCommand, volume: Int? = nil, mute: Bool? = nil, outputDelayMs: Int? = nil) {

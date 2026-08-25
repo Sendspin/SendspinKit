@@ -97,7 +97,7 @@ enum PlayerCommand: String, Codable, Hashable {
     /// Set player mute state
     case mute
     /// Set output delay in milliseconds (0-5000)
-    case setOutputDelay = "set_output_delay"
+    case setOutputDelay = "set_static_delay"
 }
 
 struct PlayerSupport: Codable, Equatable {

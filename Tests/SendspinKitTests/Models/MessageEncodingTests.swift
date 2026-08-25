@@ -89,7 +89,7 @@ struct MessageEncodingTests {
         #expect(json.contains("\"available\":true"))
         #expect(json.contains("\"volume\":80"))
         #expect(json.contains("\"muted\":false"))
-        #expect(json.contains("\"output_delay_ms\":0"))
+        #expect(json.contains("\"static_delay_ms\":0"))
     }
 
     @Test
@@ -234,7 +234,7 @@ struct MessageEncodingTests {
     @Test
     func serverCommand_decodesSetOutputDelayCommand() throws {
         let json = """
-        {"type": "server/command", "payload": {"player": {"command": "set_output_delay", "output_delay_ms": 250}}}
+        {"type": "server/command", "payload": {"player": {"command": "set_static_delay", "static_delay_ms": 250}}}
         """
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
@@ -657,8 +657,8 @@ struct MessageEncodingTests {
             "type": "server/command",
             "payload": {
                 "player": {
-                    "command": "set_output_delay",
-                    "output_delay_ms": 250,
+                    "command": "set_static_delay",
+                    "static_delay_ms": 250,
                     "future_command_field": "ignored"
                 },
                 "future_payload_field": "ignored"
