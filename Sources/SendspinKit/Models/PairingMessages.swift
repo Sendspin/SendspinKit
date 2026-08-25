@@ -15,6 +15,45 @@ struct PairAbortPayload: Codable, Equatable, Sendable {
     let reason: PairAbortReason
 }
 
+/// `client/pair-finalize` carries the newly generated long-term PSK.
+struct ClientPairFinalizeMessage: SendspinMessage, Equatable {
+    static let typeString = "client/pair-finalize"
+    let type = Self.typeString
+    let payload: ClientPairFinalizePayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ClientPairFinalizePayload: Codable, Equatable, Sendable {
+    let longTermPsk: String
+
+    enum CodingKeys: String, CodingKey {
+        case longTermPsk = "long_term_psk"
+    }
+}
+
+/// `server/pair-finalize` confirms that the server persisted the new record.
+struct ServerPairFinalizeMessage: SendspinMessage, Equatable {
+    static let typeString = "server/pair-finalize"
+    let type = Self.typeString
+    let payload: ServerPairFinalizePayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerPairFinalizePayload: Codable, Equatable, Sendable {}
+
+/// `server/unpair` asks the client to discard its server-bound record.
+struct ServerUnpairMessage: SendspinMessage, Equatable {
+    static let typeString = "server/unpair"
+    let type = Self.typeString
+    let payload: ServerUnpairPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerUnpairPayload: Codable, Equatable, Sendable {}
+
 enum PairAbortReason: String, Codable, Sendable, Hashable {
     case attemptTimeout = "attempt_timeout"
     case concurrentAttempt = "concurrent_attempt"
@@ -26,7 +65,7 @@ enum PairAbortReason: String, Codable, Sendable, Hashable {
 /// The trust level the client extends to a server in `client/hello`: `user`
 /// reflects a pairing record for this server; `none` covers pairing handshakes
 /// and unpaired access.
-enum TrustLevel: String, Codable, Sendable, Hashable {
+public enum TrustLevel: String, Codable, Sendable, Hashable {
     case user
     case none
 }

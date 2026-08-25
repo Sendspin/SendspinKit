@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -93,11 +94,26 @@ actor SendspinConnection {
 
     /// Server info
     var currentServerId: String?
-    let serverName: String
+    var serverName: String
     var activities: Set<Activity>
-    let pskCategory: PskCategory
-    let sessionContext: ActivationAdmissibility.SessionContext
+    var pskCategory: PskCategory
+    var matchedPskId: String
+    let pairingStore: (any PairingRecordStore)?
+    var sessionContext: ActivationAdmissibility.SessionContext
+    let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
+    let serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey
+    let suite: NoiseCipherSuite
+    let candidateProvider: @Sendable () async -> [PskCandidate]
+    let clientHelloPayload: ClientHelloPayload
+    var rehandshakeInProgress = false
+    nonisolated var isRehandshakeInProgress: Bool {
+        get async { await rehandshakeInProgress }
+    }
+
+    var awaitingRehandshakeActivation = false
     var activeRoles: Set<VersionedRole>
+    var pendingPairingPsk: Psk?
+    var pairingAttemptTask: Task<Void, Never>?
 
     /// Last metadata state, retained so partial server/state deltas merge
     /// rather than clobber absent fields (e.g. a title-only delta keeps album/artist).
@@ -152,6 +168,13 @@ actor SendspinConnection {
         activities: Set<Activity>,
         activeRoles: Set<VersionedRole>,
         pskCategory: PskCategory,
+        matchedPskId: String = "",
+        pairingStore: (any PairingRecordStore)? = nil,
+        identityPrivateKey: Curve25519.KeyAgreement.PrivateKey,
+        serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey,
+        suite: NoiseCipherSuite,
+        candidateProvider: @escaping @Sendable () async -> [PskCandidate],
+        clientHelloPayload: ClientHelloPayload,
         unpairedAccessEnabled: Bool = true,
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
         outputSampleRatePolicy: OutputSampleRatePolicy? = nil,
@@ -184,7 +207,16 @@ actor SendspinConnection {
         self.serverName = serverName
         self.activities = activities
         self.activeRoles = activeRoles
+        pendingPairingPsk = nil
+        pairingAttemptTask = nil
         self.pskCategory = pskCategory
+        self.matchedPskId = matchedPskId
+        self.pairingStore = pairingStore
+        self.identityPrivateKey = identityPrivateKey
+        self.serverStaticPublicKey = serverStaticPublicKey
+        self.suite = suite
+        self.candidateProvider = candidateProvider
+        self.clientHelloPayload = clientHelloPayload
         sessionContext = ActivationAdmissibility.SessionContext(
             category: pskCategory,
             unpairedAccessEnabled: unpairedAccessEnabled,
@@ -316,6 +348,10 @@ actor SendspinConnection {
     func start() {
         guard lifecycle == .idle else { return }
         lifecycle = .running
+        if case .longTerm = pskCategory, let pairingStore {
+            let pskId = matchedPskId
+            Task { await pairingStore.markUsed(pskId: pskId) }
+        }
         if lastSentClientState == nil, !playerRoleActive {
             Task { [weak self] in
                 try? await self?.sendClientStateIfChanged()

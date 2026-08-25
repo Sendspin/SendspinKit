@@ -65,6 +65,9 @@ enum ConnectionEvent: Equatable {
     /// Player mute state changed (server command or local `setMute`)
     case playerMutedChanged(Bool)
 
+    /// Pairing persisted a new long-term record.
+    case paired(serverId: String)
+
     /// Server changed admitted activities or active roles.
     case serverActivated(activities: Set<Activity>, activeRoles: Set<VersionedRole>)
 

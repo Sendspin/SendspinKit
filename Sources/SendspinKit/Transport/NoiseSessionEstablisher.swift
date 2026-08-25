@@ -27,6 +27,8 @@ enum HandshakeError: Error, Equatable {
 struct NoiseSessionOutcome: ~Copyable {
     var channel: NoiseChannel
     let serverId: String
+    let serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey
+    let suite: NoiseCipherSuite
     let matchedCandidate: PskCandidate
 
     consuming func takeChannel() -> NoiseChannel {
@@ -154,6 +156,8 @@ enum NoiseSessionEstablisher {
         return NoiseSessionOutcome(
             channel: NoiseChannel(transport: transportStates),
             serverId: serverId,
+            serverStaticPublicKey: serverStaticKey,
+            suite: suite,
             matchedCandidate: candidate
         )
     }

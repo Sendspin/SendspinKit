@@ -20,6 +20,8 @@ public final class SendspinClient {
     /// multi-server arbitration tiebreak. `nil` means no implicit storage: discovery
     /// ties are resolved as if no last-played server has been remembered.
     let persistenceProvider: (any SendspinPersistenceProvider)?
+    /// Pairing PSK and long-term record persistence for Noise sessions.
+    public let pairingConfiguration: PairingConfiguration?
     /// Resolved volume capabilities (the concrete `VolumeControl` lives in `AudioEngine`).
     let volumeCapabilities: VolumeCapabilities
 
@@ -34,6 +36,8 @@ public final class SendspinClient {
     /// If the state enters `.error(_:)`, the transport is still alive but playback
     /// is broken. Call ``disconnect(reason:)`` followed by ``connect(to:)`` to recover.
     public private(set) var connectionState: ConnectionState = .disconnected
+    /// Trust level established by the currently admitted Noise PSK.
+    public private(set) var trustLevel: TrustLevel = .none
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
     /// Written both here and by the control drain's `.operationalState` case, so
@@ -186,7 +190,8 @@ public final class SendspinClient {
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
         unpairedAccessEnabled: Bool = true,
-        persistenceProvider: (any SendspinPersistenceProvider)? = nil
+        persistenceProvider: (any SendspinPersistenceProvider)? = nil,
+        pairing: PairingConfiguration? = nil
     ) throws(ConfigurationError) {
         try self.init(
             identity: identity,
@@ -197,6 +202,7 @@ public final class SendspinClient {
             artworkConfig: artworkConfig,
             unpairedAccessEnabled: unpairedAccessEnabled,
             persistenceProvider: persistenceProvider,
+            pairing: pairing,
             audioOutputCapabilityProvider: AudioOutputCapabilityService()
         )
     }
@@ -210,6 +216,7 @@ public final class SendspinClient {
         artworkConfig: ArtworkConfiguration? = nil,
         unpairedAccessEnabled: Bool = true,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil,
+        pairing: PairingConfiguration? = nil,
         audioOutputCapabilityProvider: any AudioOutputCapabilityProviding,
         outputSettleInterval: Duration = .milliseconds(250),
         outputRequestTimeout: Duration = .seconds(3),
@@ -241,6 +248,7 @@ public final class SendspinClient {
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
         self.persistenceProvider = persistenceProvider
+        pairingConfiguration = pairing
         self.audioOutputCapabilityProvider = audioOutputCapabilityProvider
         self.outputSettleInterval = outputSettleInterval
         self.outputRequestTimeout = outputRequestTimeout
@@ -427,7 +435,7 @@ public final class SendspinClient {
                 on: transport,
                 configuration: HandshakeDriver.Configuration(
                     identity: identity,
-                    candidates: [PskCandidate(psk: .sentinel, category: .sentinel)],
+                    candidates: pairingCandidates(),
                     clientHello: hello,
                     supportedRoles: roleSet,
                     unpairedAccessEnabled: unpairedAccessEnabled
@@ -472,7 +480,7 @@ public final class SendspinClient {
                     on: transport,
                     configuration: HandshakeDriver.Configuration(
                         identity: identity,
-                        candidates: [PskCandidate(psk: .sentinel, category: .sentinel)],
+                        candidates: pairingCandidates(),
                         clientHello: hello,
                         supportedRoles: roleSet,
                         unpairedAccessEnabled: unpairedAccessEnabled
@@ -524,6 +532,7 @@ public final class SendspinClient {
     /// failures are handled before a transport reaches this point, so callers do not
     /// need duplicate rollback logic after they set `.connecting`.
     @MainActor
+    // swiftlint:disable:next function_body_length
     func setupConnection(
         with transport: any SendspinTransport,
         outcome: consuming HandshakeDriver.Result,
@@ -571,6 +580,10 @@ public final class SendspinClient {
         let outcomeServerName = outcome.serverName
         let outcomeActiveRoles = outcome.activeRoles
         let outcomeCategory = outcome.matchedCandidate.category
+        let outcomePskId = outcome.matchedCandidate.psk.pskId
+        let outcomeIdentityPrivateKey = outcome.identityPrivateKey
+        let outcomeServerStaticPublicKey = outcome.serverStaticPublicKey
+        let outcomeSuite = outcome.suite
         let sessionChannel = outcome.takeChannel()
         let newConnection = SendspinConnection(
             transport: transport,
@@ -580,6 +593,15 @@ public final class SendspinClient {
             activities: outcomeActivities,
             activeRoles: outcomeActiveRoles,
             pskCategory: outcomeCategory,
+            matchedPskId: outcomePskId,
+            pairingStore: pairingConfiguration?.store,
+            identityPrivateKey: outcomeIdentityPrivateKey,
+            serverStaticPublicKey: outcomeServerStaticPublicKey,
+            suite: outcomeSuite,
+            candidateProvider: { @MainActor [weak self] in
+                await self?.pairingCandidates() ?? []
+            },
+            clientHelloPayload: buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats),
             unpairedAccessEnabled: unpairedAccessEnabled,
             effectivePlayerFormats: negotiation.effectivePlayerFormats,
             outputSampleRatePolicy: playerConfig?.outputSampleRatePolicy,
@@ -823,11 +845,15 @@ public final class SendspinClient {
     /// event to the public stream. Called per event by the drain
     /// task, which holds `self` only for the duration of the call.
     @MainActor
-    private func applyConnectionEvent(_ event: ConnectionEvent) {
+    private func applyConnectionEvent(_ event: ConnectionEvent) { // swiftlint:disable:this function_body_length
         guard !isTerminated else { return }
         switch event {
+        case let .paired(serverId):
+            emitEvent(.paired(serverId: serverId))
+
         case let .serverConnected(info):
             currentServerId = info.serverId
+            trustLevel = info.trustLevel
             currentActivities = info.activities
             updateConnectionState(.connected)
             emitEvent(.serverConnected(info))
@@ -919,6 +945,7 @@ public final class SendspinClient {
             emitEvent(.serverConnected(ServerInfo(
                 serverId: currentServerId ?? "",
                 name: "",
+                trustLevel: trustLevel,
                 activeRoles: activeRoles,
                 activities: activities
             )))

@@ -8,6 +8,18 @@ struct SessionFormatNegotiation: Sendable {
 }
 
 extension SendspinClient {
+    /// Build the live candidate set for one connection attempt.
+    func pairingCandidates() async -> [PskCandidate] {
+        var candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]
+        guard let pairingConfiguration, pairingConfiguration.enabled else { return candidates }
+        candidates.append(PskCandidate(psk: pairingConfiguration.pairingPsk, category: .pairing))
+        let records = await pairingConfiguration.store.listRecords()
+        candidates.append(contentsOf: records.map {
+            PskCandidate(psk: $0.psk, category: .longTerm, requiredServerId: $0.serverId)
+        })
+        return candidates
+    }
+
     /// Capture one capability snapshot and derive the player catalog for a session.
     func makeSessionFormatNegotiation() async throws(OutputFormatError) -> SessionFormatNegotiation {
         await sessionNegotiationHook()
@@ -55,7 +67,9 @@ extension SendspinClient {
             name: name,
             deviceInfo: deviceInfo,
             trustLevel: .none,
-            supportedPairMethods: [],
+            supportedPairMethods: pairingConfiguration?.enabled == true
+                ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
+                : [],
             unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,

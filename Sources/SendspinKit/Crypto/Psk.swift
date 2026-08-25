@@ -4,7 +4,7 @@ import Foundation
 /// Which trust bucket a PSK belongs to. The spec's three categories share one
 /// `psk_id` namespace; on a handshake match, the stored category determines how the
 /// session proceeds (allowed activity sets, trust level).
-enum PskCategory: Sendable, Equatable {
+public enum PskCategory: Sendable, Equatable {
     /// A long-term Sendspin PSK from a pairing record.
     case longTerm
     /// The client's Sendspin Pairing PSK (admits only the `pairing` activity).
@@ -14,43 +14,43 @@ enum PskCategory: Sendable, Equatable {
 }
 
 /// A 32-byte Noise pre-shared key.
-struct Psk: Sendable, Equatable {
+public struct Psk: Sendable, Equatable, Hashable {
     /// UTF-8 label prefixed to the PSK when deriving its `psk_id`.
     static let pskIdLabel = "sendspin-psk-id-v1"
     /// UTF-8 label whose SHA-256 hash is the published Sentinel PSK value.
     static let sentinelLabel = "sendspin-sentinel-psk-v1"
 
-    let bytes: Data
+    public let bytes: Data
 
     /// Fails unless `bytes` is exactly 32 bytes.
-    init?(bytes: Data) {
+    public init?(bytes: Data) {
         guard bytes.count == 32 else { return nil }
         self.bytes = bytes
     }
 
     /// Draw a fresh PSK from the system CSPRNG.
-    static func generate() -> Psk {
+    public static func generate() -> Psk {
         let key = SymmetricKey(size: .bits256)
         // Force-unwrap is safe: a 256-bit key is exactly 32 bytes by construction.
         return Psk(bytes: key.withUnsafeBytes { Data($0) })!
     }
 
     /// The published Sentinel PSK: `SHA-256("sendspin-sentinel-psk-v1")`.
-    static let sentinel: Psk = {
+    public static let sentinel: Psk = {
         let digest = SHA256.hash(data: Data(sentinelLabel.utf8))
         return Psk(bytes: Data(digest))!
     }()
 
     /// The spec's PSK identifier: `base64url(SHA-256("sendspin-psk-id-v1" || PSK))`,
     /// 43 characters, no padding.
-    var pskId: String {
+    public var pskId: String {
         var input = Data(Self.pskIdLabel.utf8)
         input.append(bytes)
         return Base64URL.encode(Data(SHA256.hash(data: input)))
     }
 
     /// The 43-character base64url form used on the wire and in pairing tokens.
-    var base64URL: String {
+    public var base64URL: String {
         Base64URL.encode(bytes)
     }
 
@@ -64,11 +64,11 @@ struct Psk: Sendable, Equatable {
 extension Psk: CustomStringConvertible, CustomDebugStringConvertible {
     /// Prints only the public `psk_id` — never the secret bytes — so reflection,
     /// interpolation, and logging cannot leak the PSK.
-    var description: String {
+    public var description: String {
         "Psk(psk_id: \(pskId))"
     }
 
-    var debugDescription: String {
+    public var debugDescription: String {
         description
     }
 }

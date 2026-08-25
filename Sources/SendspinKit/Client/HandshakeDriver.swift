@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 
 /// Owns one candidate from Noise establishment through its first admitted activation.
@@ -5,6 +6,9 @@ enum HandshakeDriver {
     struct Result: ~Copyable {
         var channel: NoiseChannel
         let serverId: String
+        let serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey
+        let suite: NoiseCipherSuite
+        let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
         let serverName: String
         let matchedCandidate: PskCandidate
         let activities: Set<Activity>
@@ -44,8 +48,14 @@ enum HandshakeDriver {
                 timeout: phaseTimeout
             )
             let hello = try JSONDecoder().decode(ServerHelloMessage.self, from: helloData)
+            var clientHello = configuration.clientHello
+            if case .longTerm = outcome.matchedCandidate.category {
+                clientHello.trustLevel = .user
+            } else {
+                clientHello.trustLevel = .none
+            }
             try await sendJSON(
-                ClientHelloMessage(payload: configuration.clientHello),
+                ClientHelloMessage(payload: clientHello),
                 on: transport,
                 channel: &outcome.channel
             )
@@ -53,7 +63,7 @@ enum HandshakeDriver {
             let session = ActivationAdmissibility.SessionContext(
                 category: outcome.matchedCandidate.category,
                 unpairedAccessEnabled: configuration.unpairedAccessEnabled,
-                offeredPairMethods: []
+                offeredPairMethods: Set(clientHello.supportedPairMethods.map(\.method))
             )
 
             while true {
@@ -76,6 +86,9 @@ enum HandshakeDriver {
                     return Result(
                         channel: outcome.channel,
                         serverId: outcome.serverId,
+                        serverStaticPublicKey: outcome.serverStaticPublicKey,
+                        suite: outcome.suite,
+                        identityPrivateKey: configuration.identity.privateKey,
                         serverName: hello.payload.name,
                         matchedCandidate: outcome.matchedCandidate,
                         activities: activities,

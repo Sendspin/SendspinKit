@@ -52,6 +52,9 @@ func makeEstablishedConnection(
     )
     try await accepted.value
     let admittedServerId = outcome.serverId
+    let outcomeIdentityPrivateKey = clientIdentity.privateKey
+    let outcomeServerStaticPublicKey = outcome.serverStaticPublicKey
+    let outcomeSuite = outcome.suite
     let channel = outcome.takeChannel()
     await transport.installEncryptedTextSender(server.encryptedTextSender())
     await transport.installEncryptedBinarySender(server.encryptedBinarySender())
@@ -76,6 +79,23 @@ func makeEstablishedConnection(
         activities: activities,
         activeRoles: activeRoles,
         pskCategory: pskCategory,
+        identityPrivateKey: outcomeIdentityPrivateKey,
+        serverStaticPublicKey: outcomeServerStaticPublicKey,
+        suite: outcomeSuite,
+        candidateProvider: { [psk] in
+            [PskCandidate(psk: psk, category: pskCategory, requiredServerId: nil)]
+        },
+        clientHelloPayload: ClientHelloPayload(
+            name: "Test Client",
+            deviceInfo: nil,
+            trustLevel: pskCategory == .longTerm ? .user : .none,
+            supportedPairMethods: [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled),
+            supportedRoles: Array(roles),
+            playerV1Support: nil,
+            artworkV1Support: nil,
+            visualizerV1Support: nil
+        ),
         unpairedAccessEnabled: unpairedAccessEnabled,
         audioSink: audioSink,
         artworkSink: artworkSink,

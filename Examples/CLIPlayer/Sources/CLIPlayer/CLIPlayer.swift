@@ -185,7 +185,8 @@ final class CLIPlayer {
         // Ignored in TUI mode — these are either handled by log mode only, or
         // have no corresponding on-screen element yet. Keep the list explicit
         // so adding a new case is a compiler error, not a silent drop.
-        case .audioOutputChanged,
+        case .paired,
+             .audioOutputChanged,
              .outputFormatStatusChanged,
              .streamingFailed,
              .groupUpdated,
@@ -207,6 +208,9 @@ final class CLIPlayer {
         switch event {
         case let .serverConnected(info):
             print("[EVENT] Server connected: \(info.name) (\(info.serverId))")
+
+        case let .paired(serverId):
+            print("[EVENT] Paired with server: \(serverId)")
 
         case let .audioOutputChanged(output):
             print("[AUDIO OUTPUT] \(output.diagnosticDescription ?? "unknown") rate=\(output.sampleRate.map(String.init) ?? "unknown")")

@@ -113,6 +113,33 @@ struct PskCandidateTests {
         #expect(selected?.category == .longTerm)
     }
 
+    @Test("Pairing token matches the specification reference vector")
+    func pairingTokenReferenceVector() throws {
+        let clientKey = Data((0x00 ... 0x1F).map(UInt8.init))
+        let pairingPsk = try #require(Psk(bytes: Data((0xE0 ... 0xFF).map(UInt8.init))))
+        let token = PairingToken(clientKey: clientKey, pairingPsk: pairingPsk)
+        #expect(token.string == "SP:0AAAQEAYEAUDAOCAJBIFQYDIOB4IBCEQTCQKRMFYYDENBWHA5DYP6BYPC4PSOLZXH5DU6V97M5XXO74HR6LZ7J5PW674PT6X37T6757Y")
+        let decoded = try PairingToken(string: "  \(token.string.lowercased())  ")
+        #expect(decoded.clientKey == clientKey)
+        #expect(decoded.pairingPsk == pairingPsk)
+    }
+
+    @Test("Pairing store rejects reserved and duplicate PSK identifiers")
+    func pairingStoreUniquenessAndUsed() async throws {
+        let pairingPsk = Psk.generate()
+        let store = InMemoryPairingRecordStore(pairingPsk: pairingPsk)
+        await #expect(throws: PairingRecordStoreError.duplicatePskId) {
+            try await store.insert(PairingRecord(psk: pairingPsk))
+        }
+        let record = PairingRecord(psk: Psk.generate(), serverId: "server")
+        try await store.insert(record)
+        await store.markUsed(pskId: record.pskId)
+        #expect(await (store.listRecords()).first?.used == true)
+        await #expect(throws: PairingRecordStoreError.duplicatePskId) {
+            try await store.insert(record)
+        }
+    }
+
     @Test("Lookup miss returns nil (handshake failure)")
     func lookupMiss() {
         let candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]

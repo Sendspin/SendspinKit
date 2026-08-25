@@ -17,7 +17,7 @@ struct ClientHelloMessage: SendspinMessage, Equatable {
 struct ClientHelloPayload: Codable, Equatable {
     let name: String
     let deviceInfo: DeviceInfo?
-    let trustLevel: TrustLevel
+    var trustLevel: TrustLevel
     let supportedPairMethods: [PairMethodDescriptor]
     let unpairedAccess: UnpairedAccessAdvertisement
     let supportedRoles: [VersionedRole]

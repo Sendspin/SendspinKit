@@ -25,6 +25,7 @@ extension SendspinConnection {
         controlSink.enqueue(.serverConnected(ServerInfo(
             serverId: currentServerId ?? "",
             name: serverName,
+            trustLevel: pskCategory == .longTerm ? .user : .none,
             activeRoles: activeRoles,
             activities: activities
         )))
@@ -76,8 +77,12 @@ extension SendspinConnection {
                 try await sendWrapped(ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now)))
                 sampleCount = sampleCount &+ 1
             } catch {
-                // Send failure; stop the loop (connection lost)
-                break
+                // The re-handshake gate rejects sends transiently — sampling must
+                // resume once the exchange completes. Only a terminal teardown
+                // (which sets shuttingDown) ends the loop.
+                if shuttingDown || lifecycle != .running {
+                    break
+                }
             }
 
             // First two samples 10 ms apart so the filter's count==1→2

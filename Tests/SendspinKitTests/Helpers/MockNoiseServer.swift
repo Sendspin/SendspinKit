@@ -35,6 +35,21 @@ actor MockNoiseServer {
     /// The server-side encrypted channel, available once the handshake completes.
     private(set) var channel: NoiseChannel?
 
+    /// Establishment facts retained for later re-handshakes.
+    private var clientStaticKey: Curve25519.KeyAgreement.PublicKey?
+    private var establishedSuite: NoiseCipherSuite = .chaChaPoly
+
+    /// In-flight re-handshake (initiator side): the handshake awaiting the client's
+    /// message 2, the PSK it targets, and completion signal for tests.
+    private var pendingRehandshake: NoiseHandshake?
+    private var rehandshakeTarget: Psk?
+    private(set) var rehandshakeComplete = false
+    /// Frames encrypted under the pre-swap keys but not delivered — for proving the
+    /// key swap is a hard boundary. Minted just before the swap so the client's
+    /// old-key receive counter expects exactly these.
+    private(set) var staleFrames: [Data] = []
+    private var mintStaleFrameBeforeSwap = false
+
     var serverId: String {
         Base64URL.encode(staticKey.publicKey.rawRepresentation)
     }
@@ -188,6 +203,69 @@ actor MockNoiseServer {
         }
         message2Payload = try handshake.readMessage2(noiseMessage2, psk: psk)
         channel = try NoiseChannel(transport: handshake.makeTransport())
+        self.clientStaticKey = clientStaticKey
+        establishedSuite = suite
+    }
+
+    /// Initiate an in-band re-handshake to `psk`. The client's message 2 is consumed
+    /// wherever client frames are read (readback or direct pulls); the channel swaps
+    /// there, so frames after it decrypt under the new keys.
+    func beginRehandshake(
+        to newPsk: Psk,
+        pskIdOverride: String? = nil,
+        mintStaleFrame: Bool = false
+    ) async throws {
+        guard let clientStaticKey, let priorHash = channel?.handshakeHash else {
+            throw Failure.unexpectedFrame
+        }
+        var handshake = NoiseHandshake(
+            suite: establishedSuite,
+            role: .initiator,
+            localStaticKey: staticKey,
+            remoteStaticPublicKey: clientStaticKey,
+            prologue: priorHash
+        )
+        let payload = try JSONEncoder().encode(
+            NoiseMessage1Payload(pskId: pskIdOverride ?? newPsk.pskId)
+        )
+        let message1 = try handshake.writeMessage1(payload: payload)
+        pendingRehandshake = handshake
+        rehandshakeTarget = newPsk
+        rehandshakeComplete = false
+        mintStaleFrameBeforeSwap = mintStaleFrame
+        let envelope = try SendspinEncoding.makeEncoder().encode(
+            NoiseHandshakeMessage(payload: NoiseHandshakePayload(data: Base64URL.encode(message1)))
+        )
+        try await sendJSON(#require(String(bytes: envelope, encoding: .utf8)))
+    }
+
+    /// Complete an in-flight re-handshake when the recorded message is the client's
+    /// noise reply: read message 2 under the old keys, optionally mint stale frames,
+    /// then swap the channel so every later frame uses the new keys.
+    private func completeRehandshakeIfReply(_ message: Data) {
+        guard var handshake = pendingRehandshake,
+              let target = rehandshakeTarget,
+              message.first == NoiseFrameType.json,
+              SendspinEncoding.messageType(of: Data(message.dropFirst())) == NoiseHandshakeMessage.typeString
+        else { return }
+        pendingRehandshake = nil
+        rehandshakeTarget = nil
+        guard let reply = try? JSONDecoder().decode(
+            NoiseHandshakeMessage.self, from: Data(message.dropFirst())
+        ), let noiseBytes = Base64URL.decode(reply.payload.data),
+        let inner = try? handshake.readMessage2(noiseBytes, psk: target),
+        inner == noiseMessage2Payload
+        else { return }
+        if mintStaleFrameBeforeSwap {
+            var probe = Data([NoiseFrameType.json])
+            probe.append(Data(#"{"type":"stale/probe","payload":{}}"#.utf8))
+            staleFrames = (try? channel!.encryptMessage(probe)) ?? []
+            mintStaleFrameBeforeSwap = false
+        }
+        if let transport = try? handshake.makeTransport() {
+            channel = NoiseChannel(transport: transport)
+            rehandshakeComplete = true
+        }
     }
 
     /// Send the server hello and consume the client's hello, leaving activation
@@ -198,10 +276,12 @@ actor MockNoiseServer {
         let hello = try await nextClientJSON()
         let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
         let payload = try #require(object["payload"] as? [String: Any])
+        // Shape checks only; value pins (trust level, offered methods) belong to
+        // dedicated tests — both vary with the client's pairing configuration.
         #expect(object["type"] as? String == ClientHelloMessage.typeString)
         #expect(payload["name"] is String)
-        #expect(payload["trust_level"] as? String == TrustLevel.none.rawValue)
-        #expect((payload["supported_pair_methods"] as? [Any])?.isEmpty == true)
+        #expect(payload["trust_level"] is String)
+        #expect(payload["supported_pair_methods"] is [Any])
         #expect(payload["unpaired_access"] is [String: Any])
         startReadback()
     }
@@ -244,6 +324,7 @@ actor MockNoiseServer {
     func observeClientFrame(_ frame: Data) {
         if let message = try? channel?.decryptFrame(frame) {
             decryptedMessages.append(message)
+            completeRehandshakeIfReply(message)
         }
     }
 
@@ -297,8 +378,25 @@ actor MockNoiseServer {
             if let message = try channel!.decryptFrame(frame) {
                 decryptedMessages.append(message)
                 nextClientMessageIndex += 1
+                completeRehandshakeIfReply(message)
                 return message
             }
+        }
+    }
+
+    /// Deliver a previously minted stale (old-key) frame.
+    func deliverStaleFrames() async {
+        for frame in staleFrames {
+            await transport.injectBinary(frame)
+        }
+    }
+
+    /// All recorded client JSON messages of one wire type, in arrival order.
+    func clientJSONMessages(ofType type: String) -> [Data] {
+        decryptedMessages.compactMap { message in
+            guard message.first == NoiseFrameType.json else { return nil }
+            let json = Data(message.dropFirst())
+            return SendspinEncoding.messageType(of: json) == type ? json : nil
         }
     }
 }

@@ -37,7 +37,7 @@ extension SendspinClient {
                 on: transport,
                 configuration: HandshakeDriver.Configuration(
                     identity: identity,
-                    candidates: [PskCandidate(psk: .sentinel, category: .sentinel)],
+                    candidates: pairingCandidates(),
                     clientHello: buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats),
                     supportedRoles: roleSet,
                     unpairedAccessEnabled: unpairedAccessEnabled

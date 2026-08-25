@@ -3,7 +3,10 @@ import Foundation
 extension SendspinConnection {
     // MARK: - Outbound sends
 
-    func sendWrapped(_ message: some Codable & Sendable) async throws {
+    func sendWrapped(_ message: some Codable & Sendable, bypassRehandshakeGate: Bool = false) async throws {
+        guard bypassRehandshakeGate || !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         let data = try SendspinEncoding.makeEncoder().encode(message)
         var plaintext = Data([NoiseFrameType.json])
         plaintext.append(data)
@@ -36,7 +39,9 @@ extension SendspinConnection {
     /// no send path of its own — so public API sends serialize with the
     /// handshake/time/state/goodbye sequencing this actor owns.
     func send(clientMessage message: some Codable & Sendable) async throws {
-        guard lifecycle == .running else { throw SendspinClientError.handshakeIncomplete }
+        guard lifecycle == .running, !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         do {
             try await sendWrapped(message)
         } catch {
@@ -44,8 +49,10 @@ extension SendspinConnection {
         }
     }
 
-    func sendClientStateIfChanged() async throws {
-        guard lifecycle == .running else { throw SendspinClientError.handshakeIncomplete }
+    func sendClientStateIfChanged(bypassRehandshakeGate: Bool = false) async throws {
+        guard lifecycle == .running, bypassRehandshakeGate || !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         clientStateDirty = true
         // A caller that arrives while another state send is in flight must wait
         // for that cycle to finish; returning here would report success without

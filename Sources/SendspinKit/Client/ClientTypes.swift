@@ -129,6 +129,7 @@ public struct VisualizerData: Sendable, Equatable {
 
 public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
+    case paired(serverId: String)
     /// The client observed a new advisory audio-output capability snapshot.
     case audioOutputChanged(AudioOutputSnapshot)
     /// The current session's output-format negotiation status changed.
@@ -176,6 +177,7 @@ public enum ClientEvent: Sendable, Equatable {
 public struct ServerInfo: Sendable, Hashable {
     public let serverId: String
     public let name: String
+    public let trustLevel: TrustLevel
     /// Roles the server actually activated for this client.
     /// Use ``hasRole(_:)`` to check whether a specific capability is available.
     public let activeRoles: Set<VersionedRole>
