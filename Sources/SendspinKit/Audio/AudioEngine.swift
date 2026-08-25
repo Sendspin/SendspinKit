@@ -1028,6 +1028,14 @@ actor AudioEngine {
         } else {
             streamGeneration &+= 1
         }
+        if !outputHasStarted, startupFormat != nil {
+            // Startup is still priming, so there is no playing queue to switch seamlessly:
+            // the prepared queue and any release in flight belong to the old format. Restart
+            // the startup pipeline for the new format; entering the seamless path here would
+            // leave the stale startup release racing a disposed queue.
+            await applyStreamStart(format: format, codecHeader: codecHeader)
+            return
+        }
         chunkTimingFormat = format
         chunkTimingDiagnostics = ChunkTimingDiagnostics()
         playbackTimeline = AudioChunkPlaybackTimeline()
