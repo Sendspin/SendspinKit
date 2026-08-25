@@ -129,10 +129,16 @@ struct ConnectionLostTeardownTests {
         } }
 
         // Disconnect and transport loss race on an established Noise session. The
-        // connection's run-once teardown must emit one terminal event.
-        async let disconnecting: Void = client.disconnect(reason: .userRequest)
+        // connection's run-once teardown must emit one terminal event. The explicit
+        // reason wins only once it is recorded on the connection, so pin that
+        // ordering: wait for the shutdown flag, then inject the loss. (A loss that
+        // fully completes before the intent arrives legitimately reports
+        // connectionLost — that is a different, honest outcome, not this test.)
+        let conn = try #require(client.connection)
+        let disconnecting = Task { await client.disconnect(reason: .userRequest) }
+        #expect(await waitUntil { await conn.shuttingDown })
         await mock.finishStreams()
-        await disconnecting
+        await disconnecting.value
 
         // Exactly one .disconnected event must reach consumers — the connection's
         // supervisor ensures teardown runs only once, so there's never a duplicate.

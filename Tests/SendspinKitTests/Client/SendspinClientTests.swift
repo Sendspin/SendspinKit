@@ -781,7 +781,11 @@ struct SendspinClientTests {
         let automatic = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
         let application = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let provider = FakeAudioOutputCapabilityProvider(initialSnapshot: output(44_100, "Initial"))
-        let client = try makePlayerClient(formats: [initial, automatic, application], capabilityProvider: provider, settle: .zero)
+        let client = try makePlayerClient(
+            formats: [initial, automatic, application],
+            capabilityProvider: provider,
+            settle: .zero
+        )
         let transport = try await connectOutputClient(client)
         try await transport.injectText(streamStartJSON(initial))
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
@@ -789,15 +793,19 @@ struct SendspinClientTests {
         #expect(await waitUntil { await requestFormats(transport).count == 1 })
 
         try await client.requestPlayerFormat(application)
-        #expect(await requestFormats(transport).count == 2)
+        #expect(await waitUntil { await requestFormats(transport).count == 2 })
         #expect(client.currentOutputFormatStatus?.state == .requesting(application))
         await provider.publish(output(44_100, "Route B"))
         await provider.publish(output(48_000, "Route C"))
-        let leaked = await waitUntil(timeout: .milliseconds(200)) { await requestFormats(transport).count > 2 }
-        #expect(!leaked)
+        #expect(await waitUntil { await client.connection?.settledOutputSampleRate == 48_000 })
+        #expect(await client.connection?.automaticRequestsSuppressed == true)
+        #expect(await client.connection?.pendingOutputFormatRequest?.origin == .application)
+        #expect(await requestFormats(transport).count == 2)
 
         try await transport.injectText(streamEndJSON())
         try await transport.injectText(streamStartJSON(initial))
+        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
+        #expect(await waitUntil { await client.connection?.automaticRequestsSuppressed == false })
         await provider.publish(output(44_100, "Boundary route"))
         #expect(await waitUntil { await requestFormats(transport).count == 3 })
         await client.disconnect()

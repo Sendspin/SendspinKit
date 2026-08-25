@@ -217,7 +217,7 @@ actor MockNoiseServer {
         try await sendJSON(String(bytes: data, encoding: .utf8) ?? "")
     }
 
-    /// Establish the encrypted session through the first admitted activation.
+    /// Facade path: exchange server/hello and client/hello, then admit via server/activate.
     func establishSession(
         name: String = "Test Server",
         activities: Set<Activity> = [],

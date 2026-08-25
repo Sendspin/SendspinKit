@@ -15,9 +15,8 @@ final class EstablishedConnectionFixture {
     }
 }
 
-/// Construct a connection actor from a complete encrypted session. This is the
-/// direct-connection counterpart to `connectClient`: the mock peer performs the
-/// real cleartext and Noise handshake, then transfers its channel to the actor.
+/// Direct-connection path: establish Noise, admit metadata before construction,
+/// then transfer the encrypted channel to `SendspinConnection`.
 func makeEstablishedConnection(
     transport suppliedTransport: MockTransport? = nil,
     clock: any ClockSyncProtocol = ClockSynchronizer(),
@@ -90,20 +89,9 @@ func makeEstablishedConnection(
         clock: clock,
         engine: directEngine
     )
-    guard startConnection else {
-        return EstablishedConnectionFixture(connection: connection, server: server, transport: transport)
+    if startConnection {
+        await connection.start()
     }
-    await connection.start()
-    try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Direct Test Server"}}"#)
-    _ = try await server.nextClientJSON()
-    let activate = ServerActivateMessage(payload: ServerActivatePayload(
-        activities: Array(activities),
-        activeRoles: Array(activeRoles)
-    ))
-    let activateData = try JSONEncoder().encode(activate)
-    guard let activateText = String(data: activateData, encoding: .utf8) else {
-        throw MockNoiseServer.Failure.malformedClientMessage
-    }
-    try await server.sendJSON(activateText)
+    await server.startReadback()
     return EstablishedConnectionFixture(connection: connection, server: server, transport: transport)
 }

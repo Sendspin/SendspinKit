@@ -1452,7 +1452,6 @@ private actor ConnectionReadbackRegistry {
 private let connectionReadbacks = ConnectionReadbackRegistry()
 
 private func registerConnectionReadback(_ result: EstablishedConnectionFixture) async {
-    await result.server.startReadback()
     await connectionReadbacks.register(result.server, for: result.transport)
 }
 

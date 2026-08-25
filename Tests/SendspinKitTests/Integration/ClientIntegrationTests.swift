@@ -568,6 +568,9 @@ struct ClientIntegrationTests {
         #expect(client.currentControllerState?.volume == 70)
         #expect(client.currentControllerState?.muted == true)
 
+        // Sync first so the failing send is the group-volume command, not a racing
+        // pre-sync client/time burst (post-sync cadence is 1s).
+        try await establishClockSync(client, via: mock)
         await mock.setShouldFailOnSend(true)
         await #expect(throws: SendspinClientError.self) {
             try await client.setGroupVolume(10)
@@ -710,6 +713,9 @@ struct ClientIntegrationTests {
         // connection, which disconnectedSettersThrowWithoutMutating covers.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first so the setter's own send eats the injected failure instead of
+        // a racing pre-sync client/time burst (post-sync cadence is 1s).
+        try await establishClockSync(client, via: mock)
         await mock.setShouldFailOnSend(true)
 
         let newVolume = client.currentVolume == 100 ? 33 : 100
@@ -1364,6 +1370,11 @@ struct ClientIntegrationTests {
     func play_throwsSendFailedWhenTransportFails() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first: pre-sync the clock-sync burst sends client/time every 10ms,
+        // and a failed send is terminal — a background failure would kill the
+        // session before play() gets to fail. Post-sync cadence is 1s, so the
+        // play() send deterministically eats the injected failure.
+        try await establishClockSync(client, via: mock)
 
         await mock.setShouldFailOnSend(true)
 

@@ -7,17 +7,22 @@ import Testing
 /// other message types decode "successfully" as an empty payload.
 private func clientStatePayloads(from mock: MockNoiseServer, after offset: Int = 0) async -> [ClientStatePayload] {
     let deadline = ContinuousClock.now + .milliseconds(500)
-    var messages: [Data] = []
+    var stateMessages: [Data] = []
     repeat {
-        messages = await mock.sentTextMessages
-        if messages.contains(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }) {
+        stateMessages = await mock.sentTextMessages
+        stateMessages = stateMessages.filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+        if stateMessages.count > offset {
             break
         }
         try? await Task.sleep(for: .milliseconds(5))
     } while ContinuousClock.now < deadline
-    let stateMessages = messages.filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
     return stateMessages.dropFirst(offset)
         .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
+}
+
+private func clientStateCount(from mock: MockNoiseServer) async -> Int {
+    let messages = await mock.sentTextMessages
+    return messages.count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
 }
 
 @MainActor
@@ -97,10 +102,14 @@ struct ClientStateDeltaTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStateCount(from: mock)
         let newVolume = client.currentVolume == 100 ? 42 : 100
         try await client.setVolume(newVolume)
 
+        #expect(
+            await waitUntil { await clientStateCount(from: mock) > countBefore },
+            "Expected a client/state delta after setVolume"
+        )
         let delta = try #require(
             await clientStatePayloads(from: mock, after: countBefore).last,
             "Expected a client/state delta after setVolume"
@@ -138,14 +147,19 @@ struct ClientStateDeltaTests {
         let mock = try await connectClient(client)
 
         let newVolume = client.currentVolume == 100 ? 42 : 100
+        let countBeforeVolume = await clientStateCount(from: mock)
         try await client.setVolume(newVolume)
+        #expect(
+            await waitUntil { await clientStateCount(from: mock) > countBeforeVolume },
+            "Expected the volume change before probing duplicate server/hello"
+        )
 
         // A duplicate server/hello on the same established connection is ignored:
         // it must not reset the client/state delta baseline or emit a fresh full state.
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStateCount(from: mock)
         try await mock.injectText(serverHelloJSON())
-        let appeared = await waitUntil(timeout: .milliseconds(300)) {
-            await !clientStatePayloads(from: mock, after: countBefore).isEmpty
+        let appeared = await waitUntil(timeout: .seconds(1), pollInterval: .milliseconds(20)) {
+            await clientStateCount(from: mock) > countBefore
         }
         #expect(!appeared, "Duplicate same-connection server/hello must not send a new client/state")
 
