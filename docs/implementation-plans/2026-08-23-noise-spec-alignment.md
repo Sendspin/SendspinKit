@@ -299,10 +299,12 @@ admissibility all read the live pairing runtime; long-term records survive a
 pairing-method disable), the dead send(Codable) transport contract is gone, the
 queue-suppression flake is fixed via the injected sleep seam, and the docs
 (README, DocC, AGENTS, CHANGELOG, examples incl. CLIPlayer --pairing) match the
-shipped API. Conformance: 9/10 scenarios pass including both stream/request-format
-renegotiations on the PCM path; the PCM hash failures were a harness defect
-(source-fixture hash vs the server's resampled stream, fixed harness-side); the
-one remaining failure is an aiosendspin server exception on FLAC request-format.
+shipped API. Conformance: the full 10/10 matrix passes, including both
+stream/request-format renegotiations. The PCM hash failures were a harness defect
+(source-fixture hash vs the server's resampled stream), and the FLAC
+request-format failure was that same harness fix canonicalizing FLAC frames as
+PCM after the mid-stream switch — both fixed harness-side; neither aiosendspin
+nor SendspinKit was at fault.
 
 - Conformance adapter: opt into `supports_request_format` and drive the two
   `stream/request-format` renegotiation scenarios (SendspinKit supports the flow;
