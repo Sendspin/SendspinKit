@@ -379,14 +379,23 @@ struct AudioStartupReleaseTests {
         await output.releaseBlockedOutputDeviceProbe()
 
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(
+            await waitUntil(timeout: .seconds(3)) {
+                let played = await output.playedPCMTimestamps
+                let scheduled = await scheduler.queuedChunks.map(\.originalTimestamp)
+                return played.count + scheduled.count == 2
+            },
+            "both chunks must be accounted for in output or deferred scheduling"
+        )
         let calls = await output.recordedCalls
         let playedTimestamps = await output.playedPCMTimestamps
+        let scheduledTimestamps = await scheduler.queuedChunks.map(\.originalTimestamp)
         let commits = await engine.startupReleaseCommits
         await engine.shutdown()
 
         #expect(calls.count(where: { $0 == "startPrepared()" }) == 1)
         #expect(commits == 1)
-        #expect(playedTimestamps.sorted() == [firstTimestamp, secondTimestamp])
+        #expect((playedTimestamps + scheduledTimestamps).sorted() == [firstTimestamp, secondTimestamp])
     }
 
     @Test("chunks arriving during PCM priming are scheduled after the startup commit")

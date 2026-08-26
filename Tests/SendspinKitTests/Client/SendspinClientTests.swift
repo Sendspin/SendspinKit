@@ -594,7 +594,7 @@ struct SendspinClientTests {
         try await incumbentAccepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
 
-        await provider.publish(AudioOutputSnapshot(
+        await provider.setSnapshot(AudioOutputSnapshot(
             sampleRate: nil,
             reportedBitDepth: nil,
             diagnosticDescription: "Route unavailable"
@@ -1122,6 +1122,11 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
     func publish(_ snapshot: AudioOutputSnapshot) {
         currentSnapshot = snapshot
         continuation.yield(snapshot)
+    }
+
+    /// Changes the value returned to the next handshake without notifying the active session.
+    func setSnapshot(_ snapshot: AudioOutputSnapshot) {
+        currentSnapshot = snapshot
     }
 
     func stopMonitoring() {
