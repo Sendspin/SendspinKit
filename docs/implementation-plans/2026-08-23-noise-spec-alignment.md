@@ -293,6 +293,17 @@ method exists.
 
 ## Phase 5 — Polish, audit, docs
 
+**Phase 5 outcome (COMPLETE):** audits fixed the last liveness gaps
+(supported_pair_methods + candidates + re-handshake advertisement + pairing
+admissibility all read the live pairing runtime; long-term records survive a
+pairing-method disable), the dead send(Codable) transport contract is gone, the
+queue-suppression flake is fixed via the injected sleep seam, and the docs
+(README, DocC, AGENTS, CHANGELOG, examples incl. CLIPlayer --pairing) match the
+shipped API. Conformance: 9/10 scenarios pass including both stream/request-format
+renegotiations on the PCM path; the PCM hash failures were a harness defect
+(source-fixture hash vs the server's resampled stream, fixed harness-side); the
+one remaining failure is an aiosendspin server exception on FLAC request-format.
+
 - Conformance adapter: opt into `supports_request_format` and drive the two
   `stream/request-format` renegotiation scenarios (SendspinKit supports the flow;
   only the adapter capability metadata and trigger wiring are missing).
