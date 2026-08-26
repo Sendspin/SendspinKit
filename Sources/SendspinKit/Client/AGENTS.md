@@ -56,6 +56,13 @@ for SwiftUI.
 - **Pairing configuration has one runtime source of truth.** `PairingConfigurationRuntime` supplies
   the snapshot shared by handshake candidates and the management responder; updates do not rely on
   stale copies held by individual connections.
+- **Pairing state is connection-owned and serialized.** `SendspinConnection` holds the single active
+  code attempt, pairing window primitive, timeout/lifetime tasks, and pairing-activate counter. The
+  app gesture and paired management request use the same window primitive; a re-handshake clears
+  attempt state and resets the activate counter before the next activation.
+- **The encoder has no key strategy.** Every outbound `Codable` model declares explicit `CodingKeys`,
+  including keys whose wire spelling differs from Swift naming; never rely on encoder key-strategy
+  configuration for protocol output.
 - **The `currentArtwork` MainActor observer honors `SessionValidityToken`** just like the public
   binary yields — a retired connection's in-flight artwork must not mutate facade state.
 

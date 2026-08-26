@@ -14,6 +14,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the management role responder and updated public event/state names for the new protocol session flow.
 - Host applications must update persistence providers for pairing records and the renamed output-delay APIs.
 
+### Added
+- Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
+- Added dynamic pairing failure-counter provider hooks and management set/get pairing-code configuration, including static-code rotation without returning the static secret.
+- Added the pinned `jedisct1/swift-sodium` 0.9.1 dependency and the `CElligator` target. `CElligator` vendors libsodium 1.0.21 field-operation sources at revision `3e7548c62f68909461a67f396be0494584a7aae4` for the RFC 9380 Elligator2 composition; the linked `Clibsodium.xcframework` provenance and checksum are documented in `Sources/CElligator/README.md`.
+- The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
+
 ### Compatibility
 - The wire continues to use `static_delay_ms` and `set_static_delay` deliberately until deployed servers adopt the spec's `output_delay_ms` and `set_output_delay` names.
 

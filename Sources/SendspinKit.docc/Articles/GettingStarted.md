@@ -96,6 +96,37 @@ for await event in client.events() {
 }
 ```
 
+## Pair with a code
+
+Code-based pairing is coordinated by the host app. Pass a ``PairingConfiguration`` with the
+method enabled, start consuming ``SendspinClient/events``, and use the pairing events to drive the
+operator UI:
+
+```swift
+for await event in client.events() {
+    switch event {
+    case let .pairingCodeChanged(emission?):
+        print("Pairing \(emission.format.rawValue): \(emission.payload)")
+        // Display or speak digits; render the complete SP:1 payload as a QR code.
+    case .pairingCodeChanged(nil):
+        print("Pairing code cleared")
+    case let .pairingAttemptEnded(reason):
+        print("Pairing attempt ended: \(reason.rawValue)")
+    default:
+        break
+    }
+}
+```
+
+Call ``SendspinClient/openPairingWindow()`` when the app receives its physical-gesture or other
+operator-confirmation signal. It returns after recording or consuming the connection-owned window;
+it does not wait for the attempt. ``SendspinClient/cancelPairingAttempt()`` cancels an attempt or
+closes the local window. Dynamic codes are six contiguous digits or a complete version-one `SP:1`
+token. Static pairing instead requires the host to provision and persist a device-unique eight-digit
+ASCII decimal code with ``PairingConfiguration/init(pairingPsk:store:enabled:dynamicPairingCodeEnabled:staticPairingCode:staticPairingCodeEnabled:)``;
+the library never supplies a fixed default or emits that secret. Dynamic pairing binds device
+presence, while a leaked static code is exposed to man-in-the-middle pairing.
+
 ## Observe state in SwiftUI
 
 ``SendspinClient`` is `@Observable`, so its published properties work directly with SwiftUI:

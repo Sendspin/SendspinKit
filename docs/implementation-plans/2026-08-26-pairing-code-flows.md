@@ -178,6 +178,19 @@ The current Swift package conditions do include watchOS, so there is no evidence
 
 ## Phase D — Integration polish, conformance, and live gate
 
+**Phase D outcome:** docs/examples/AGENTS/CHANGELOG updated for the pairing
+APIs; the conformance harness still has no pairing-code scenarios, so the
+transcript suites remain the hard coverage. The live Music Assistant gate is
+**blocked server-side**: aiosendspin (even at head) still speaks the previous
+PIN dialect — `min_pin_length`/`pin_length` descriptor and activate fields,
+variable-length codes, and the `sendspin-pin-derive-v1` derivation label —
+while this client implements the local spec's `formats`/`format` descriptors,
+fixed six-digit derivation under `sendspin-pairing-code-derive-v1`, and the
+SP:1 QR token. A conformant exchange is impossible until aiosendspin adopts
+the spec's pairing-code wire; when it does, the MA provider PIN flow is the
+ready-made live gate. The descriptor `locations` hint stays `["operator"]`
+(documented on PairMethodDescriptor) until a host-configuration need appears.
+
 **Goal:** close model/adapter/documentation gaps and demonstrate interoperability with the reference server implementation and Music Assistant.
 
 ### Work

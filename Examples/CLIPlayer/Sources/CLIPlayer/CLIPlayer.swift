@@ -231,7 +231,11 @@ final class CLIPlayer {
             print("[EVENT] Paired with server: \(serverId) trust=user")
 
         case let .pairingCodeChanged(emission):
-            print("[PAIRING] Code \(emission?.payload ?? "cleared")")
+            if let emission {
+                print("[PAIRING] Code \(emission.format.rawValue): \(emission.payload)")
+            } else {
+                print("[PAIRING] Code cleared")
+            }
 
         case let .pairingAttemptEnded(reason):
             print("[PAIRING] Attempt ended: \(reason.rawValue)")

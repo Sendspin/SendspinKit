@@ -191,6 +191,9 @@ public enum TrustLevel: String, Codable, Sendable, Hashable {
 }
 
 /// One entry in `client/hello`'s `supported_pair_methods`.
+///
+/// The supported pairing methods currently advertise the physical operator location as
+/// `["operator"]`; no separate locations hint is part of the client configuration.
 struct PairMethodDescriptor: Codable, Equatable, Sendable {
     let method: String
     let outChannels: [String]?

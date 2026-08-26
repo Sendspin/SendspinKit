@@ -99,6 +99,34 @@ for await event in client.events() {
 be paired. Enabling unpaired access deliberately permits unauthenticated server access, so an
 on-path attacker can impersonate a server.
 
+## Pairing codes
+
+Pairing-code flows are app-facing setup hooks. Enable a method in `PairingConfiguration`, then
+listen to the existing `SendspinClient.events()` stream for
+`ClientEvent.pairingCodeChanged(_:)`:
+
+- Dynamic pairing emits a `PairingCodeEmission` with `format == .digits` and a contiguous six-digit
+  `payload`, or with `format == .qrCode` and a complete version-one `SP:1` `payload`. Display or
+  speak the value from the app; presentation grouping and QR image generation remain app
+  responsibilities. A `nil` emission clears any displayed code.
+- Call `try await client.openPairingWindow()` from the app's physical-gesture or equivalent
+  operator-confirmation hook. The call records or consumes the connection-owned window intent and
+  returns without waiting for pairing to finish. Call `try await client.cancelPairingAttempt()` to
+  cancel an in-progress attempt or close the local window.
+- Listen for `ClientEvent.pairingAttemptEnded(_:)` to distinguish reasons such as
+  `.pairingCodeMismatch`, `.userCancelled`, `.attemptTimeout`, and `.methodNotSupported`.
+
+Static pairing uses `PairingConfiguration(staticPairingCode:staticPairingCodeEnabled:)`. The host
+must provision and persist a device-unique eight-digit ASCII decimal code; never ship a fixed
+shared default. A paired management session can rotate the code through the management pairing
+configuration, while `get-pairing-config` never returns the secret. Static codes are not emitted
+as `pairingCodeChanged` events.
+
+Dynamic pairing binds the code to the physical device-presence flow, so a relay cannot reuse a code
+across different Noise handshakes. Static pairing authenticates the code but does not provide that
+presence binding: if the static code leaks, an on-path attacker can use it to perform a
+man-in-the-middle pairing flow.
+
 ### Controller + Metadata
 
 ```swift
