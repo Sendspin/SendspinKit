@@ -456,8 +456,7 @@ public final class SendspinClient {
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
                 pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                 dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeEnabled
-                    && runtimeConfiguration.staticPairingCode != nil,
+                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             )
             let outcome = try await HandshakeDriver.establish(
@@ -510,7 +509,7 @@ public final class SendspinClient {
                     effectivePlayerFormats: negotiation.effectivePlayerFormats,
                     pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                     dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                    staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeEnabled,
+                    staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
                     unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                 )
                 let outcome = try await HandshakeDriver.establish(
@@ -658,8 +657,7 @@ public final class SendspinClient {
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
                 pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                 dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeEnabled
-                    && runtimeConfiguration.staticPairingCode != nil,
+                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             ),
             unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled,

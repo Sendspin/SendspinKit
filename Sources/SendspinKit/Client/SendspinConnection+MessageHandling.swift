@@ -228,7 +228,7 @@ extension SendspinConnection {
                 formats: ["digits", "qr_code"]
             ))
         }
-        if configuration.staticPairingCodeEnabled, configuration.staticPairingCode != nil {
+        if configuration.staticPairingCodeIsAdvertised {
             methods.append(PairMethodDescriptor(
                 method: PairMethod.staticPairingCode,
                 locations: ["operator"]
@@ -323,7 +323,7 @@ extension SendspinConnection {
             disconnectReason = .explicit(reason)
             await transport.disconnect()
         case .abortPairing:
-            if pendingPairingPsk != nil || dynamicPairingAttempt != nil {
+            if pendingPairingPsk != nil || dynamicPairingAttempt != nil || staticPairingAttempt != nil {
                 clearPairingAttempt(reason: .methodNotSupported)
             }
             try? await sendWrapped(
@@ -447,9 +447,14 @@ extension SendspinConnection {
 
     func beginStaticPairingAttempt(format: String?) async {
         guard pskCategory != .pairing, format == nil,
-              let runtime = pairingConfigurationRuntime,
-              let configuration = await runtime.snapshot() as PairingManagementConfiguration?,
-              configuration.staticPairingCodeEnabled,
+              let runtime = pairingConfigurationRuntime
+        else {
+            clearPairingAttempt(reason: .methodNotSupported)
+            try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)))
+            return
+        }
+        let configuration = await runtime.snapshot()
+        guard configuration.staticPairingCodeIsAdvertised,
               let code = configuration.staticPairingCode,
               PairingManagementConfiguration.isValidStaticPairingCode(code)
         else {

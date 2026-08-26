@@ -96,6 +96,10 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
         self.unpairedAccessEnabled = unpairedAccessEnabled
     }
 
+    var staticPairingCodeIsAdvertised: Bool {
+        staticPairingCodeEnabled && staticPairingCode != nil
+    }
+
     static func isValidStaticPairingCode(_ code: String) -> Bool {
         let bytes = Array(code.utf8)
         return bytes.count == 8 && bytes.allSatisfy { (48 ... 57).contains($0) }
@@ -295,6 +299,7 @@ public struct PairingConfiguration: Sendable {
         staticPairingCode: String? = nil,
         staticPairingCodeEnabled: Bool = false
     ) {
+        precondition(!staticPairingCodeEnabled || staticPairingCode != nil)
         precondition(staticPairingCode.map(PairingManagementConfiguration.isValidStaticPairingCode) ?? true)
         let resolved = pairingPsk ?? .generate()
         let fallback = PairingRecord(psk: .generate())

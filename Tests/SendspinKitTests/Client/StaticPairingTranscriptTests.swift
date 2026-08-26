@@ -99,9 +99,14 @@ private func makeStaticTestSession(
 }
 
 private func activateStatic(_ server: MockNoiseServer) async throws {
-    try await server.sendJSON(
-        #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"static_pairing_code"}}}"#
-    )
+    let activation = ServerActivateMessage(payload: ServerActivatePayload(
+        activities: [.pairing],
+        activeRoles: [],
+        pairing: PairingDirective(method: PairMethod.staticPairingCode)
+    ))
+    let data = try JSONEncoder().encode(activation)
+    let text = try #require(String(data: data, encoding: .utf8))
+    try await server.sendJSON(text)
 }
 
 private func waitForStaticClientMessage(
@@ -188,6 +193,55 @@ struct StaticPairingWindowTests {
         try await activateStatic(session.server)
         _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
         #expect(await session.server.clientJSONMessages(ofType: ClientPairPendingMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("an expired window makes a later static activation pending")
+    func expiredWindowGatesStaticActivation() async throws {
+        let session = try await makeStaticTestSession(windowLifetime: .milliseconds(100))
+        try await session.client.openPairingWindow()
+        try await Task.sleep(for: .milliseconds(150))
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        #expect(await session.server.clientJSONMessages(ofType: ClientPairInitMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("a rejected static activation cancels its attempt and allows a fresh activation")
+    func rejectedStaticActivationCleansUpAttempt() async throws {
+        let session = try await makeStaticTestSession(attemptTimeout: .milliseconds(100))
+        try await session.client.openPairingWindow()
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
+
+        let runtime = try #require(await MainActor.run { session.client.pairingConfiguration?.runtime })
+        let pairingPsk = await runtime.snapshot().pairingPsk
+        await runtime.update(PairingManagementConfiguration(
+            pairingPsk: pairingPsk,
+            pairingPskEnabled: false,
+            recordModePskId: "",
+            unpairedAccessEnabled: true,
+            staticPairingCodeEnabled: true,
+            staticPairingCode: nil
+        ))
+        try await activateStatic(session.server)
+        let firstAbort = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        #expect(try JSONDecoder().decode(PairAbortMessage.self, from: firstAbort).payload.reason == .methodNotSupported)
+        try await Task.sleep(for: .milliseconds(150))
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).count == 1)
+
+        await runtime.update(PairingManagementConfiguration(
+            pairingPsk: pairingPsk,
+            pairingPskEnabled: false,
+            recordModePskId: "",
+            unpairedAccessEnabled: true,
+            staticPairingCodeEnabled: true,
+            staticPairingCode: "12345678"
+        ))
+        try await session.client.openPairingWindow()
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
+        #expect(await MainActor.run { session.client.connectionState == .connected })
         await session.client.disconnect()
     }
 }
@@ -304,6 +358,24 @@ struct StaticPairingTranscriptTests {
 
 @Suite("Static pairing protocol errors", .timeLimit(.minutes(1)))
 struct StaticPairingProtocolErrorTests {
+    @Test("static activation with a format aborts as unsupported and keeps connection open")
+    func staticFormatAbortsWithoutClosing() async throws {
+        let session = try await makeStaticTestSession()
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(
+            activities: [.pairing],
+            activeRoles: [],
+            pairing: PairingDirective(method: PairMethod.staticPairingCode, format: "digits")
+        ))
+        let data = try JSONEncoder().encode(activation)
+        let text = try #require(String(data: data, encoding: .utf8))
+        try await session.server.sendJSON(text)
+        let abortData = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        #expect(try JSONDecoder().decode(PairAbortMessage.self, from: abortData).payload.reason == .methodNotSupported)
+        #expect(await !session.server.disconnectCalled)
+        #expect(await MainActor.run { session.client.connectionState == .connected })
+        await session.client.disconnect()
+    }
+
     @Test("server pair-init during static attempt silently closes")
     func serverPairInitClosesSilently() async throws {
         let session = try await makeStaticTestSession()

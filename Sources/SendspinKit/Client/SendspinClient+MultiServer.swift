@@ -44,8 +44,7 @@ extension SendspinClient {
                         effectivePlayerFormats: negotiation.effectivePlayerFormats,
                         pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                         dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                        staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeEnabled
-                            && runtimeConfiguration.staticPairingCode != nil,
+                        staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
                         unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                     ),
                     supportedRoles: roleSet,
