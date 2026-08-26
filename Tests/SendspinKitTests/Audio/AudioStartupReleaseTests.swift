@@ -379,14 +379,23 @@ struct AudioStartupReleaseTests {
         await output.releaseBlockedOutputDeviceProbe()
 
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(
+            await waitUntil(timeout: .seconds(3)) {
+                let played = await output.playedPCMTimestamps
+                let scheduled = await scheduler.queuedChunks.map(\.originalTimestamp)
+                return played.count + scheduled.count == 2
+            },
+            "both chunks must be accounted for in output or deferred scheduling"
+        )
         let calls = await output.recordedCalls
         let playedTimestamps = await output.playedPCMTimestamps
+        let scheduledTimestamps = await scheduler.queuedChunks.map(\.originalTimestamp)
         let commits = await engine.startupReleaseCommits
         await engine.shutdown()
 
         #expect(calls.count(where: { $0 == "startPrepared()" }) == 1)
         #expect(commits == 1)
-        #expect(playedTimestamps.sorted() == [firstTimestamp, secondTimestamp])
+        #expect((playedTimestamps + scheduledTimestamps).sorted() == [firstTimestamp, secondTimestamp])
     }
 
     @Test("chunks arriving during PCM priming are scheduled after the startup commit")
@@ -426,6 +435,54 @@ struct AudioStartupReleaseTests {
         #expect(timestamps == [firstTimestamp])
         #expect(calls[..<startIndex].filter { $0.hasPrefix("playPCM(") }.count == 1)
         #expect(commits == 1)
+    }
+
+    /// A format change during startup is a startup restart, not a seamless switch: the
+    /// prepared queue and any priming in flight belong to the old format, so the stream
+    /// must commit with the NEW format and the superseded release must not commit at all.
+    @Test("format change during startup buffering restarts startup with the new format")
+    func formatChangeDuringStartupRestartsWithNewFormat() async throws {
+        let clock = StubClock(anchorToNow: true)
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let oldFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        let newFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await engine.start()
+
+        await engine.commands.enqueue(.streamStart(oldFormat, codecHeader: nil))
+        await output.blockNextOutputDeviceProbe()
+        await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: 1_000_000))
+        #expect(await waitUntil { await output.outputDeviceProbeCount == 1 })
+
+        // The old release is suspended in the device probe when the format change lands.
+        await engine.commands.enqueue(.formatChange(newFormat, codecHeader: nil))
+        #expect(await waitUntil { await engine.appliedCommandKinds().last == .formatChange })
+        await output.releaseBlockedOutputDeviceProbe()
+
+        for index in 0 ..< 8 {
+            await engine.commands.enqueue(
+                .chunk(Data(repeating: UInt8(index), count: 100), ts: 1_500_000 + Int64(index) * 100_000)
+            )
+        }
+        let report = await awaitFirstReport(from: engine, timeoutMs: 4_000) { report in
+            if case .started = report {
+                return true
+            }
+            if case .startFailed = report {
+                return true
+            }
+            return false
+        }
+        let commits = await engine.startupReleaseCommits
+        await engine.shutdown()
+
+        guard case let .started(format) = report else {
+            #expect(Bool(false), "the stream must start, got \(String(describing: report))")
+            return
+        }
+        #expect(format == newFormat, "the startup restart must commit the new format")
+        #expect(commits == 1, "the superseded old-format release must not commit")
     }
 
     @Test("stream end invalidates a suspended startup release")

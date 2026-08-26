@@ -15,11 +15,10 @@ struct CloseReasonPropagationTests {
             roles: [.metadataV1]
         )
         let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        await mock.injectText("""
-        {"type":"server/hello","payload":{"server_id":"srv-1","name":"S","version":1,\
-        "active_roles":["metadata@v1"],"connection_reason":"playback"}}
-        """)
+        let server = MockNoiseServer(transport: mock, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(mock)
+        try await server.establishSession(name: "S", activities: [.playback], activeRoles: [.metadataV1])
+        try await accepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
         return (client, mock)
     }

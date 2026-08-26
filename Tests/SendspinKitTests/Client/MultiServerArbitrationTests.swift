@@ -1,81 +1,48 @@
+import Foundation
 @testable import SendspinKit
 import Testing
 
+@MainActor
 struct MultiServerArbitrationTests {
-    private let newId = "new-server"
-    private let existingId = "existing-server"
+    @Test("a weaker candidate is rejected with concurrent_attempt")
+    func keepExistingRejectsCandidateThroughEncryptedGoodbye() async throws {
+        let client = try makeTestClient()
+        let incumbent = try await connectClient(client, activities: [.playback])
+        let candidateTransport = MockTransport()
+        let candidate = MockNoiseServer(transport: candidateTransport, psk: .sentinel)
 
-    @Test
-    func newPlaybackBeatsExistingDiscovery() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .playback,
-            existingReason: .discovery,
-            newServerId: newId,
-            lastPlayedServerId: nil
-        ) == .switchToNew)
+        async let accepted: Void = client.acceptConnection(candidateTransport)
+        try await candidate.establishSession(activities: [], activeRoles: [.playerV1, .controllerV1])
+        try await accepted
+
+        let reasons = await candidate.sentTextMessages
+            .filter { SendspinEncoding.messageType(of: $0) == ClientGoodbyeMessage.typeString }
+            .compactMap { try? JSONDecoder().decode(ClientGoodbyeMessage.self, from: $0).payload.reason }
+        #expect(reasons.contains(.concurrentAttempt))
+        #expect(client.connection != nil)
+        _ = incumbent
+        await client.disconnect()
     }
 
-    @Test
-    func newPlaybackBeatsExistingPlayback() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .playback,
-            existingReason: .playback,
-            newServerId: newId,
-            lastPlayedServerId: nil
-        ) == .switchToNew)
-    }
+    @Test("an equal candidate retires incumbent with another_server and becomes live")
+    func acceptIncomingRetiresExistingThroughEncryptedGoodbye() async throws {
+        let client = try makeTestClient()
+        let incumbent = try await connectClient(client, activities: [.playback])
+        let incumbentConnection = client.connection
+        let candidateTransport = MockTransport()
+        let candidate = MockNoiseServer(transport: candidateTransport, psk: .sentinel)
 
-    /// A `discovery` connection must never displace an active `playback` server,
-    /// even when the new server happens to be the last-played one.
-    @Test
-    func newDiscoveryYieldsToExistingPlayback() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .discovery,
-            existingReason: .playback,
-            newServerId: newId,
-            lastPlayedServerId: newId
-        ) == .keepExisting)
-    }
+        async let accepted: Void = client.acceptConnection(candidateTransport)
+        try await candidate.establishSession(name: "Candidate", activities: [.playback], activeRoles: [.playerV1, .controllerV1])
+        try await accepted
 
-    @Test
-    func bothDiscoveryLastPlayedIsNewSwitches() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .discovery,
-            existingReason: .discovery,
-            newServerId: newId,
-            lastPlayedServerId: newId
-        ) == .switchToNew)
-    }
-
-    @Test
-    func bothDiscoveryLastPlayedIsExistingKeeps() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .discovery,
-            existingReason: .discovery,
-            newServerId: newId,
-            lastPlayedServerId: existingId
-        ) == .keepExisting)
-    }
-
-    /// A nil persistence provider loads no last-played value, so discovery ties
-    /// must not invent a winner from hidden storage.
-    @Test
-    func bothDiscoveryNoPersistedLastPlayedKeepsExisting() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .discovery,
-            existingReason: .discovery,
-            newServerId: newId,
-            lastPlayedServerId: nil
-        ) == .keepExisting)
-    }
-
-    @Test
-    func bothDiscoveryUnrelatedLastPlayedKeeps() {
-        #expect(SendspinClient.arbitrate(
-            newReason: .discovery,
-            existingReason: .discovery,
-            newServerId: newId,
-            lastPlayedServerId: "third-server"
-        ) == .keepExisting)
+        let reasons = await incumbent.sentTextMessages
+            .filter { SendspinEncoding.messageType(of: $0) == ClientGoodbyeMessage.typeString }
+            .compactMap { try? JSONDecoder().decode(ClientGoodbyeMessage.self, from: $0).payload.reason }
+        #expect(reasons.contains(.anotherServer))
+        #expect(client.connection !== incumbentConnection)
+        try await candidate.sendJSON(#"{"type":"server/state","payload":{"metadata":{"title":"Candidate Track"}}}"#)
+        #expect(await waitUntil { await MainActor.run { client.currentMetadata?.title == "Candidate Track" } })
+        await client.disconnect()
     }
 }

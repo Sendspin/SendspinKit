@@ -90,9 +90,10 @@ struct ConnectionLostTeardownTests {
         let connectionA = client.connection
 
         // Drive a reconnect to connection B
-        let mockB = MockTransport()
-        async let acceptB: Void = client.acceptConnection(mockB)
-        try await mockB.injectText(serverHelloJSON(serverId: "server-b", connectionReason: .playback))
+        let transportB = MockTransport()
+        let mockB = MockNoiseServer(transport: transportB, psk: .sentinel)
+        async let acceptB: Void = client.acceptConnection(transportB)
+        try await mockB.establishSession(name: "Server B", activities: [.playback], activeRoles: [.playerV1, .controllerV1])
         try await acceptB
 
         // Verify B is now live
@@ -127,22 +128,17 @@ struct ConnectionLostTeardownTests {
             await collector.append(event)
         } }
 
-        // Block the goodbye send so disconnect() is pinned past its entry guard but
-        // before the transport closes.
-        await mock.enableGoodbyeGate()
-        async let disconnecting: Void = client.disconnect(reason: .userRequest)
-        let parked = await waitUntil { await mock.isGoodbyeGateWaiting }
-        #expect(parked, "disconnect() should be parked on the goodbye send")
-
-        // While disconnect is suspended (trying to send goodbye), simulate a connection
-        // loss by closing the transport. The connection's supervisor will detect the
-        // closed transport and initiate teardown via its hard-shutdown path.
+        // Disconnect and transport loss race on an established Noise session. The
+        // connection's run-once teardown must emit one terminal event. The explicit
+        // reason wins only once it is recorded on the connection, so pin that
+        // ordering: wait for the shutdown flag, then inject the loss. (A loss that
+        // fully completes before the intent arrives legitimately reports
+        // connectionLost — that is a different, honest outcome, not this test.)
+        let conn = try #require(client.connection)
+        let disconnecting = Task { await client.disconnect(reason: .userRequest) }
+        #expect(await waitUntil { await conn.shuttingDown })
         await mock.finishStreams()
-
-        // Let disconnect resume and run to completion. It will race with the connection's
-        // supervisor teardown (triggered by the closed transport).
-        await mock.releaseGoodbyeGate()
-        await disconnecting
+        await disconnecting.value
 
         // Exactly one .disconnected event must reach consumers — the connection's
         // supervisor ensures teardown runs only once, so there's never a duplicate.
@@ -203,13 +199,19 @@ struct ConnectionLostTeardownTests {
         let connectionA = client.connection
 
         // Drive a real reconnect/swap: create connection B and accept it
-        let mockB = MockTransport()
-        async let acceptB: Void = client.acceptConnection(mockB)
-        try await mockB.injectText(serverHelloJSON(serverId: "server-b", connectionReason: .playback))
+        let transportB = MockTransport()
+        let mockB = MockNoiseServer(transport: transportB, psk: .sentinel)
+        async let acceptB: Void = client.acceptConnection(transportB)
+        try await mockB.establishSession(name: "Server B", activities: [.playback], activeRoles: [.playerV1, .controllerV1])
         try await acceptB
+        let admittedServerId = await mockB.serverId
 
         // Verify B is now the live connection (metadata reset on server/hello per spec)
-        let bConnected = await waitUntil { await MainActor.run { client.connectionState == .connected && client.currentServerId == "server-b" } }
+        let bConnected = await waitUntil {
+            await MainActor.run {
+                client.connectionState == .connected && client.currentServerId == admittedServerId
+            }
+        }
         #expect(bConnected, "Connection B should be established and active")
 
         // Capture connection B (it should be a different object from A)
@@ -238,7 +240,7 @@ struct ConnectionLostTeardownTests {
         // The stale event must not affect B: B stays live and fully responsive.
         // Connection state and metadata should reflect B, unchanged.
         #expect(client.connectionState == .connected, "Stale event from old connection must not affect current connection B")
-        #expect(client.currentServerId == "server-b", "Server ID should still reflect connection B")
+        #expect(client.currentServerId == admittedServerId, "Server ID should still reflect connection B")
         #expect(client.currentMetadata?.title == "Track B", "Metadata should still reflect connection B")
 
         await client.disconnect()

@@ -22,32 +22,43 @@ extension SendspinConnection {
             await audioEngine.setMuted(currentMuted)
         }
 
-        if let hello = parsedHello {
-            // Multi-server handoff: the facade already sent client/hello and read
-            // this server/hello during arbitration. Process it; do not re-send hello.
-            await handleServerHello(hello)
-        } else {
-            // Normal path: client/hello opens the handshake.
-            do {
-                try await sendWrapped(ClientHelloMessage(payload: clientHelloPayload))
-            } catch {
-                // Bound first: `??`'s right side is a non-async autoclosure.
-                let observed = await transport.closeReason
-                disconnectReason = disconnectReason ?? .connectionLost(observed)
-                return
+        controlSink.enqueue(.serverConnected(ServerInfo(
+            serverId: currentServerId ?? "",
+            name: serverName,
+            trustLevel: pskCategory == .longTerm ? .user : .none,
+            activeRoles: activeRoles,
+            activities: activities
+        )))
+        if clockSyncTask == nil {
+            clockSyncTask = Task { [weak self] in
+                await self?.clockSyncLoop()
             }
         }
 
         while let frame = await transport.nextFrame() {
-            // Stamp arrival time immediately after nextFrame() returns.
             let clientReceived = MonotonicClock.nowMicroseconds()
-
-            switch frame {
-            case let .text(json):
-                await route(text: json, clientReceived: clientReceived)
-
-            case let .binary(data):
-                await route(binary: data)
+            guard case let .binary(ciphertext) = frame else {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
+            }
+            do {
+                guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
+                guard let type = plaintext.first else { throw NoiseError.malformedMessage }
+                if type == NoiseFrameType.json {
+                    await route(text: String(bytes: plaintext.dropFirst(), encoding: .utf8) ?? "", clientReceived: clientReceived)
+                } else {
+                    await route(binary: plaintext)
+                }
+            } catch let error as NoiseError {
+                Log.client.error("Noise frame rejected: \(String(describing: error))")
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
+            } catch {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+                return
             }
         }
     }
@@ -66,8 +77,12 @@ extension SendspinConnection {
                 try await sendWrapped(ClientTimeMessage(payload: ClientTimePayload(clientTransmitted: now)))
                 sampleCount = sampleCount &+ 1
             } catch {
-                // Send failure; stop the loop (connection lost)
-                break
+                // The re-handshake gate rejects sends transiently — sampling must
+                // resume once the exchange completes. Only a terminal teardown
+                // (which sets shuttingDown) ends the loop.
+                if shuttingDown || lifecycle != .running {
+                    break
+                }
             }
 
             // First two samples 10 ms apart so the filter's count==1→2
@@ -118,8 +133,8 @@ extension SendspinConnection {
     /// then cancel the rest.
     func runLoop() async {
         await withTaskGroup(of: Void.self) { group in
-            // The message loop owns the handshake; clock sync is started from
-            // handleServerHello once server/hello arrives, not here.
+            // The message loop owns post-handoff sequencing; clock sync starts
+            // when the loop begins.
             group.addTask { await self.messageLoop() }
             group.addTask { await self.reportDrain() }
 
@@ -154,8 +169,6 @@ extension SendspinConnection {
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
 
-        // Release deadline tasks so they cannot outlive the connection they guard.
-        cancelHandshakeDeadline()
         stopOutputFormatNegotiation()
 
         // Invalidate the token

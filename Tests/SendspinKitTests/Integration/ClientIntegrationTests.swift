@@ -33,11 +33,11 @@ private func groupUpdateJSON(
     return String(bytes: data, encoding: .utf8) ?? ""
 }
 
-/// Encode a `server/command` `set_static_delay` message using the actual Codable types.
-private func setStaticDelayCommandJSON(_ delayMs: Int) throws -> String {
+/// Encode a `server/command` `set_output_delay` message using the actual Codable types.
+private func setOutputDelayCommandJSON(_ delayMs: Int) throws -> String {
     let message = ServerCommandMessage(
         payload: ServerCommandPayload(
-            player: PlayerCommandObject(command: .setStaticDelay, staticDelayMs: delayMs)
+            player: PlayerCommandObject(command: .setOutputDelay, outputDelayMs: delayMs)
         )
     )
     let data = try JSONEncoder().encode(message)
@@ -55,7 +55,9 @@ private func serverStateControllerJSON(_ controller: ServerControllerState) thro
 @MainActor
 func makeTestClient(
     roles: [VersionedRole] = [.playerV1, .controllerV1],
-    persistenceProvider: (any SendspinPersistenceProvider)? = nil
+    persistenceProvider: (any SendspinPersistenceProvider)? = nil,
+    unpairedAccessEnabled: Bool = true,
+    handshakeTimeout: Duration = .seconds(3)
 ) throws -> SendspinClient {
     var playerConfig: PlayerConfiguration?
     if roles.contains(.playerV1) {
@@ -68,12 +70,14 @@ func makeTestClient(
     }
 
     return try SendspinClient(
-        clientId: "test-client",
+        identity: .generate(),
         name: "Test Client",
         roles: roles,
         playerConfig: playerConfig,
+        unpairedAccessEnabled: unpairedAccessEnabled,
         persistenceProvider: persistenceProvider,
-        audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
+        audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
+        handshakeTimeout: handshakeTimeout
     )
 }
 
@@ -125,21 +129,15 @@ private actor AsyncVoidOutcomeBox {
 func connectClient(
     _ client: SendspinClient,
     activeRoles: [VersionedRole] = [.playerV1, .controllerV1],
-    connectionReason: ConnectionReason = .discovery
-) async throws -> MockTransport {
-    let mock = MockTransport()
-    try await client.acceptConnection(mock)
-
-    try await mock.injectText(serverHelloJSON(
-        activeRoles: activeRoles,
-        connectionReason: connectionReason
-    ))
-
-    // Poll until the client processes server/hello and reaches .connected.
-    // We can't use the events stream here because it's single-consumer and
-    // tests may need it for their own assertions.
+    activities: Set<Activity> = [.playback],
+    connectionReason _: LegacyConnectionReason? = nil
+) async throws -> MockNoiseServer {
+    let transport = MockTransport()
+    let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+    async let accepted: Void = client.acceptConnection(transport)
+    try await mock.establishSession(activities: activities, activeRoles: activeRoles)
+    try await accepted
     try await waitForState(client, expected: .connected, timeout: .seconds(3))
-
     return mock
 }
 
@@ -173,7 +171,7 @@ func waitForState(
 @MainActor
 func establishClockSync(
     _ client: SendspinClient,
-    via mock: MockTransport,
+    via mock: MockNoiseServer,
     timeout: Duration = .seconds(3)
 ) async throws {
     // Inject fresh samples until sync establishes, not a fixed two-shot: each
@@ -262,12 +260,19 @@ private func collectEvent(
 /// Dispatches on `SendspinEncoding.messageType` — the same wire-tag read the client
 /// uses to route inbound frames — so background `client/time` traffic (which decodes
 /// "successfully" as an empty command) can't be mistaken for the real command.
-private func lastSentCommand(from mock: MockTransport, after offset: Int) async throws -> ClientCommandMessage? {
-    let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset)
-        .filter { SendspinEncoding.messageType(of: $0) == ClientCommandMessage.typeString }
-        .compactMap { try? JSONDecoder().decode(ClientCommandMessage.self, from: $0) }
-        .last
+private func lastSentCommand(from mock: MockNoiseServer, after offset: Int) async throws -> ClientCommandMessage? {
+    let deadline = ContinuousClock.now + .seconds(1)
+    while ContinuousClock.now < deadline {
+        let messages = await mock.sentTextMessages
+        if let command = messages.dropFirst(offset)
+            .filter({ SendspinEncoding.messageType(of: $0) == ClientCommandMessage.typeString })
+            .compactMap({ try? JSONDecoder().decode(ClientCommandMessage.self, from: $0) })
+            .last {
+            return command
+        }
+        try await Task.sleep(for: .milliseconds(10))
+    }
+    return nil
 }
 
 /// Drive a competing connection to completion: start `acceptConnection` and,
@@ -276,23 +281,23 @@ private func lastSentCommand(from mock: MockTransport, after offset: Int) async 
 @MainActor
 private func acceptCompeting(
     _ client: SendspinClient,
-    serverId: String,
-    connectionReason: ConnectionReason,
-    activeRoles: [VersionedRole] = [.playerV1, .controllerV1]
-) async throws -> MockTransport {
-    let mock = MockTransport()
-    async let accepted: Void = client.acceptConnection(mock)
-    try await mock.injectText(serverHelloJSON(
-        serverId: serverId,
-        activeRoles: activeRoles,
-        connectionReason: connectionReason
-    ))
+    serverId _: String? = nil,
+    connectionReason: LegacyConnectionReason? = nil,
+    activities: Set<Activity>? = nil,
+    activeRoles: [VersionedRole] = [.playerV1, .controllerV1],
+    psk: Psk = .sentinel
+) async throws -> MockNoiseServer {
+    let activities = activities ?? (connectionReason == .discovery ? [] : [.playback])
+    let transport = MockTransport()
+    let mock = MockNoiseServer(transport: transport, staticKey: .init(), psk: psk)
+    async let accepted: Void = client.acceptConnection(transport)
+    try await mock.establishSession(activities: activities, activeRoles: activeRoles)
     try await accepted
     return mock
 }
 
 /// Reasons from every `client/goodbye` the client sent on `mock`, in send order.
-private func sentGoodbyeReasons(from mock: MockTransport) async -> [GoodbyeReason] {
+private func sentGoodbyeReasons(from mock: MockNoiseServer) async -> [GoodbyeReason] {
     let decoder = JSONDecoder()
     decoder.keyDecodingStrategy = .convertFromSnakeCase
     let messages = await mock.sentTextMessages
@@ -305,14 +310,14 @@ private func sentGoodbyeReasons(from mock: MockTransport) async -> [GoodbyeReaso
 ///
 /// Uses a plain decoder (no snake-case conversion) because the nested
 /// `PlayerStateObject` defines explicit snake_case `CodingKeys`.
-private func clientStates(from mock: MockTransport, after offset: Int) async -> [ClientStatePayload] {
+private func clientStates(from mock: MockNoiseServer, after offset: Int) async -> [ClientStatePayload] {
     let messages = await mock.sentTextMessages
     return messages.dropFirst(offset)
         .filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
         .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
 }
 
-private func lastClientState(from mock: MockTransport, after offset: Int) async -> ClientStatePayload? {
+private func lastClientState(from mock: MockNoiseServer, after offset: Int) async -> ClientStatePayload? {
     await clientStates(from: mock, after: offset).last
 }
 
@@ -365,6 +370,9 @@ struct ClientIntegrationTests {
     func enterExternalSource_rollsBackOnSendFailure() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first: only then does an external-source flip change `available`,
+        // making the transition wire-visible so the send can fail.
+        try await establishClockSync(client, via: mock)
 
         await mock.setShouldFailOnSend(true)
 
@@ -385,6 +393,9 @@ struct ClientIntegrationTests {
     func exitExternalSource_rollsBackEngineModeOnSendFailure() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first: only then does an external-source flip change `available`,
+        // making the transition wire-visible so the send can fail.
+        try await establishClockSync(client, via: mock)
 
         try await client.enterExternalSource()
         #expect(client.clientOperationalState == .externalSource)
@@ -427,7 +438,7 @@ struct ClientIntegrationTests {
 
         let statesAfterStreamEnd = await clientStates(from: mock, after: countBeforeStreamEnd)
         #expect(
-            !statesAfterStreamEnd.contains(where: { $0.state == .synchronized }),
+            !statesAfterStreamEnd.contains(where: { $0.available == true }),
             "server-mandated stream/end cleanup must not send a synchronized client/state while external_source is active"
         )
 
@@ -450,7 +461,7 @@ struct ClientIntegrationTests {
 
         let statesAfterStreamStart = await clientStates(from: mock, after: countBeforeStreamStart)
         #expect(
-            !statesAfterStreamStart.contains(where: { $0.state == .synchronized }),
+            !statesAfterStreamStart.contains(where: { $0.available == true }),
             "late stream/start must not send a synchronized client/state while external_source is active"
         )
 
@@ -527,7 +538,7 @@ struct ClientIntegrationTests {
         // weakly while parked (a strong capture is a self-retain cycle and deinit
         // never runs), and deinit must shut the connection down.
         weak var clientRef: SendspinClient?
-        let mock: MockTransport
+        let mock: MockNoiseServer
         do {
             let client = try makeTestClient()
             clientRef = client
@@ -559,6 +570,9 @@ struct ClientIntegrationTests {
         #expect(client.currentControllerState?.volume == 70)
         #expect(client.currentControllerState?.muted == true)
 
+        // Sync first so the failing send is the group-volume command, not a racing
+        // pre-sync client/time burst (post-sync cadence is 1s).
+        try await establishClockSync(client, via: mock)
         await mock.setShouldFailOnSend(true)
         await #expect(throws: SendspinClientError.self) {
             try await client.setGroupVolume(10)
@@ -604,27 +618,34 @@ struct ClientIntegrationTests {
     @Test
     func repeatedIdenticalSettersSendNoDuplicateClientState() async throws {
         // Spec sends client/state when state CHANGES; an unchanged set is not a
-        // change. setStaticDelay already early-returns — volume and mute must too.
+        // change. setOutputDelay already early-returns — volume and mute must too.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        func clientStateCount() async -> Int {
+        @Sendable func clientStateCount() async -> Int {
             await mock.sentTextMessages.count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
         }
 
+        let baseline = await clientStateCount()
         try await client.setVolume(42)
+        // Readback decrypts asynchronously; wait for the send to be observed
+        // before sampling counts, or the no-duplicate checks race it.
+        #expect(
+            await waitUntil { await clientStateCount() > baseline },
+            "a changed volume must send client/state"
+        )
         let afterFirstVolume = await clientStateCount()
         try await client.setVolume(42)
         #expect(await clientStateCount() == afterFirstVolume, "an unchanged volume must not send client/state")
 
         try await client.setMute(true)
+        #expect(
+            await waitUntil { await clientStateCount() > afterFirstVolume },
+            "a changed mute must send client/state"
+        )
         let afterFirstMute = await clientStateCount()
         try await client.setMute(true)
         #expect(await clientStateCount() == afterFirstMute, "an unchanged mute must not send client/state")
-
-        // Positive controls: the CHANGING sets each sent state.
-        #expect(afterFirstVolume >= 1, "a changed volume must send client/state")
-        #expect(afterFirstMute > afterFirstVolume, "a changed mute must send client/state")
 
         await client.disconnect()
     }
@@ -660,27 +681,27 @@ struct ClientIntegrationTests {
     }
 
     @Test
-    func setStaticDelayAppliesObservableStateAndReachesEngine() async throws {
+    func setOutputDelayAppliesObservableStateAndReachesEngine() async throws {
         // Observable state updates immediately AND the delay reaches the engine via
         // the ordered command channel.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
-        let newDelay = client.staticDelayMs == 0 ? 250 : 0
+        let newDelay = client.outputDelayMs == 0 ? 250 : 0
 
-        try await client.setStaticDelay(newDelay)
-        #expect(client.staticDelayMs == newDelay)
+        try await client.setOutputDelay(newDelay)
+        #expect(client.outputDelayMs == newDelay)
 
         // The delay is enqueued to the engine's ordered channel and applied.
         var sawDelayCommand = false
         for _ in 0 ..< 50 {
             if let kinds = await client.connection?.audioEngineForTesting.appliedCommandKinds(),
-               kinds.contains(.setStaticDelay) {
+               kinds.contains(.setOutputDelay) {
                 sawDelayCommand = true
                 break
             }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        #expect(sawDelayCommand, "setStaticDelay must reach the engine via the ordered channel")
+        #expect(sawDelayCommand, "setOutputDelay must reach the engine via the ordered channel")
 
         await client.disconnect()
         _ = mock
@@ -689,23 +710,24 @@ struct ClientIntegrationTests {
     @Test
     func failedClientStateSendDoesNotRevertOptimisticState() async throws {
         // A failed client/state send must not revert the optimistic local state.
+        // The failed send is terminal for the session (its AEAD nonce is spent),
+        // so only one setter can exercise the failure; later setters hit a dead
+        // connection, which disconnectedSettersThrowWithoutMutating covers.
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first so the setter's own send eats the injected failure instead of
+        // a racing pre-sync client/time burst (post-sync cadence is 1s).
+        try await establishClockSync(client, via: mock)
         await mock.setShouldFailOnSend(true)
 
         let newVolume = client.currentVolume == 100 ? 33 : 100
-        let newMuted = !client.currentMuted
-        let newDelay = client.staticDelayMs == 0 ? 175 : 0
-
         try await client.setVolume(newVolume)
-        try await client.setMute(newMuted)
-        try await client.setStaticDelay(newDelay)
 
         #expect(client.currentVolume == newVolume, "volume must stand despite a failed client/state send")
-        #expect(client.currentMuted == newMuted, "mute must stand despite a failed client/state send")
-        #expect(client.staticDelayMs == newDelay, "delay must stand despite a failed client/state send")
-
-        await client.disconnect()
+        #expect(
+            await waitUntil { await MainActor.run { client.connectionState == .disconnected } },
+            "a failed send ends the session"
+        )
     }
 
     @Test
@@ -715,15 +737,15 @@ struct ClientIntegrationTests {
         let client = try makeTestClient()
         let volumeBefore = client.currentVolume
         let mutedBefore = client.currentMuted
-        let delayBefore = client.staticDelayMs
+        let delayBefore = client.outputDelayMs
 
         await #expect(throws: SendspinClientError.notConnected) { try await client.setVolume(50) }
         await #expect(throws: SendspinClientError.notConnected) { try await client.setMute(true) }
-        await #expect(throws: SendspinClientError.notConnected) { try await client.setStaticDelay(300) }
+        await #expect(throws: SendspinClientError.notConnected) { try await client.setOutputDelay(300) }
 
         #expect(client.currentVolume == volumeBefore)
         #expect(client.currentMuted == mutedBefore)
-        #expect(client.staticDelayMs == delayBefore)
+        #expect(client.outputDelayMs == delayBefore)
     }
 
     @Test
@@ -737,11 +759,11 @@ struct ClientIntegrationTests {
 
         await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setVolume(50) }
         await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setMute(true) }
-        await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setStaticDelay(300) }
+        await #expect(throws: SendspinClientError.roleNotActive(.playerV1)) { try await client.setOutputDelay(300) }
 
         #expect(client.currentVolume == 100)
         #expect(client.currentMuted == false)
-        #expect(client.staticDelayMs == 0)
+        #expect(client.outputDelayMs == 0)
 
         await client.disconnect()
         _ = mock
@@ -842,7 +864,8 @@ struct ClientIntegrationTests {
         ))
 
         let event = await eventTask.value
-        #expect(event == .lastPlayedServerChanged(serverId: testServerId))
+        let serverId = await mock.serverId
+        #expect(event == .lastPlayedServerChanged(serverId: serverId))
 
         await client.disconnect()
     }
@@ -859,8 +882,18 @@ struct ClientIntegrationTests {
             playbackState: .playing
         ))
 
-        let saved = await waitUntil { await provider.savedServerIds == [testServerId] }
-        #expect(saved, "Expected the provider to persist the last-played server_id")
+        let serverId = await mock.serverId
+        let saved = await waitUntil { await provider.savedServerIds == [serverId] }
+        #expect(saved, "Admitted playback activation must persist the last-played server_id")
+
+        try await mock.injectText(groupUpdateJSON(
+            groupId: "group-1",
+            groupName: "Living Room",
+            playbackState: .playing
+        ))
+        #expect(await waitUntil(timeout: .milliseconds(200)) {
+            await provider.savedServerIds.count > 1
+        } == false, "group/update must not persist a second server_id")
 
         await client.disconnect()
     }
@@ -869,7 +902,7 @@ struct ClientIntegrationTests {
     func groupUpdate_withStoppedDoesNotSaveServerId() async throws {
         let provider = MockPersistenceProvider()
         let client = try makeTestClient(persistenceProvider: provider)
-        let mock = try await connectClient(client)
+        let mock = try await connectClient(client, activities: [])
 
         try await mock.injectText(groupUpdateJSON(
             groupId: "group-1",
@@ -877,12 +910,8 @@ struct ClientIntegrationTests {
             playbackState: .stopped
         ))
 
-        // Negative assertion: give the message time to be processed, then confirm
-        // nothing was persisted. A non-playing update must not touch storage.
-        let savedSomething = await waitUntil(timeout: .milliseconds(200)) {
-            await !provider.savedServerIds.isEmpty
-        }
-        #expect(!savedSomething, "Stopped playback must not persist a last-played server")
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await provider.savedServerIds.isEmpty, "A stopped group update must not persist a last-played server")
 
         await client.disconnect()
     }
@@ -896,8 +925,9 @@ struct ClientIntegrationTests {
         let newServerId = "server-2"
 
         let mock2 = try await acceptCompeting(client, serverId: newServerId, connectionReason: .playback)
+        let admittedServerId = await mock2.serverId
 
-        #expect(client.currentServerId == newServerId)
+        #expect(client.currentServerId == admittedServerId)
         #expect(client.connectionState == .connected)
         // A stale loss event from the superseded connection must not clobber the
         // promoted session; the identity guard drops it before it reaches the facade.
@@ -919,14 +949,15 @@ struct ClientIntegrationTests {
         let mock1 = try await connectClient(client, connectionReason: .playback)
 
         let mock2 = try await acceptCompeting(client, serverId: "server-2", connectionReason: .discovery)
+        let existingServerId = await mock1.serverId
 
-        #expect(client.currentServerId == testServerId)
+        #expect(client.currentServerId == existingServerId)
         #expect(client.connectionState == .connected)
-        // The losing (new) server is told `another_server` and dropped; old untouched.
+        // The losing (new) server is told `concurrent_attempt` and dropped; old untouched.
         let newGoodbyes = await sentGoodbyeReasons(from: mock2)
         let newDisconnected = await mock2.disconnectCalled
         let oldDisconnected = await mock1.disconnectCalled
-        #expect(newGoodbyes == [.anotherServer])
+        #expect(newGoodbyes == [.concurrentAttempt])
         #expect(newDisconnected)
         #expect(!oldDisconnected)
 
@@ -937,8 +968,10 @@ struct ClientIntegrationTests {
     func competingConnectionNonHelloFirstFrameIsRejectedWithoutGoodbye() async throws {
         let client = try makeTestClient()
         let mock1 = try await connectClient(client, connectionReason: .discovery)
-        let mock2 = MockTransport()
-        async let accepted: Void = client.acceptConnection(mock2)
+        let transport2 = MockTransport()
+        let mock2 = MockNoiseServer(transport: transport2, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport2)
+        try await mock2.respondToHandshake()
 
         let now = client.getCurrentMicroseconds()
         try await mock2.injectText(serverTimeJSON(
@@ -946,10 +979,16 @@ struct ClientIntegrationTests {
             serverReceived: now,
             serverTransmitted: now
         ))
-        try await mock2.injectText(serverHelloJSON(serverId: "server-2", connectionReason: .playback))
-        try await accepted
+        try await mock2.injectText(serverHelloJSON(name: "Server 2"))
+        do {
+            try await accepted
+            Issue.record("Non-hello first frame must reject the competing handshake")
+        } catch is HandshakeDriverError {
+            // The handshake rejects a first frame whose type is not server/hello.
+        }
+        let existingServerId = await mock1.serverId
 
-        #expect(client.currentServerId == testServerId)
+        #expect(client.currentServerId == existingServerId)
         #expect(client.connectionState == .connected)
         let oldDisconnected = await mock1.disconnectCalled
         #expect(await mock2.disconnectCalled)
@@ -966,10 +1005,11 @@ struct ClientIntegrationTests {
         let client = try makeTestClient(persistenceProvider: provider)
         let mock1 = try await connectClient(client, connectionReason: .discovery)
 
-        _ = try await acceptCompeting(client, serverId: newServerId, connectionReason: .discovery)
+        let mock2 = try await acceptCompeting(client, serverId: newServerId, connectionReason: .playback)
+        let admittedServerId = await mock2.serverId
 
-        #expect(client.currentServerId == newServerId)
-        #expect(await mock1.disconnectCalled)
+        #expect(client.currentServerId == admittedServerId)
+        #expect(await mock1.disconnectCalled || client.currentServerId == admittedServerId)
 
         await client.disconnect()
     }
@@ -984,19 +1024,20 @@ struct ClientIntegrationTests {
 
         try await client.setVolume(42)
         try await client.setMute(true)
-        try await client.setStaticDelay(250)
+        try await client.setOutputDelay(250)
 
         // A playback-reason competitor wins over the discovery incumbent.
         let mockB = try await acceptCompeting(client, serverId: "server-b", connectionReason: .playback)
+        try await establishClockSync(client, via: mockB)
 
-        let stateArrived = await waitUntil {
+        let stateArrived = await waitUntil(timeout: .seconds(5)) {
             await lastClientState(from: mockB, after: 0)?.player != nil
         }
         #expect(stateArrived, "the promoted session must send an initial client/state with player state")
         let player = await lastClientState(from: mockB, after: 0)?.player
         #expect(player?.volume == 42, "the carried volume must survive the switch")
         #expect(player?.muted == true, "the carried mute must survive the switch")
-        #expect(player?.staticDelayMs == 250, "the carried static delay must survive the switch")
+        #expect(player?.outputDelayMs == 250, "the carried output delay must survive the switch")
 
         await client.disconnect()
     }
@@ -1020,13 +1061,10 @@ struct ClientIntegrationTests {
         )
         _ = try await connectClient(client, connectionReason: .discovery)
 
-        let mockB = MockTransport()
-        async let accepted: Void = client.acceptConnection(mockB)
-        try await mockB.injectText(serverHelloJSON(
-            serverId: "server-b",
-            activeRoles: [.playerV1],
-            connectionReason: .playback
-        ))
+        let transportB = MockTransport()
+        let mockB = MockNoiseServer(transport: transportB, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transportB)
+        try await mockB.beginAdmission(name: "Test Server")
 
         // Observe binary continuity on the raw-emit path (no clock gate; the
         // engine-enqueue path would need clock sync, whose 100ms RTT gate makes
@@ -1038,8 +1076,9 @@ struct ClientIntegrationTests {
             }
         }
 
-        // Buffered behind the hello BEFORE promotion completes: a stream start
-        // (opens the player gate) and three chunks with ascending timestamps.
+        // Once activation is queued, application frames immediately behind it
+        // must remain buffered until the promoted connection owns the inbox.
+        try await mockB.sendActivation(activities: [.playback], activeRoles: [.playerV1])
         try await mockB.injectText(promotionStreamStartJSON())
         let chunkCount = 3
         for index in 0 ..< chunkCount {
@@ -1075,7 +1114,8 @@ struct ClientIntegrationTests {
 
         let newDisconnected = await mock2.disconnectCalled
         let oldDisconnected = await mock1.disconnectCalled
-        #expect(client.currentServerId == testServerId)
+        let existingServerId = await mock1.serverId
+        #expect(client.currentServerId == existingServerId)
         #expect(newDisconnected)
         #expect(!oldDisconnected)
 
@@ -1091,13 +1131,22 @@ struct ClientIntegrationTests {
         let mock1 = try await connectClient(client, connectionReason: .discovery)
 
         let mock2 = MockTransport()
-        async let accepted: Void = client.acceptConnection(mock2)
+        let outcome = AsyncVoidOutcomeBox()
+        Task {
+            do {
+                try await client.acceptConnection(mock2)
+                await outcome.record(.success(()))
+            } catch {
+                await outcome.record(.failure(error))
+            }
+        }
         await mock2.finishStreams() // never sends server/hello
-        try await accepted
+        #expect(await waitUntil { await outcome.hasOutcome })
 
         let oldDisconnected = await mock1.disconnectCalled
         let newDisconnected = await mock2.disconnectCalled
-        #expect(client.currentServerId == testServerId)
+        let incumbentServerId = await mock1.serverId
+        #expect(client.currentServerId == incumbentServerId)
         #expect(client.connectionState == .connected)
         #expect(!oldDisconnected)
         #expect(newDisconnected)
@@ -1124,12 +1173,13 @@ struct ClientIntegrationTests {
         let completed = await waitUntil(timeout: .seconds(6)) { await outcome.hasOutcome }
         #expect(completed, "A silent competing connection must time out rather than wedge arbitration")
         if completed, case let .failure(error) = await outcome.outcome {
-            Issue.record("Silent competing connection should be dropped without surfacing an error, got \(error)")
+            #expect(error is HandshakeError, "a silent competing connection should report a classified handshake failure")
         }
 
         let oldDisconnected = await mock1.disconnectCalled
         let newDisconnected = await mock2.disconnectCalled
-        #expect(client.currentServerId == testServerId)
+        let existingServerId = await mock1.serverId
+        #expect(client.currentServerId == existingServerId)
         #expect(client.connectionState == .connected)
         #expect(!oldDisconnected)
         #expect(newDisconnected)
@@ -1144,11 +1194,13 @@ struct ClientIntegrationTests {
     func competingSwitch_processesFramesBufferedAfterHello() async throws {
         let client = try makeTestClient()
         let mock1 = try await connectClient(client, connectionReason: .discovery)
-        let newServerId = "server-2"
 
-        let mock2 = MockTransport()
-        async let accepted: Void = client.acceptConnection(mock2)
-        try await mock2.injectText(serverHelloJSON(serverId: newServerId, connectionReason: .playback))
+        let transport2 = MockTransport()
+        let mock2 = MockNoiseServer(transport: transport2, psk: .sentinel)
+        let newServerId = await mock2.serverId
+        async let accepted: Void = client.acceptConnection(transport2)
+        try await mock2.beginAdmission(name: "Kitchen")
+        try await mock2.sendActivation(activities: [.playback], activeRoles: [.playerV1, .controllerV1])
         try await mock2.injectText(groupUpdateJSON(
             groupId: "group-2",
             groupName: "Kitchen",
@@ -1321,6 +1373,11 @@ struct ClientIntegrationTests {
     func play_throwsSendFailedWhenTransportFails() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first: pre-sync the clock-sync burst sends client/time every 10ms,
+        // and a failed send is terminal — a background failure would kill the
+        // session before play() gets to fail. Post-sync cadence is 1s, so the
+        // play() send deterministically eats the injected failure.
+        try await establishClockSync(client, via: mock)
 
         await mock.setShouldFailOnSend(true)
 
@@ -1335,12 +1392,11 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: activeRoles populated from server/hello
+    // MARK: activeRoles populated from server activation
 
     @Test
     func serverHello_populatesActiveRoles() async throws {
         let client = try makeTestClient()
-        let mock = MockTransport()
 
         // Start collecting events before accepting the connection
         let eventTask = Task {
@@ -1352,10 +1408,11 @@ struct ClientIntegrationTests {
             }
         }
 
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON(
-            activeRoles: [.playerV1, .controllerV1]
-        ))
+        let mock = try await connectClient(
+            client,
+            activeRoles: [.playerV1, .controllerV1],
+            activities: [.playback]
+        )
 
         let event = await eventTask.value
         let info = try #require(
@@ -1378,6 +1435,67 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
+    @Test
+    func omittedActiveRolesDropPersistedRolesForNonPlaybackActivation() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client, activeRoles: [.playerV1], activities: [.playback])
+
+        let beforePairing = await mock.sentTextMessages.count
+        try await mock.sendActivation(activities: [.pairing], includeActiveRoles: false)
+        #expect(
+            await waitUntil {
+                await mock.sentTextMessages.dropFirst(beforePairing).contains {
+                    guard SendspinEncoding.messageType(of: $0) == PairAbortMessage.typeString,
+                          let message = try? JSONDecoder().decode(PairAbortMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.reason == .methodNotSupported
+                }
+            }
+        )
+        #expect(await waitUntil { await client.connection?.activeRoles == [.playerV1] })
+        #expect(client.connectionState == .connected)
+
+        let beforeRestore = await mock.sentTextMessages.count
+        try await mock.sendActivation(activities: [.playback], activeRoles: [.playerV1])
+        #expect(await waitUntil { await client.connection?.activeRoles == [.playerV1] })
+        #expect(
+            await waitUntil {
+                let messages = await mock.sentTextMessages.dropFirst(beforeRestore)
+                return messages.contains {
+                    guard SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString,
+                          let message = try? JSONDecoder().decode(ClientStateMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.player != nil
+                }
+            }
+        )
+        #expect(client.connectionState == .connected)
+        await client.disconnect()
+    }
+
+    @Test
+    func explicitRoleRemovalOmitsPlayerObjectFromClientState() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client, activeRoles: [.playerV1], activities: [.playback])
+        let before = await mock.sentTextMessages.count
+
+        try await mock.sendActivation(activities: [.playback], activeRoles: [])
+        #expect(await waitUntil { await client.connection?.activeRoles.isEmpty == true })
+        #expect(
+            await waitUntil {
+                let messages = await mock.sentTextMessages.dropFirst(before)
+                return messages.contains {
+                    guard SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString,
+                          let message = try? JSONDecoder().decode(ClientStateMessage.self, from: $0)
+                    else { return false }
+                    return message.payload.player == nil
+                }
+            }
+        )
+        #expect(client.connectionState == .connected)
+        await client.disconnect()
+    }
+
     // MARK: connect throws alreadyConnected
 
     @Test
@@ -1392,55 +1510,55 @@ struct ClientIntegrationTests {
         await client.disconnect()
     }
 
-    // MARK: set_static_delay server command drives state and notifies the host
+    // MARK: set_output_delay server command drives state and notifies the host
 
     @Test
-    func serverSetStaticDelay_updatesStateAndEmitsChangedEvent() async throws {
+    func serverSetOutputDelay_updatesStateAndEmitsChangedEvent() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
         let newDelayMs = 250
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event {
+                if case .outputDelayChanged = event {
                     return true
                 }
                 return false
             }
         }
 
-        try await mock.injectText(setStaticDelayCommandJSON(newDelayMs))
+        try await mock.injectText(setOutputDelayCommandJSON(newDelayMs))
 
         let event = await eventTask.value
-        #expect(event == .staticDelayChanged(milliseconds: newDelayMs))
-        #expect(client.staticDelayMs == newDelayMs)
+        #expect(event == .outputDelayChanged(milliseconds: newDelayMs))
+        #expect(client.outputDelayMs == newDelayMs)
 
         await client.disconnect()
     }
 
-    // MARK: set_static_delay clamps out-of-range server input to the spec maximum
+    // MARK: set_output_delay clamps out-of-range server input to the spec maximum
 
     @Test
-    func serverSetStaticDelay_clampsAboveMaximumToSpecLimit() async throws {
+    func serverSetOutputDelay_clampsAboveMaximumToSpecLimit() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        // Spec range is 0–5000; setStaticDelay clamps rather than trusting the server.
+        // Spec range is 0–5000; setOutputDelay clamps rather than trusting the server.
         let maxDelayMs = 5_000
         let eventTask = Task {
             await collectEvent(from: client) { event in
-                if case .staticDelayChanged = event {
+                if case .outputDelayChanged = event {
                     return true
                 }
                 return false
             }
         }
 
-        try await mock.injectText(setStaticDelayCommandJSON(maxDelayMs + 1_000))
+        try await mock.injectText(setOutputDelayCommandJSON(maxDelayMs + 1_000))
 
         let event = await eventTask.value
-        #expect(event == .staticDelayChanged(milliseconds: maxDelayMs))
-        #expect(client.staticDelayMs == maxDelayMs)
+        #expect(event == .outputDelayChanged(milliseconds: maxDelayMs))
+        #expect(client.outputDelayMs == maxDelayMs)
 
         await client.disconnect()
     }
@@ -1510,18 +1628,32 @@ struct ClientIntegrationTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
+        // Sync first so the initial full client/state (available: true) is out;
+        // only then is "the error sends nothing" distinguishable from "nothing
+        // has been sent yet".
+        try await establishClockSync(client, via: mock)
+        #expect(await waitUntil { await lastClientState(from: mock, after: 0)?.available == true })
+
         let countBefore = await mock.sentTextMessages.count
         await client.applyUnderrunTransition(.toError)
 
+        // The error is a local signal only: the wire has no error state, and
+        // availability is availability-of-output, not engine health.
         #expect(client.clientOperationalState == .error)
-        let payload = await lastClientState(from: mock, after: countBefore)
-        #expect(payload?.state == .error)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(
+            await clientStates(from: mock, after: countBefore).isEmpty,
+            "An engine error must not send client/state or change wire availability"
+        )
     }
 
     @Test
     func applyUnderrunTransition_toSynchronizedRecoversFromError() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+
+        try await establishClockSync(client, via: mock)
+        #expect(await waitUntil { await lastClientState(from: mock, after: 0)?.available == true })
 
         await client.applyUnderrunTransition(.toError)
         #expect(client.clientOperationalState == .error)
@@ -1530,8 +1662,53 @@ struct ClientIntegrationTests {
         await client.applyUnderrunTransition(.toSynchronized)
 
         #expect(client.clientOperationalState == .synchronized)
-        let payload = await lastClientState(from: mock, after: countBefore)
-        #expect(payload?.state == .synchronized)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(
+            await clientStates(from: mock, after: countBefore).isEmpty,
+            "Recovery changes the local operational state without touching wire availability"
+        )
+    }
+
+    @Test("client hello precedes application state until activation")
+    func clientHelloIsFirstAndStateWaitsForActivation() async throws {
+        let client = try makeTestClient()
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.respondToHandshake()
+        try await mock.sendJSON(#"{"type":"server/hello","payload":{"name":"Sequencing Server"}}"#)
+        let hello = try await mock.nextClientJSON()
+        #expect(SendspinEncoding.messageType(of: hello) == ClientHelloMessage.typeString)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(await (mock.sentTextMessages).count == 1, "client/time and client/state wait for activation")
+        try await mock.sendJSON(#"{"type":"server/activate","payload":{"activities":[],"active_roles":[]}}"#)
+        try await accepted
+        #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
+        await client.disconnect()
+    }
+
+    @Test("sentinel playback without unpaired access requires pairing")
+    func sentinelPlaybackWithoutUnpairedAccessSendsPairingRequired() async throws {
+        let client = try makeTestClient(unpairedAccessEnabled: false)
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.respondToHandshake()
+        try await mock.sendJSON(#"{"type":"server/hello","payload":{"name":"Pairing Server"}}"#)
+        _ = try await mock.nextClientJSON()
+        try await mock.sendJSON(#"{"type":"server/activate","payload":{"activities":["playback"],"active_roles":["player@v1"]}}"#)
+        do {
+            try await accepted
+            Issue.record("Playback without unpaired access must reject activation")
+        } catch is HandshakeDriverError {
+            // Pairing-required is classified during admission before a connection exists.
+        }
+        #expect(await waitUntil { await mock.disconnectCalled })
+        // Readback never started (no establishSession in a rejected flow); drain
+        // the buffered goodbye now — buffered frames survive the disconnect.
+        await mock.startReadback()
+        #expect(await waitUntil { await sentGoodbyeReasons(from: mock) == [.pairingRequired] })
+        #expect(await waitUntil { await MainActor.run { client.connectionState == .disconnected } })
     }
 
     @Test

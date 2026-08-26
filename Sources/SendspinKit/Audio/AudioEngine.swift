@@ -39,8 +39,8 @@ actor AudioEngine {
     private var playbackTimeline = AudioChunkPlaybackTimeline()
     private var playbackTimelineTransitionEnabled = false
 
-    /// Static delay in milliseconds (subtracted from scheduled timestamps)
-    private var staticDelayMs: Int = 0
+    /// Output delay in milliseconds (subtracted from scheduled timestamps)
+    private var outputDelayMs: Int = 0
 
     // Task tracking for shutdown
     private var drainTask: Task<Void, Never>?
@@ -197,7 +197,7 @@ actor AudioEngine {
     }
 
     /// Operational state tracking for telemetry (engine maintains the state, client drains reports)
-    private var operationalState: ClientOperationalState = .synchronized
+    private var operationalState: EngineSyncState = .synchronized
 
     /// User/server-commanded mute (visible state, reported via `client/state`).
     private var userMuted = false
@@ -225,7 +225,7 @@ actor AudioEngine {
     ///
     /// Startup is governed by the server's schedule, not by a local accumulation target:
     /// the server already schedules the first chunk at least `min_buffer_ms +
-    /// static_delay_ms` ahead, and `min_buffer_ms` is a request for *ongoing* buffer depth
+    /// output_delay_ms` ahead, and `min_buffer_ms` is a request for *ongoing* buffer depth
     /// during playback, not a precondition for starting. Our job is to be ready when the
     /// first playable chunk is due.
     ///
@@ -664,8 +664,8 @@ actor AudioEngine {
         case let .streamEnd(roles):
             await applyStreamEnd(roles: roles)
 
-        case let .setStaticDelay(delayMs):
-            staticDelayMs = delayMs
+        case let .setOutputDelay(delayMs):
+            outputDelayMs = delayMs
         }
     }
 
@@ -740,7 +740,7 @@ actor AudioEngine {
             }
             // `ts` is unvalidated wire data; a hostile or buggy server can put it near
             // the Int64 bounds where the delay adjustment would trap.
-            let delayed = ts.subtractingReportingOverflow(Int64(staticDelayMs) * 1_000)
+            let delayed = ts.subtractingReportingOverflow(Int64(outputDelayMs) * 1_000)
             guard !delayed.overflow else {
                 Log.audio.warning("Dropping chunk with an unrepresentable timestamp")
                 return
@@ -1027,6 +1027,14 @@ actor AudioEngine {
             streamGeneration = generation
         } else {
             streamGeneration &+= 1
+        }
+        if !outputHasStarted, startupFormat != nil {
+            // Startup is still priming, so there is no playing queue to switch seamlessly:
+            // the prepared queue and any release in flight belong to the old format. Restart
+            // the startup pipeline for the new format; entering the seamless path here would
+            // leave the stale startup release racing a disposed queue.
+            await applyStreamStart(format: format, codecHeader: codecHeader)
+            return
         }
         chunkTimingFormat = format
         chunkTimingDiagnostics = ChunkTimingDiagnostics()

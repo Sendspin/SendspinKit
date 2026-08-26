@@ -49,7 +49,7 @@ struct MetadataClient: AsyncParsableCommand {
         // needed because we are not playing audio. The server will send us
         // track metadata, group updates, and stream lifecycle events.
         let client = try SendspinClient(
-            clientId: "metadata-example",
+            identity: .generate(),
             name: "Metadata Client",
             roles: [.metadataV1]
         )
@@ -81,7 +81,7 @@ struct MetadataClient: AsyncParsableCommand {
             case .serverConnected(let info):
                 print("--- Server Connected ---")
                 print("  Name:      \(info.name)")
-                print("  Version:   \(info.version)")
+                print("  Roles:     \(info.activeRoles.map(\.identifier).sorted().joined(separator: ", "))")
                 print("  Server ID: \(info.serverId)")
                 print("")
 
@@ -169,9 +169,10 @@ struct MetadataClient: AsyncParsableCommand {
                 }
                 return
 
-            default:
-                // Events like .controllerStateUpdated, .artworkStreamStarted, etc.
-                // are not relevant for a metadata-only client.
+            case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                 .streamFormatChanged, .streamCleared, .controllerStateUpdated,
+                 .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
+                 .outputDelayChanged, .lastPlayedServerChanged:
                 break
             }
         }

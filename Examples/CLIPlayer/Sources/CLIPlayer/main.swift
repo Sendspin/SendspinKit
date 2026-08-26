@@ -12,6 +12,7 @@ var enableTUI = true
 var listenMode = false
 var listenPort: UInt16 = 8928
 var volumeMode: VolumeMode = .software
+var enablePairing = false
 
 var argIndex = 1
 while argIndex < args.count {
@@ -19,6 +20,8 @@ while argIndex < args.count {
 
     if arg == "--no-tui" {
         enableTUI = false
+    } else if arg == "--pairing" {
+        enablePairing = true
     } else if arg == "--listen" {
         listenMode = true
         // Check if next arg is a port number
@@ -89,7 +92,7 @@ sigintSource.resume()
 do {
     if listenMode {
         // Server-initiated: advertise via mDNS and wait for servers to connect
-        try await player.listen(port: listenPort, clientName: clientName, useTUI: enableTUI)
+        try await player.listen(port: listenPort, clientName: clientName, useTUI: enableTUI, enablePairing: enablePairing)
     } else {
         // Client-initiated: discover or connect to provided server URL
         if serverURL == nil {
@@ -98,8 +101,8 @@ do {
 
             if servers.isEmpty {
                 print("No Sendspin servers found on network")
-                print("Usage: CLIPlayer [--no-tui] [ws://server:8927] [client-name]")
-                print("       CLIPlayer [--no-tui] --listen [port] [client-name]")
+                print("Usage: CLIPlayer [--no-tui] [--pairing] [ws://server:8927] [client-name]")
+                print("       CLIPlayer [--no-tui] [--pairing] --listen [port] [client-name]")
                 exit(1)
             }
 
@@ -117,7 +120,7 @@ do {
             print("No server URL available")
             exit(1)
         }
-        try await player.run(serverURL: url, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode)
+        try await player.run(serverURL: url, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode, enablePairing: enablePairing)
     }
 } catch {
     print("Fatal error: \(error)")

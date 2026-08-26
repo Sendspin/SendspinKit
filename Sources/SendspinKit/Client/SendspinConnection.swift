@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import os
 
@@ -17,6 +18,7 @@ import os
 actor SendspinConnection {
     // Dependencies
     let transport: any SendspinTransport
+    var channel: NoiseChannel
     let clock: any ClockSyncProtocol
     let audioEngine: AudioEngine
     let audioSink: AsyncStream<AudioChunk>.Continuation
@@ -38,27 +40,10 @@ actor SendspinConnection {
 
     // Lifecycle state
     var lifecycle: ConnectionLifecycle = .idle
-    var handshakePhase: HandshakePhase = .awaitingServerHello
     var shuttingDown = false
     var disconnectReason: DisconnectReason?
     var supervisorTask: Task<Void, Never>?
-    private var handshakeDeadlineTask: Task<Void, Never>?
-
-    /// Bound on `server/hello` arrival after the transport opens.
-    ///
-    /// The spec sets no bound; without one, a server that completes the WebSocket upgrade
-    /// and then says nothing parks the message loop in `nextFrame()` and leaves the facade
-    /// `.connecting` for the life of the process.
-    let handshakeTimeout: Duration
     private(set) var supervisorSpawnCount: Int = 0
-
-    /// Pre-read hello (for multi-server handoff)
-    let parsedHello: ServerHelloMessage?
-
-    /// Client/hello payload, sent as the first message on the normal connect path.
-    /// Skipped when `parsedHello` is set — the facade already sent it during
-    /// competing-connection arbitration.
-    let clientHelloPayload: ClientHelloPayload
 
     /// Exact player catalog advertised for this session. `nil` for non-player clients.
     nonisolated let effectivePlayerFormats: [AudioFormatSpec]?
@@ -80,8 +65,8 @@ actor SendspinConnection {
     let outputRequestTimeout: Duration
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
 
-    /// Clock-sync sender task. Started on `server/hello` — no client messages may
-    /// precede handshake completion — and cancelled on teardown.
+    /// Clock-sync sender task. Starts when the message loop begins after handoff
+    /// and is cancelled on teardown.
     var clockSyncTask: Task<Void, Never>?
 
     // Protocol-intent gates for inbound stream data. Internal so same-module
@@ -96,7 +81,7 @@ actor SendspinConnection {
     /// Written from several places (this method, the engine report drain, stream-start
     /// validation). `operationalStateEpoch` stamps every one of them so a rollback can
     /// tell "nothing moved" from "something moved to the same value".
-    var clientOperationalState: ClientOperationalState = .synchronized {
+    var clientOperationalState: EngineSyncState = .synchronized {
         didSet { operationalStateEpoch += 1 }
     }
 
@@ -109,7 +94,28 @@ actor SendspinConnection {
 
     /// Server info
     var currentServerId: String?
-    var activeRoles: Set<VersionedRole> = []
+    var serverName: String
+    var activities: Set<Activity>
+    var pskCategory: PskCategory
+    var matchedPskId: String
+    let pairingStore: (any PairingRecordStore)?
+    let pairingConfigurationRuntime: PairingConfigurationRuntime?
+    let pairingAttemptTimeout: Duration
+    var sessionContext: ActivationAdmissibility.SessionContext
+    let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
+    let serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey
+    let suite: NoiseCipherSuite
+    let candidateProvider: @Sendable () async -> [PskCandidate]
+    let clientHelloPayload: ClientHelloPayload
+    var rehandshakeInProgress = false
+    nonisolated var isRehandshakeInProgress: Bool {
+        get async { await rehandshakeInProgress }
+    }
+
+    var awaitingRehandshakeActivation = false
+    var activeRoles: Set<VersionedRole>
+    var pendingPairingPsk: Psk?
+    var pairingAttemptTask: Task<Void, Never>?
 
     /// Last metadata state, retained so partial server/state deltas merge
     /// rather than clobber absent fields (e.g. a title-only delta keeps album/artist).
@@ -130,7 +136,7 @@ actor SendspinConnection {
     // Player state for reporting
     var currentVolume: Int = 100
     var currentMuted: Bool = false
-    var currentStaticDelayMs: Int = 0
+    var currentOutputDelayMs: Int = 0
     let requiredLeadTimeMs: Int
     let minBufferMs: Int
 
@@ -147,18 +153,33 @@ actor SendspinConnection {
     ///
     /// - Parameters:
     ///   - transport: The transport to read/write frames
-    ///   - parsedHello: Pre-read `server/hello` (for multi-server handoff), or nil
-    ///   - clientHelloPayload: Payload sent as the first `client/hello` (normal path only)
+    ///   - channel: The Noise channel owned by this connection
+    ///   - serverId/serverName: The admitted server identity
+    ///   - activities/activeRoles: The admitted session capabilities
     ///   - validity: Token guarding data-plane event emission
     ///   - advertisedCommands: The set of commands to accept from the server (gate in `handleServerCommand`)
     ///   - roles: The client roles for state reporting
-    ///   - initialStaticDelayMs: Initial static delay in milliseconds
+    ///   - initialOutputDelayMs: Initial output delay in milliseconds
     ///   - clock: Clock sync instance (injected for testing; default creates a new `ClockSynchronizer`)
     ///   - engine: Audio engine (injected for testing; default creates a production engine)
     init(
         transport: any SendspinTransport,
-        parsedHello: ServerHelloMessage?,
+        channel: consuming NoiseChannel,
+        serverId: String,
+        serverName: String,
+        activities: Set<Activity>,
+        activeRoles: Set<VersionedRole>,
+        pskCategory: PskCategory,
+        matchedPskId: String = "",
+        pairingStore: (any PairingRecordStore)? = nil,
+        pairingConfigurationRuntime: PairingConfigurationRuntime? = nil,
+        pairingAttemptTimeout: Duration = .seconds(120),
+        identityPrivateKey: Curve25519.KeyAgreement.PrivateKey,
+        serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey,
+        suite: NoiseCipherSuite,
+        candidateProvider: @escaping @Sendable () async -> [PskCandidate],
         clientHelloPayload: ClientHelloPayload,
+        unpairedAccessEnabled: Bool = true,
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
         outputSampleRatePolicy: OutputSampleRatePolicy? = nil,
         initialOutputSnapshot: AudioOutputSnapshot? = nil,
@@ -174,21 +195,39 @@ actor SendspinConnection {
         emitRawAudio: Bool = true,
         artworkObserver: (@Sendable (ArtworkData) -> Void)? = nil,
         validity: SessionValidityToken,
-        advertisedCommands: Set<PlayerCommand> = [.setStaticDelay],
+        advertisedCommands: Set<PlayerCommand> = [.setOutputDelay],
         roles: Set<VersionedRole> = [],
-        initialStaticDelayMs: Int = 0,
+        initialOutputDelayMs: Int = 0,
         initialVolume: Int = 100,
         initialMuted: Bool = false,
         requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
         minBufferMs: Int = defaultMinBufferMs,
         clock: any ClockSyncProtocol = ClockSynchronizer(),
-        handshakeTimeout: Duration = defaultHandshakeTimeout,
         engine: AudioEngine
     ) {
-        self.handshakeTimeout = handshakeTimeout
         self.transport = transport
-        self.parsedHello = parsedHello
+        self.channel = channel
+        currentServerId = serverId
+        self.serverName = serverName
+        self.activities = activities
+        self.activeRoles = activeRoles
+        pendingPairingPsk = nil
+        pairingAttemptTask = nil
+        self.pskCategory = pskCategory
+        self.matchedPskId = matchedPskId
+        self.pairingStore = pairingStore
+        self.pairingConfigurationRuntime = pairingConfigurationRuntime
+        self.pairingAttemptTimeout = pairingAttemptTimeout
+        self.identityPrivateKey = identityPrivateKey
+        self.serverStaticPublicKey = serverStaticPublicKey
+        self.suite = suite
+        self.candidateProvider = candidateProvider
         self.clientHelloPayload = clientHelloPayload
+        sessionContext = ActivationAdmissibility.SessionContext(
+            category: pskCategory,
+            unpairedAccessEnabled: unpairedAccessEnabled,
+            offeredPairMethods: []
+        )
         self.effectivePlayerFormats = effectivePlayerFormats
         self.outputSampleRatePolicy = outputSampleRatePolicy
         outputSnapshot = initialOutputSnapshot
@@ -206,7 +245,7 @@ actor SendspinConnection {
         self.advertisedCommands = advertisedCommands
         playerRoleActive = roles.contains(.playerV1)
         self.roles = roles
-        currentStaticDelayMs = initialStaticDelayMs
+        currentOutputDelayMs = initialOutputDelayMs
         currentVolume = initialVolume
         currentMuted = initialMuted
         self.requiredLeadTimeMs = requiredLeadTimeMs
@@ -234,7 +273,7 @@ actor SendspinConnection {
     }
 
     func requireActiveRole(_ role: VersionedRole) throws {
-        guard handshakePhase == .complete else { throw SendspinClientError.handshakeIncomplete }
+        guard lifecycle == .running || lifecycle == .idle else { throw SendspinClientError.handshakeIncomplete }
         guard roles.contains(role), activeRoles.contains(role) else {
             throw SendspinClientError.roleNotActive(role)
         }
@@ -256,9 +295,9 @@ actor SendspinConnection {
     }
 
     /// Enqueue an optimistic static-delay change in engine order, then report it to the server.
-    func setStaticDelay(_ delayMs: Int) async throws {
-        currentStaticDelayMs = delayMs
-        audioEngine.commands.enqueue(.setStaticDelay(delayMs))
+    func setOutputDelay(_ delayMs: Int) async throws {
+        currentOutputDelayMs = delayMs
+        audioEngine.commands.enqueue(.setOutputDelay(delayMs))
         try await sendClientStateIfChanged()
     }
 
@@ -290,9 +329,12 @@ actor SendspinConnection {
     /// Transition the operational state (the connection is the single writer)
     /// and notify the server. Rolls back and rethrows if the `client/state` send fails,
     /// so the facade can keep its optimistic state consistent.
-    func setOperationalState(_ newState: ClientOperationalState) async throws {
+    func setOperationalState(_ newState: EngineSyncState) async throws {
         let previous = clientOperationalState
         clientOperationalState = newState
+        // No forced resend: only wire-visible changes flow. An engine error has no
+        // wire representation; an external-source flip reaches the server because
+        // `available` changes in the delta.
         let stamp = operationalStateEpoch
         do {
             try await sendClientStateIfChanged()
@@ -312,8 +354,16 @@ actor SendspinConnection {
     func start() {
         guard lifecycle == .idle else { return }
         lifecycle = .running
+        if case .longTerm = pskCategory, let pairingStore {
+            let pskId = matchedPskId
+            Task { await pairingStore.markUsed(pskId: pskId) }
+        }
+        if lastSentClientState == nil, !playerRoleActive {
+            Task { [weak self] in
+                try? await self?.sendClientStateIfChanged()
+            }
+        }
         supervisorSpawnCount += 1
-        armHandshakeDeadline()
 
         supervisorTask = Task {
             await runLoop()
@@ -322,32 +372,6 @@ actor SendspinConnection {
             let observed = await transport.closeReason
             await finishTeardown(disconnectReason ?? .connectionLost(observed))
         }
-    }
-
-    /// Fail the connection if `server/hello` has not arrived within
-    /// `handshakeTimeout`. Cancelled by ``cancelHandshakeDeadline()`` on completion.
-    private func armHandshakeDeadline() {
-        let budget = handshakeTimeout
-        handshakeDeadlineTask = Task { [weak self] in
-            try? await Task.sleep(for: budget)
-            guard !Task.isCancelled else { return }
-            await self?.failHandshakeIfIncomplete()
-        }
-    }
-
-    /// Cancel the handshake deadline once the handshake has completed.
-    func cancelHandshakeDeadline() {
-        handshakeDeadlineTask?.cancel()
-        handshakeDeadlineTask = nil
-    }
-
-    private func failHandshakeIfIncomplete() async {
-        guard lifecycle == .running, handshakePhase != .complete, !shuttingDown else { return }
-        Log.client.warning("server/hello did not arrive within the handshake budget; closing")
-        // Record before the suspension so it beats the transport-loss path, exactly as
-        // `disconnect(reason:)` does.
-        disconnectReason = .handshakeTimeout
-        await transport.disconnect()
     }
 
     /// Graceful disconnect: send goodbye and close.
@@ -359,14 +383,6 @@ actor SendspinConnection {
 
         if lifecycle == .idle {
             await teardownFromIdle()
-            return
-        }
-
-        guard handshakePhase == .complete else {
-            await transport.disconnect()
-            if let supervisor = supervisorTask {
-                await supervisor.value
-            }
             return
         }
 

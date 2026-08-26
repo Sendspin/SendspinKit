@@ -3,8 +3,32 @@ import Foundation
 extension SendspinConnection {
     // MARK: - Outbound sends
 
-    func sendWrapped(_ message: some Codable & Sendable) async throws {
-        try await transport.send(message)
+    func sendWrapped(_ message: some Codable & Sendable, bypassRehandshakeGate: Bool = false) async throws {
+        // Check the gate before encryption; a post-encryption re-check would consume a nonce before throwing.
+        guard bypassRehandshakeGate || !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
+        let data = try SendspinEncoding.makeEncoder().encode(message)
+        var plaintext = Data([NoiseFrameType.json])
+        plaintext.append(data)
+        do {
+            for frame in try channel.encryptMessage(plaintext) {
+                try await transport.sendBinary(frame)
+            }
+        } catch {
+            // A failed send is terminal: encryption already consumed AEAD nonces,
+            // so the peer can never decrypt a later frame — the session is
+            // cryptographically dead, not merely degraded. Tear down (unless a
+            // teardown is already driving this send) and surface the error.
+            if !shuttingDown {
+                shuttingDown = true
+                if disconnectReason == nil {
+                    disconnectReason = .connectionLost(nil)
+                }
+                await transport.disconnect()
+            }
+            throw error
+        }
     }
 
     // MARK: - Facade-initiated sends
@@ -16,18 +40,27 @@ extension SendspinConnection {
     /// no send path of its own — so public API sends serialize with the
     /// handshake/time/state/goodbye sequencing this actor owns.
     func send(clientMessage message: some Codable & Sendable) async throws {
-        guard handshakePhase == .complete else { throw SendspinClientError.handshakeIncomplete }
+        guard lifecycle == .running, !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         do {
-            try await transport.send(message)
+            try await sendWrapped(message)
         } catch {
             throw SendspinClientError.sendFailed(error.localizedDescription)
         }
     }
 
-    func sendClientStateIfChanged() async throws {
-        guard handshakePhase == .complete else { throw SendspinClientError.handshakeIncomplete }
+    func sendClientStateIfChanged(bypassRehandshakeGate: Bool = false) async throws {
+        guard lifecycle == .running, bypassRehandshakeGate || !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         clientStateDirty = true
-        guard !clientStateSendInFlight else { return }
+        // A caller that arrives while another state send is in flight must wait
+        // for that cycle to finish; returning here would report success without
+        // sending the caller's changed state.
+        while clientStateSendInFlight {
+            try await Task.sleep(for: .milliseconds(1))
+        }
 
         clientStateSendInFlight = true
         defer { clientStateSendInFlight = false }
@@ -40,17 +73,17 @@ extension SendspinConnection {
                 continue
             }
 
-            try await transport.send(ClientStateMessage(payload: payload))
+            try await sendWrapped(ClientStateMessage(payload: payload))
             lastSentClientState = current
         }
     }
 
     func currentClientStateSnapshot() -> SentClientState {
-        let player = playerRoleActive
+        let player = activeRoles.contains(.playerV1)
             ? SentPlayerState(
                 volume: currentVolume,
                 muted: currentMuted,
-                staticDelayMs: currentStaticDelayMs,
+                outputDelayMs: currentOutputDelayMs,
                 supportedCommands: advertisedCommands
                     .intersection(PlayerStateObject.validStateCommands)
                     .sorted(by: { $0.rawValue < $1.rawValue }),
@@ -58,6 +91,9 @@ extension SendspinConnection {
                 minBufferMs: minBufferMs
             )
             : nil
-        return SentClientState(state: clientOperationalState, player: player)
+        return SentClientState(
+            available: isClockSynced && clientOperationalState != .externalSource,
+            player: player
+        )
     }
 }

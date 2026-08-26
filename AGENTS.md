@@ -20,7 +20,7 @@ exhaustively over `ClientEvent` on purpose — add the missing case, not a `defa
 ## Project Structure
 - `Sources/SendspinKit/Client/` — facade, connection actor, message handling. See its AGENTS.md.
 - `Sources/SendspinKit/Audio/` — `AudioEngine` actor, data-plane channel, scheduler, decoders.
-- `Sources/SendspinKit/Transport/` — `SendspinTransport` pull interface + `NWWebSocketTransport`.
+- `Sources/SendspinKit/Transport/` — `SendspinTransport` pull interface (`nextFrame`, `sendRawText`, `sendBinary`, `disconnect`) + `NWWebSocketTransport`.
 - `Sources/SendspinKit/Synchronization/` — Kalman clock sync (`ClockSyncProtocol`).
 - `Sources/SendspinKit/{Models,Discovery}/` — wire types; mDNS/Bonjour discovery.
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.

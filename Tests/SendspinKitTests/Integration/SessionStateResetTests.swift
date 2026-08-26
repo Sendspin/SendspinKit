@@ -65,7 +65,7 @@ struct SessionStateResetTests {
 
     /// Drop the connection the way a network failure does — the frame stream ends
     /// without an explicit `disconnect()` — and wait for the client to notice.
-    private func loseConnection(_ client: SendspinClient, _ mock: MockTransport) async {
+    private func loseConnection(_ client: SendspinClient, _ mock: MockNoiseServer) async {
         await mock.finishStreams()
         _ = await waitUntil { await MainActor.run { client.connectionState == .disconnected } }
     }
@@ -448,14 +448,16 @@ struct SessionStateResetTests {
 
         // Now drive a reconnect to B while A is still potentially draining
         // (we don't need real audio to test this; the concern is task cleanup)
-        let mockB = MockTransport()
-        async let accepted: Void = client.acceptConnection(mockB)
-        try await mockB.injectText(serverHelloJSON(serverId: "server-b", connectionReason: .playback))
+        let transportB = MockTransport()
+        let mockB = MockNoiseServer(transport: transportB, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transportB)
+        try await mockB.establishSession(name: "Server B", activities: [.playback], activeRoles: [.playerV1, .controllerV1])
         try await accepted
+        let admittedServerId = await mockB.serverId
 
         // Connection B should be live and metadata should be reset (per spec, server/hello resets state)
         #expect(client.connectionState == .connected, "Connection B must be live")
-        #expect(client.currentServerId == "server-b", "Must be connected to server B")
+        #expect(client.currentServerId == admittedServerId, "Must be connected to server B")
 
         // Inject new metadata on B (this proves B is the active connection)
         try await mockB.injectText(serverStateMetadataJSON(title: .value("Track B")))

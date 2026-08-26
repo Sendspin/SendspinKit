@@ -158,7 +158,7 @@ struct ErrorRecovery: AsyncParsableCommand {
         // Build client once. disconnect() resets state to .disconnected, so
         // we can call connect() again on the same instance without rebuilding.
         let client = try SendspinClient(
-            clientId: "error-recovery-example",
+            identity: .generate(),
             name: "Error Recovery",
             roles: [.playerV1],
             playerConfig: try PlayerConfiguration(
@@ -252,7 +252,10 @@ struct ErrorRecovery: AsyncParsableCommand {
                         }
                         break eventLoop
 
-                    default:
+                    case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                         .streamFormatChanged, .streamCleared, .groupUpdated, .metadataReceived,
+                         .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
+                         .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
                         break
                     }
                 }

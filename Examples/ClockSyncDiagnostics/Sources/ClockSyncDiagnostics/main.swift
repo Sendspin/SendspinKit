@@ -153,7 +153,7 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
         // the clock sync protocol. The server/hello handshake initiates time exchanges
         // for all connected clients regardless of role.
         let client = try SendspinClient(
-            clientId: "clock-sync-diagnostics",
+            identity: .generate(),
             name: "Clock Sync Diagnostics",
             roles: [.metadataV1]
         )
@@ -201,7 +201,11 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
                     }
                     state.shouldQuit = true
                     break eventLoop
-                default:
+                case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                     .streamStarted, .streamFormatChanged, .streamEnded, .streamCleared,
+                     .groupUpdated, .metadataReceived, .controllerStateUpdated, .colorStateUpdated,
+                     .colorStateCleared, .artworkStreamStarted, .outputDelayChanged,
+                     .lastPlayedServerChanged:
                     break
                 }
             }

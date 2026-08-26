@@ -22,8 +22,8 @@ public enum ConfigurationError: SendspinError, Hashable {
     case nonPositiveBufferCapacity
     /// At least one supported audio format is required.
     case emptySupportedFormats
-    /// Static delay must be between 0 and 5000 milliseconds.
-    case staticDelayOutOfRange(Int)
+    /// Output delay must be between 0 and 5000 milliseconds.
+    case outputDelayOutOfRange(Int)
     /// Required lead time must be non-negative.
     case negativeRequiredLeadTime(Int)
     /// Minimum buffer must be non-negative.
@@ -46,7 +46,7 @@ public enum ConfigurationError: SendspinError, Hashable {
 
     /// Volume must be between 0 and 100.
     case volumeOutOfRange(Int)
-    /// `client/state` supported_commands may only contain `set_static_delay`.
+    /// `client/state` supported_commands may only contain `set_output_delay`.
     /// Carries the offending wire command strings.
     case invalidStateCommands([String])
 
@@ -76,8 +76,8 @@ extension ConfigurationError: LocalizedError {
             "Buffer capacity must be positive"
         case .emptySupportedFormats:
             "Must support at least one audio format"
-        case let .staticDelayOutOfRange(v):
-            "Static delay must be 0–5000 ms, got \(v)"
+        case let .outputDelayOutOfRange(v):
+            "Output delay must be 0–5000 ms, got \(v)"
         case let .negativeRequiredLeadTime(v):
             "Required lead time must be non-negative, got \(v)"
         case let .negativeMinBuffer(v):
@@ -95,7 +95,7 @@ extension ConfigurationError: LocalizedError {
         case let .volumeOutOfRange(v):
             "Volume must be 0–100, got \(v)"
         case let .invalidStateCommands(v):
-            "client/state supported_commands may only contain set_static_delay, got \(v)"
+            "client/state supported_commands may only contain set_output_delay, got \(v)"
         case let .invalidWebSocketPath(v):
             "WebSocket path must be absolute (begin with \"/\"), got \"\(v)\""
         case .playerRoleRequiresConfiguration:

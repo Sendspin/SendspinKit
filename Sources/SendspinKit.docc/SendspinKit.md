@@ -15,8 +15,8 @@ A client can reuse ``SendspinClient/disconnect(reason:)`` across sessions. When 
 ```swift
 import SendspinKit
 
-let client = SendspinClient(
-    clientId: "my-device",
+let client = try SendspinClient(
+    identity: .generate(),
     name: "Living Room Speaker",
     roles: [.playerV1],
     playerConfig: PlayerConfiguration(

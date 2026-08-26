@@ -639,23 +639,36 @@ struct AudioFormatSpecTests {
     }
 
     @Test
-    func audioQueueSuppressionIsBoundedWhenStartNeverCompletes() async throws {
+    func audioQueueSuppressionIsBoundedWhenStartNeverCompletes() async {
         let initial = AudioOutputSnapshot(sampleRate: 44_100, reportedBitDepth: nil, diagnosticDescription: "Initial")
         let monitor = FakeAudioOutputPlatformMonitor()
+        let sleepEntered = TestBox(false)
+        let (sleepRelease, sleepContinuation) = AsyncStream<Void>.makeStream()
         let service = AudioOutputCapabilityService(
             initialSnapshot: initial,
             platformMonitor: monitor,
-            queueSettleInterval: .milliseconds(30),
-            queueMaximumSuppression: .milliseconds(60)
+            sleep: { _ in
+                await sleepEntered.set(true)
+                for await _ in sleepRelease {
+                    break
+                }
+            }
         )
         _ = await service.startMonitoring()
         await monitor.waitForStartCount(1)
         await service.audioQueueTransitionWillBegin(sampleRate: 48_000)
+        #expect(
+            await waitUntil { await sleepEntered.value },
+            "maximum suppression must be armed before observations are held"
+        )
         await monitor.emit(.init(sampleRate: 48_000, reportedBitDepth: nil, diagnosticDescription: "Recovered"))
-        try await Task.sleep(for: .milliseconds(30))
         #expect(await service.snapshot() == initial)
-        try await Task.sleep(for: .milliseconds(50))
-        #expect(await service.snapshot().sampleRate == 48_000)
+
+        sleepContinuation.yield(())
+        #expect(
+            await waitUntil { await service.snapshot().sampleRate == 48_000 },
+            "maximum suppression must eventually publish the held observation"
+        )
         await service.stopMonitoring()
     }
 

@@ -50,8 +50,8 @@ enum ConnectionEvent: Equatable {
     /// Audio stream cleared (buffers flushed without ending), roles optional
     case streamCleared(roles: [String]?)
 
-    /// Static delay changed (command from server)
-    case staticDelayChanged(milliseconds: Int)
+    /// Output delay changed (command from server)
+    case outputDelayChanged(milliseconds: Int)
 
     /// Last server with playback active (multi-server tracking)
     case lastPlayedServerChanged(serverId: String)
@@ -65,8 +65,14 @@ enum ConnectionEvent: Equatable {
     /// Player mute state changed (server command or local `setMute`)
     case playerMutedChanged(Bool)
 
+    /// Pairing persisted a new long-term record.
+    case paired(serverId: String)
+
+    /// Server changed admitted activities or active roles.
+    case serverActivated(activities: Set<Activity>, activeRoles: Set<VersionedRole>)
+
     /// Client operational state (synchronized, error, etc.)
-    case operationalState(ClientOperationalState)
+    case operationalState(EngineSyncState)
 
     /// Clock synchronization established (first `server/time` convergence).
     case clockSyncEstablished
@@ -81,10 +87,4 @@ enum ConnectionLifecycle {
     case running
     case shuttingDown
     case stopped
-}
-
-/// Protocol handshake phase for the connection's message loop and outbound gates.
-enum HandshakePhase {
-    case awaitingServerHello
-    case complete
 }

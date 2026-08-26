@@ -5,11 +5,24 @@ import Testing
 /// Decode every `client/state` payload sent after `offset`, dispatching on the wire
 /// `type` tag. Necessary because `ClientStatePayload`'s fields are all optional, so
 /// other message types decode "successfully" as an empty payload.
-private func clientStatePayloads(from mock: MockTransport, after offset: Int = 0) async -> [ClientStatePayload] {
-    let messages = await mock.sentTextMessages
-    return messages.dropFirst(offset)
-        .filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+private func clientStatePayloads(from mock: MockNoiseServer, after offset: Int = 0) async -> [ClientStatePayload] {
+    let deadline = ContinuousClock.now + .milliseconds(500)
+    var stateMessages: [Data] = []
+    repeat {
+        stateMessages = await mock.sentTextMessages
+        stateMessages = stateMessages.filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+        if stateMessages.count > offset {
+            break
+        }
+        try? await Task.sleep(for: .milliseconds(5))
+    } while ContinuousClock.now < deadline
+    return stateMessages.dropFirst(offset)
         .compactMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0).payload }
+}
+
+private func clientStateCount(from mock: MockNoiseServer) async -> Int {
+    let messages = await mock.sentTextMessages
+    return messages.count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
 }
 
 @MainActor
@@ -18,25 +31,26 @@ struct ClientStateDeltaTests {
     func initialSendIsFullPayload() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
         let initial = try #require(
             await clientStatePayloads(from: mock).first,
-            "Expected an initial client/state after server/hello"
+            "Expected an initial client/state after clock synchronization"
         )
 
-        #expect(initial.state == .synchronized)
+        #expect(initial.available == true, "Availability is true after clock synchronization establishes")
         let player = try #require(initial.player, "Initial state must include the full player object")
         #expect(player.volume == client.currentVolume)
         #expect(player.muted == client.currentMuted)
-        #expect(player.staticDelayMs == client.staticDelayMs)
+        #expect(player.outputDelayMs == client.outputDelayMs)
         #expect(player.requiredLeadTimeMs == defaultRequiredLeadTimeMs, "Should send default required_lead_time_ms")
         #expect(player.minBufferMs == defaultMinBufferMs, "Should send default min_buffer_ms")
 
         // Per the player role, client/state supported_commands is a subset of
-        // {set_static_delay} only — volume/mute are advertised in client/hello, never here.
+        // {set_output_delay} only — volume/mute are advertised in client/hello, never here.
         #expect(
-            Set(player.supportedCommands ?? []) == [.setStaticDelay],
-            "client/state supported_commands must be {set_static_delay}, got \(player.supportedCommands ?? [])"
+            Set(player.supportedCommands ?? []) == [.setOutputDelay],
+            "client/state supported_commands must be {set_output_delay}, got \(player.supportedCommands ?? [])"
         )
 
         await client.disconnect()
@@ -71,10 +85,11 @@ struct ClientStateDeltaTests {
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
         let initial = try #require(
             await clientStatePayloads(from: mock).first,
-            "Expected an initial client/state after server/hello"
+            "Expected an initial client/state after clock synchronization"
         )
 
         let player = try #require(initial.player, "Initial state must include the full player object")
@@ -88,21 +103,26 @@ struct ClientStateDeltaTests {
     func subsequentChangeSendsOnlyChangedFields() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        try await establishClockSync(client, via: mock)
 
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStateCount(from: mock)
         let newVolume = client.currentVolume == 100 ? 42 : 100
         try await client.setVolume(newVolume)
 
+        #expect(
+            await waitUntil { await clientStateCount(from: mock) > countBefore },
+            "Expected a client/state delta after setVolume"
+        )
         let delta = try #require(
             await clientStatePayloads(from: mock, after: countBefore).last,
             "Expected a client/state delta after setVolume"
         )
 
         // Only the changed field is present; unchanged fields are omitted.
-        #expect(delta.state == nil)
+        #expect(delta.available == nil)
         #expect(delta.player?.volume == newVolume)
         #expect(delta.player?.muted == nil)
-        #expect(delta.player?.staticDelayMs == nil)
+        #expect(delta.player?.outputDelayMs == nil)
         #expect(delta.player?.supportedCommands == nil)
 
         await client.disconnect()
@@ -113,7 +133,7 @@ struct ClientStateDeltaTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStatePayloads(from: mock).count
         // Re-set the current values: nothing changed, so nothing should be sent.
         try await client.setVolume(client.currentVolume)
         try await client.setMute(client.currentMuted)
@@ -130,14 +150,19 @@ struct ClientStateDeltaTests {
         let mock = try await connectClient(client)
 
         let newVolume = client.currentVolume == 100 ? 42 : 100
+        let countBeforeVolume = await clientStateCount(from: mock)
         try await client.setVolume(newVolume)
+        #expect(
+            await waitUntil { await clientStateCount(from: mock) > countBeforeVolume },
+            "Expected the volume change before probing duplicate server/hello"
+        )
 
         // A duplicate server/hello on the same established connection is ignored:
         // it must not reset the client/state delta baseline or emit a fresh full state.
-        let countBefore = await mock.sentTextMessages.count
+        let countBefore = await clientStateCount(from: mock)
         try await mock.injectText(serverHelloJSON())
-        let appeared = await waitUntil(timeout: .milliseconds(300)) {
-            await !clientStatePayloads(from: mock, after: countBefore).isEmpty
+        let appeared = await waitUntil(timeout: .seconds(1), pollInterval: .milliseconds(20)) {
+            await clientStateCount(from: mock) > countBefore
         }
         #expect(!appeared, "Duplicate same-connection server/hello must not send a new client/state")
 

@@ -93,7 +93,7 @@ public struct AudioChunk: Sendable, Equatable {
     /// Raw server timestamp in microseconds in the server's clock domain.
     ///
     /// This is the timestamp exactly as sent on the wire. SendspinKit's internal
-    /// playback engine subtracts `static_delay_ms` and translates server time to
+    /// playback engine subtracts `output_delay_ms` and translates server time to
     /// local time before scheduling. Consumers that use raw audio chunks for their
     /// own playback scheduling must apply the same static-delay adjustment and
     /// clock-domain conversion themselves.
@@ -129,6 +129,7 @@ public struct VisualizerData: Sendable, Equatable {
 
 public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
+    case paired(serverId: String)
     /// The client observed a new advisory audio-output capability snapshot.
     case audioOutputChanged(AudioOutputSnapshot)
     /// The current session's output-format negotiation status changed.
@@ -157,9 +158,9 @@ public enum ClientEvent: Sendable, Equatable {
     /// The server cleared the complete color role state.
     case colorStateCleared
     case artworkStreamStarted([StreamArtworkChannelConfig])
-    /// Server changed the static delay via `server/command`. The host app should
-    /// persist this value and pass it back as `initialStaticDelayMs` on next launch.
-    case staticDelayChanged(milliseconds: Int)
+    /// Server changed the output delay via `server/command`. The host app should
+    /// persist this value and pass it back as `initialOutputDelayMs` on next launch.
+    case outputDelayChanged(milliseconds: Int)
     /// The server that most recently had `playback_state: 'playing'` changed.
     /// Per spec, clients must persist this across reboots for multi-server
     /// priority logic. The host app is responsible for persistence — store
@@ -176,11 +177,12 @@ public enum ClientEvent: Sendable, Equatable {
 public struct ServerInfo: Sendable, Hashable {
     public let serverId: String
     public let name: String
-    public let version: Int
-    public let connectionReason: ConnectionReason
+    public let trustLevel: TrustLevel
     /// Roles the server actually activated for this client.
     /// Use ``hasRole(_:)`` to check whether a specific capability is available.
     public let activeRoles: Set<VersionedRole>
+    /// Activities currently admitted for this connection.
+    public let activities: Set<Activity>
 
     /// Whether the server activated the given role for this client.
     ///

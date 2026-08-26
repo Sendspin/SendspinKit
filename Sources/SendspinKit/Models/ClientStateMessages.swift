@@ -4,7 +4,7 @@ import Foundation
 
 /// Client operational state per Sendspin protocol spec.
 /// This is a top-level field in client/state, independent of any role.
-public enum ClientOperationalState: String, Codable, Equatable, Sendable {
+enum EngineSyncState: String, Codable, Equatable, Sendable {
     /// Client is operational and synchronized with server timestamps
     case synchronized
     /// Client has a problem preventing normal operation
@@ -25,13 +25,13 @@ struct ClientStateMessage: SendspinMessage, Equatable {
 /// Client state payload containing client-level state and role-specific state objects.
 /// Per spec: must be sent after server/hello and whenever any state changes.
 struct ClientStatePayload: Codable, Equatable {
-    /// Client operational state (required on initial send, optional on deltas)
-    let state: ClientOperationalState?
+    /// Whether the client is available (required initially, optional on deltas).
+    let available: Bool?
     /// Player role state (only if client has player role)
     let player: PlayerStateObject?
 
-    init(state: ClientOperationalState? = nil, player: PlayerStateObject? = nil) {
-        self.state = state
+    init(available: Bool? = nil, player: PlayerStateObject? = nil) {
+        self.available = available
         self.player = player
     }
 }
@@ -40,7 +40,7 @@ struct ClientStatePayload: Codable, Equatable {
 ///
 /// Every field is optional so this type can express both the initial full
 /// state and subsequent deltas. Per spec, the initial `client/state` after
-/// `server/hello` includes `static_delay_ms`, `required_lead_time_ms`, and
+/// `server/hello` includes `output_delay_ms`, `required_lead_time_ms`, and
 /// `min_buffer_ms`; later delta updates omit any field that has not changed
 /// (the server merges them into existing state).
 struct PlayerStateObject: Codable, Equatable {
@@ -48,12 +48,12 @@ struct PlayerStateObject: Codable, Equatable {
     let volume: Int?
     /// Mute state, only if 'mute' is in supported_commands from player@v1_support
     let muted: Bool?
-    /// Static delay in milliseconds (0-5000). Present in the initial full state;
+    /// Output delay in milliseconds (0-5000). Present in the initial full state;
     /// omitted from a delta when unchanged. Compensates for delay beyond the
     /// audio port (external speakers, amplifiers).
-    let staticDelayMs: Int?
+    let outputDelayMs: Int?
     /// Supported commands that can change at runtime (e.g. when audio output changes).
-    /// Per spec, currently only `set_static_delay` is valid here.
+    /// Per spec, currently only `set_output_delay` is valid here.
     let supportedCommands: [PlayerCommand]?
     /// Required lead time in milliseconds. Present in the initial full state;
     /// omitted from a delta when unchanged. Accounts for AudioQueue setup and codec warmup.
@@ -65,29 +65,29 @@ struct PlayerStateObject: Codable, Equatable {
     enum CodingKeys: String, CodingKey {
         case volume
         case muted
-        case staticDelayMs = "static_delay_ms"
+        case outputDelayMs = "static_delay_ms"
         case supportedCommands = "supported_commands"
         case requiredLeadTimeMs = "required_lead_time_ms"
         case minBufferMs = "min_buffer_ms"
     }
 
     /// Commands valid in the `client/state` player object. Per the player role this is a
-    /// subset of `{set_static_delay}` only — volume/mute are advertised solely in
+    /// subset of `{set_output_delay}` only — volume/mute are advertised solely in
     /// `client/hello` (`player@v1_support`), never at the state level. Canonical home
     /// for the invariant; the connection's state builder reads from here.
-    static let validStateCommands: Set<PlayerCommand> = [.setStaticDelay]
+    static let validStateCommands: Set<PlayerCommand> = [.setOutputDelay]
 
     /// Validates volume/static-delay ranges and the supported_commands subset when present.
     private static func validate(
         volume: Int?,
-        staticDelayMs: Int?,
+        outputDelayMs: Int?,
         supportedCommands: [PlayerCommand]?
     ) throws(ConfigurationError) {
         if let vol = volume {
             guard vol >= 0, vol <= 100 else { throw .volumeOutOfRange(vol) }
         }
-        if let delay = staticDelayMs {
-            guard delay >= 0, delay <= 5_000 else { throw .staticDelayOutOfRange(delay) }
+        if let delay = outputDelayMs {
+            guard delay >= 0, delay <= 5_000 else { throw .outputDelayOutOfRange(delay) }
         }
         if let supportedCommands {
             let invalid = Set(supportedCommands).subtracting(validStateCommands)
@@ -100,15 +100,15 @@ struct PlayerStateObject: Codable, Equatable {
     init(
         volume: Int? = nil,
         muted: Bool? = nil,
-        staticDelayMs: Int? = nil,
+        outputDelayMs: Int? = nil,
         supportedCommands: [PlayerCommand]? = nil,
         requiredLeadTimeMs: Int? = nil,
         minBufferMs: Int? = nil
     ) throws(ConfigurationError) {
-        try Self.validate(volume: volume, staticDelayMs: staticDelayMs, supportedCommands: supportedCommands)
+        try Self.validate(volume: volume, outputDelayMs: outputDelayMs, supportedCommands: supportedCommands)
         self.volume = volume
         self.muted = muted
-        self.staticDelayMs = staticDelayMs
+        self.outputDelayMs = outputDelayMs
         self.supportedCommands = supportedCommands
         self.requiredLeadTimeMs = requiredLeadTimeMs
         self.minBufferMs = minBufferMs
@@ -118,13 +118,13 @@ struct PlayerStateObject: Codable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let volume = try container.decodeIfPresent(Int.self, forKey: .volume)
         let muted = try container.decodeIfPresent(Bool.self, forKey: .muted)
-        let staticDelayMs = try container.decodeIfPresent(Int.self, forKey: .staticDelayMs)
+        let outputDelayMs = try container.decodeIfPresent(Int.self, forKey: .outputDelayMs)
         let supportedCommands = try container.decodeIfPresent([PlayerCommand].self, forKey: .supportedCommands)
         let requiredLeadTimeMs = try container.decodeIfPresent(Int.self, forKey: .requiredLeadTimeMs)
         let minBufferMs = try container.decodeIfPresent(Int.self, forKey: .minBufferMs)
 
         do {
-            try Self.validate(volume: volume, staticDelayMs: staticDelayMs, supportedCommands: supportedCommands)
+            try Self.validate(volume: volume, outputDelayMs: outputDelayMs, supportedCommands: supportedCommands)
         } catch {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
@@ -136,7 +136,7 @@ struct PlayerStateObject: Codable, Equatable {
 
         self.volume = volume
         self.muted = muted
-        self.staticDelayMs = staticDelayMs
+        self.outputDelayMs = outputDelayMs
         self.supportedCommands = supportedCommands
         self.requiredLeadTimeMs = requiredLeadTimeMs
         self.minBufferMs = minBufferMs

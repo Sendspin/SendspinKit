@@ -407,9 +407,11 @@ struct FrameOrderingTests {
         // truncating the stream. A single ordered frame loop guarantees every
         // preceding audio frame is processed before streamEnded.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
 
         let chunks = CollectedValues<AudioChunk>()
@@ -455,9 +457,11 @@ struct FrameOrderingTests {
         // Like streamEnded, it must NEVER be surfaced before audio chunks that
         // preceded it in wire order.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
 
         let chunks = CollectedValues<AudioChunk>()
@@ -506,9 +510,11 @@ struct FrameOrderingTests {
         // stream is non-deterministic by design; engine-channel *processing* order across the
         // change is asserted by the mid-stream format-change processing-order test.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
 
         // Collect audio chunk server timestamps in arrival order. AudioChunk is
@@ -564,9 +570,11 @@ struct FrameOrderingTests {
         // the server sent before it — i.e. in `engine.appliedCommandKinds()`, the
         // `.streamEnd` entry follows all the preceding `.chunk` entries.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
         // Chunks are dropped before clock sync; establish it so `.chunk` commands reach the engine.
         try await establishClockSync(client, via: mock)
@@ -620,9 +628,11 @@ struct FrameOrderingTests {
         // Assert `.streamClear` is processed by the engine after the
         // preceding `.chunk` entries in `appliedCommandKinds()`.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
         // Chunks are dropped before clock sync; establish it so `.chunk` commands reach the engine.
         try await establishClockSync(client, via: mock)
@@ -675,9 +685,11 @@ struct FrameOrderingTests {
         // channel remains FIFO across the boundary; private scheduler/output PCM from the old
         // generation is flushed when the format change reaches the engine.
         let client = try makePlayerClient()
-        let mock = MockTransport()
-        try await client.acceptConnection(mock)
-        try await mock.injectText(serverHelloJSON())
+        let transport = MockTransport()
+        let mock = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.establishSession(activeRoles: [.playerV1])
+        try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
         // Chunks are dropped before clock sync; establish it so `.chunk` commands reach the engine.
         try await establishClockSync(client, via: mock)

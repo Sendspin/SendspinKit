@@ -15,20 +15,22 @@ struct ClientHelloMessage: SendspinMessage, Equatable {
 }
 
 struct ClientHelloPayload: Codable, Equatable {
-    let clientId: String
     let name: String
     let deviceInfo: DeviceInfo?
-    let version: Int
+    var trustLevel: TrustLevel
+    let supportedPairMethods: [PairMethodDescriptor]
+    let unpairedAccess: UnpairedAccessAdvertisement
     let supportedRoles: [VersionedRole]
     let playerV1Support: PlayerSupport?
     let artworkV1Support: ArtworkSupport?
     let visualizerV1Support: VisualizerSupport?
 
     enum CodingKeys: String, CodingKey {
-        case clientId = "client_id"
         case name
         case deviceInfo = "device_info"
-        case version
+        case trustLevel = "trust_level"
+        case supportedPairMethods = "supported_pair_methods"
+        case unpairedAccess = "unpaired_access"
         case supportedRoles = "supported_roles"
         case playerV1Support = "player@v1_support"
         case artworkV1Support = "artwork@v1_support"
@@ -82,7 +84,7 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
 
 /// Player command identifiers per spec.
 ///
-/// These are commands that target an individual player (volume, mute, static delay).
+/// These are commands that target an individual player (volume, mute, output delay).
 /// Distinct from ``ControllerCommandType`` which targets the group (play, pause, skip, etc.).
 /// The `volume` and `mute` cases overlap because a player's volume/mute can be set
 /// directly by the server or indirectly via group-level controller commands.
@@ -94,8 +96,8 @@ enum PlayerCommand: String, Codable, Hashable {
     case volume
     /// Set player mute state
     case mute
-    /// Set static delay in milliseconds (0-5000)
-    case setStaticDelay = "set_static_delay"
+    /// Set output delay in milliseconds (0-5000)
+    case setOutputDelay = "set_static_delay"
 }
 
 struct PlayerSupport: Codable, Equatable {
@@ -142,65 +144,6 @@ struct ServerHelloMessage: SendspinMessage, Equatable {
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
-/// Connection reason for server/hello
-public enum ConnectionReason: String, Codable, Sendable, Hashable {
-    /// Server connected for general availability/discovery
-    case discovery
-    /// Server connected for active playback
-    case playback
-}
-
 struct ServerHelloPayload: Codable, Equatable {
-    let serverId: String
     let name: String
-    let version: Int
-    let activeRoles: [VersionedRole]
-    let connectionReason: ConnectionReason
-
-    enum CodingKeys: String, CodingKey {
-        case serverId = "server_id"
-        case name
-        case version
-        case activeRoles = "active_roles"
-        case connectionReason = "connection_reason"
-    }
-
-    init(
-        serverId: String,
-        name: String,
-        version: Int,
-        activeRoles: [VersionedRole],
-        connectionReason: ConnectionReason
-    ) {
-        self.serverId = serverId
-        self.name = name
-        self.version = version
-        self.activeRoles = activeRoles
-        self.connectionReason = connectionReason
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        serverId = try container.decode(String.self, forKey: .serverId)
-        name = try container.decode(String.self, forKey: .name)
-        version = try container.decode(Int.self, forKey: .version)
-        // Skip unparseable entries instead of failing the whole payload: an undecodable
-        // `server/hello` is a hard handshake failure, so one malformed or future-shaped
-        // role string would cost us every role we *do* understand. Same forward-compat
-        // rationale as `connection_reason` below.
-        let rawRoles = try container.decode([String].self, forKey: .activeRoles)
-        activeRoles = rawRoles.compactMap(VersionedRole.init(identifier:))
-        if activeRoles.count != rawRoles.count {
-            let skipped = rawRoles.filter { VersionedRole(identifier: $0) == nil }
-            Log.client.warning("Ignoring malformed active_roles entries: \(skipped.joined(separator: ", "))")
-        }
-        // `decodeIfPresent` returns nil only for an absent/null key — a present but
-        // unrecognized value throws. Fall back so a future spec value can't fail the whole
-        // handshake decode.
-        if let reason = try? container.decodeIfPresent(ConnectionReason.self, forKey: .connectionReason) {
-            connectionReason = reason
-        } else {
-            connectionReason = .playback
-        }
-    }
 }

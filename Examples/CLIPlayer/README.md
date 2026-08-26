@@ -8,7 +8,8 @@ A simple command-line audio player demonstrating how to use SendspinKit to conne
 - Supports PCM, Opus, and FLAC audio formats
 - Real-time clock synchronization for multi-room audio
 - Interactive volume and mute controls
-- Event monitoring (connection, streams, groups)
+- Event monitoring (connection, trust levels, streams, groups)
+- Optional Pairing PSK setup with `--pairing` (prints an `SP:0` token)
 
 ## Building
 
@@ -26,6 +27,9 @@ The CLI player supports both automatic discovery and manual connection:
 ```bash
 # Auto-discover servers on the network
 swift run CLIPlayer
+
+# Enable Pairing PSK and print the setup token (valid for this process's pairing configuration lifetime)
+swift run CLIPlayer --pairing
 
 # Auto-discover with custom client name
 swift run CLIPlayer "Living Room"
@@ -112,10 +116,10 @@ let config = PlayerConfiguration(
 )
 
 // Create client
-let client = SendspinClient(
-    clientId: UUID().uuidString,
+let client = try SendspinClient(
+    identity: .generate(),
     name: "My Player",
-    roles: [.player],
+    roles: [.playerV1],
     playerConfig: config
 )
 
@@ -132,8 +136,8 @@ for await event in client.events() {
 }
 
 // Control playback
-await client.setVolume(0.75)
-await client.setMute(true)
+try await client.setVolume(75)
+try await client.setMute(true)
 ```
 
 ## Requirements

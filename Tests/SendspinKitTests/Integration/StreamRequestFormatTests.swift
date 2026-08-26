@@ -132,9 +132,29 @@ struct StreamRequestFormatTests {
     /// non-decoded constant, so frames are discriminated by the wire `type` field
     /// instead. The transport encodes snake_case keys that match the explicit
     /// `CodingKeys`, so a plain decoder (no key strategy) round-trips correctly.
-    private func sentRequestFormats(_ mock: MockTransport) async throws -> [StreamRequestFormatMessage] {
+    private func sentRequestFormats(_ mock: MockNoiseServer) async throws -> [StreamRequestFormatMessage] {
         let referenceType = StreamRequestFormatMessage.typeString
         let decoder = JSONDecoder()
+        var previousCount = -1
+        var stableSince = ContinuousClock.now
+        let deadline = ContinuousClock.now + .milliseconds(500)
+
+        while ContinuousClock.now < deadline {
+            let messages = await mock.sentTextMessages
+            let requests: [StreamRequestFormatMessage] = try messages.compactMap { data in
+                guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                      obj["type"] as? String == referenceType else { return nil }
+                return try decoder.decode(StreamRequestFormatMessage.self, from: data)
+            }
+            if requests.count != previousCount {
+                previousCount = requests.count
+                stableSince = ContinuousClock.now
+            } else if ContinuousClock.now - stableSince >= .milliseconds(25) {
+                return requests
+            }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+
         let messages = await mock.sentTextMessages
         return try messages.compactMap { data in
             guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],

@@ -18,8 +18,41 @@ extension SendspinConnection {
         let decoder = inboundDecoder
         do {
             switch msgType {
+            case "server/activate":
+                try await handleServerActivate(decoder.decode(ServerActivateMessage.self, from: data))
+
+            case "noise/handshake":
+                try await handleRehandshake(decoder.decode(NoiseHandshakeMessage.self, from: data))
+
             case "server/hello":
                 try await handleServerHello(decoder.decode(ServerHelloMessage.self, from: data))
+
+            case "server/unpair":
+                try await handleServerUnpair(decoder.decode(ServerUnpairMessage.self, from: data))
+
+            case ManagementListRecordsMessage.typeString:
+                try await handleManagementListRecords(decoder.decode(ManagementListRecordsMessage.self, from: data))
+
+            case ManagementAddRecordMessage.typeString:
+                try await handleManagementAddRecord(decoder.decode(ManagementAddRecordMessage.self, from: data))
+
+            case ManagementRemoveRecordMessage.typeString:
+                try await handleManagementRemoveRecord(decoder.decode(ManagementRemoveRecordMessage.self, from: data))
+
+            case ManagementGetPairingConfigMessage.typeString:
+                try await handleManagementGetPairingConfig(decoder.decode(ManagementGetPairingConfigMessage.self, from: data))
+
+            case ManagementSetPairingConfigMessage.typeString:
+                try await handleManagementSetPairingConfig(decoder.decode(ManagementSetPairingConfigMessage.self, from: data))
+
+            case ManagementOpenPairingWindowMessage.typeString:
+                try await handleManagementOpenPairingWindow(decoder.decode(ManagementOpenPairingWindowMessage.self, from: data))
+
+            case "server/pair-finalize":
+                try await handleServerPairFinalize(decoder.decode(ServerPairFinalizeMessage.self, from: data))
+
+            case "pair/abort":
+                clearPairingAttempt()
 
             case "server/time":
                 try await handleServerTime(
@@ -46,18 +79,25 @@ extension SendspinConnection {
                 try await handleGroupUpdate(decoder.decode(GroupUpdateMessage.self, from: data))
 
             default:
-                Log.client.warning("Unknown message type: \(msgType)")
+                if msgType.hasPrefix("management/") {
+                    await handleMalformedManagementRequest()
+                } else {
+                    Log.client.warning("Unknown message type: \(msgType)")
+                }
             }
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
 
-            // Swallowing is right for ordinary messages, but `server/hello` is the
-            // handshake gate: nothing times it out, so a failure here would leave the
-            // client in `.connecting` forever with the socket open. Fail loudly.
-            if msgType == ServerHelloMessage.typeString, handshakePhase == .awaitingServerHello {
-                Log.client.error("Undecodable server/hello — rejecting the connection rather than wedging")
+            if msgType == ServerActivateMessage.typeString
+                || msgType == NoiseHandshakeMessage.typeString
+                || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
+            } else if msgType.hasPrefix("management/") {
+                // A malformed management request still owes the server its single
+                // ordered reply: permission_denied outside a management session,
+                // otherwise invalid.
+                await handleMalformedManagementRequest()
             }
         }
     }
@@ -80,44 +120,260 @@ extension SendspinConnection {
 
     // MARK: - Text message handlers
 
-    func handleServerHello(_ message: ServerHelloMessage) async {
-        guard handshakePhase == .awaitingServerHello else {
-            Log.client.warning("Ignoring duplicate server/hello on an established connection")
-            return
-        }
-
-        guard message.payload.version == 1 else {
-            Log.client.warning("Rejecting server/hello with unsupported core version: \(message.payload.version)")
+    func handleRehandshake(_ message: NoiseHandshakeMessage) async {
+        guard !rehandshakeInProgress else { return }
+        rehandshakeInProgress = true
+        do {
+            let candidates = await candidateProvider()
+            guard let message1 = Base64URL.decode(message.payload.data) else { throw NoiseError.malformedMessage }
+            var handshake = NoiseHandshake(
+                suite: suite,
+                role: .responder,
+                localStaticKey: identityPrivateKey,
+                remoteStaticPublicKey: serverStaticPublicKey,
+                prologue: channel.handshakeHash
+            )
+            let payload = try handshake.readMessage1(message1)
+            let inner = try JSONDecoder().decode(NoiseMessage1Payload.self, from: payload)
+            guard let candidate = PskCandidate.select(
+                from: candidates,
+                pskId: inner.pskId,
+                serverId: currentServerId ?? ""
+            ) else { throw HandshakeError.pskLookupMiss }
+            let message2 = try handshake.writeMessage2(psk: candidate.psk, payload: noiseMessage2Payload)
+            let newTransport = try handshake.makeTransport()
+            let reply = NoiseHandshakeMessage(
+                payload: NoiseHandshakePayload(data: Base64URL.encode(message2))
+            )
+            // The gate covers the old-key reply and the synchronous key swap.
+            try await sendWrapped(reply, bypassRehandshakeGate: true)
+            channel.rekey(to: newTransport)
+            pskCategory = candidate.category
+            matchedPskId = candidate.psk.pskId
+            if candidate.category == .longTerm, let pairingStore {
+                await pairingStore.markUsed(pskId: candidate.psk.pskId)
+            }
+            let advertisement = await livePairingAdvertisement()
+            sessionContext = ActivationAdmissibility.SessionContext(
+                category: candidate.category,
+                unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
+                offeredPairMethods: advertisement.offeredPairMethods
+            )
+            activeRoles = []
+            lastSentClientState = nil
+            clearPairingAttempt()
+            awaitingRehandshakeActivation = true
+            controlSink.enqueue(.serverConnected(ServerInfo(
+                serverId: currentServerId ?? "",
+                name: serverName,
+                trustLevel: candidate.category == .longTerm ? .user : .none,
+                activeRoles: [],
+                activities: activities
+            )))
+        } catch {
+            rehandshakeInProgress = false
             disconnectReason = .incompatibleServer
             await transport.disconnect()
+        }
+    }
+
+    func livePairingAdvertisement() async -> (
+        supportedPairMethods: [PairMethodDescriptor],
+        unpairedAccessEnabled: Bool,
+        offeredPairMethods: Set<String>
+    ) {
+        guard let runtime = pairingConfigurationRuntime else {
+            return (
+                clientHelloPayload.supportedPairMethods,
+                clientHelloPayload.unpairedAccess.enabled,
+                Set(clientHelloPayload.supportedPairMethods.map(\.method))
+            )
+        }
+        let configuration = await runtime.snapshot()
+        let methods = configuration.pairingPskEnabled
+            ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
+            : []
+        return (methods, configuration.unpairedAccessEnabled, Set(methods.map(\.method)))
+    }
+
+    func handleServerHello(_ message: ServerHelloMessage) async {
+        guard awaitingRehandshakeActivation else { return }
+        serverName = message.payload.name
+        let advertisement = await livePairingAdvertisement()
+        let hello = ClientHelloPayload(
+            name: clientHelloPayload.name,
+            deviceInfo: clientHelloPayload.deviceInfo,
+            trustLevel: pskCategory == .longTerm ? .user : .none,
+            supportedPairMethods: advertisement.supportedPairMethods,
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: advertisement.unpairedAccessEnabled),
+            supportedRoles: clientHelloPayload.supportedRoles,
+            playerV1Support: clientHelloPayload.playerV1Support,
+            artworkV1Support: clientHelloPayload.artworkV1Support,
+            visualizerV1Support: clientHelloPayload.visualizerV1Support
+        )
+        do {
+            try await sendWrapped(ClientHelloMessage(payload: hello), bypassRehandshakeGate: true)
+        } catch {
             return
         }
+    }
 
-        currentServerId = message.payload.serverId
-        activeRoles = Set(message.payload.activeRoles)
-        handshakePhase = .complete
-        cancelHandshakeDeadline()
-        let info = ServerInfo(
-            serverId: message.payload.serverId,
-            name: message.payload.name,
-            version: message.payload.version,
-            connectionReason: message.payload.connectionReason,
-            activeRoles: activeRoles
+    func handleServerActivate(_ message: ServerActivateMessage) async {
+        let advertisement = await livePairingAdvertisement()
+        sessionContext = ActivationAdmissibility.SessionContext(
+            category: sessionContext.category,
+            unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
+            offeredPairMethods: advertisement.offeredPairMethods
         )
-        controlSink.enqueue(.serverConnected(info))
-        await activateOutputFormatNegotiation()
-
-        // A fresh handshake means the server holds no prior state: clear the delta baseline
-        // so the next send is a full client/state, not an empty delta.
-        lastSentClientState = nil
-        try? await sendClientStateIfChanged()
-
-        // Handshake is complete: now start client/time sampling. Start-once.
-        if clockSyncTask == nil {
-            clockSyncTask = Task { [weak self] in
-                await self?.clockSyncLoop()
+        let nextActivities = Set(message.payload.activities)
+        let nextRoles: Set<VersionedRole> = if let announcedRoles = message.payload.activeRoles {
+            Set(announcedRoles).intersection(roles)
+        } else if ActivationAdmissibility.isPlaybackCapable(
+            nextActivities,
+            category: sessionContext.category,
+            unpairedAccessEnabled: sessionContext.unpairedAccessEnabled
+        ) {
+            activeRoles
+        } else {
+            []
+        }
+        switch ActivationAdmissibility.evaluate(
+            activities: nextActivities,
+            activeRoles: nextRoles,
+            pairing: message.payload.pairing,
+            session: sessionContext
+        ) {
+        case .admit:
+            activities = nextActivities
+            let completedRehandshake = awaitingRehandshakeActivation
+            if completedRehandshake {
+                awaitingRehandshakeActivation = false
+                lastSentClientState = nil
+            }
+            // Full state goes out when a role becomes active (spec client/state);
+            // an activate that changes nothing sends nothing.
+            let rolesChanged = nextRoles != activeRoles
+            activeRoles = nextRoles
+            if rolesChanged {
+                lastSentClientState = nil
+            }
+            try? await sendClientStateIfChanged(bypassRehandshakeGate: completedRehandshake)
+            if completedRehandshake {
+                rehandshakeInProgress = false
+            }
+            controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
+            if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.pairingPsk {
+                await beginPairingAttempt()
+            } else if pendingPairingPsk != nil {
+                clearPairingAttempt()
+            }
+        case let .close(reason):
+            try? await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
+            disconnectReason = .explicit(reason)
+            await transport.disconnect()
+        case .abortPairing:
+            try? await sendWrapped(
+                PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)),
+                bypassRehandshakeGate: awaitingRehandshakeActivation
+            )
+            if awaitingRehandshakeActivation {
+                awaitingRehandshakeActivation = false
+                rehandshakeInProgress = false
             }
         }
+    }
+
+    func beginPairingAttempt() async {
+        guard pskCategory == .pairing, pendingPairingPsk == nil else {
+            if pskCategory != .pairing {
+                try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)))
+            }
+            return
+        }
+        let generated = await selectPairingLongTermPsk()
+        pendingPairingPsk = generated
+        pairingAttemptTask?.cancel()
+        pairingAttemptTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.pairingAttemptTimeout ?? .seconds(120))
+            guard !Task.isCancelled else { return }
+            await self?.pairingAttemptTimedOut()
+        }
+        try? await sendWrapped(ClientPairFinalizeMessage(
+            payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)
+        ))
+    }
+
+    /// The long-term PSK offered in `client/pair-finalize`. Normally freshly
+    /// generated; when bounded storage cannot fit a new stored-pubkey record,
+    /// the record-mode shared record's PSK is offered instead (spec record mode) —
+    /// that record already exists, so the finalize acknowledgement persists nothing.
+    /// The PSK is committed to the wire before the server's acknowledgement, so
+    /// this choice must happen here, not at persistence time.
+    private func selectPairingLongTermPsk() async -> Psk {
+        guard let pairingStore,
+              let accounting = await pairingStore.storageAccounting(),
+              let costIndividual = accounting.costIndividual,
+              accounting.free < costIndividual,
+              let runtime = pairingConfigurationRuntime
+        else {
+            return Psk.generate()
+        }
+        let fallbackId = await runtime.snapshot().recordModePskId
+        let records = await pairingStore.listRecords()
+        guard let shared = records.first(where: { $0.pskId == fallbackId && $0.serverId == nil }) else {
+            // Mis-provisioned fallback: offer a fresh PSK; the insert failure
+            // at acknowledgement stays terminal.
+            return Psk.generate()
+        }
+        return shared.psk
+    }
+
+    func pairingAttemptTimedOut() async {
+        guard pendingPairingPsk != nil else { return }
+        clearPairingAttempt()
+        try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .attemptTimeout)))
+    }
+
+    func clearPairingAttempt() {
+        pendingPairingPsk = nil
+        pairingAttemptTask?.cancel()
+        pairingAttemptTask = nil
+    }
+
+    func handleServerPairFinalize(_: ServerPairFinalizeMessage) async {
+        guard let generated = pendingPairingPsk, pskCategory == .pairing, let pairingStore else { return }
+        clearPairingAttempt()
+        let records = await pairingStore.listRecords()
+        if records.contains(where: { $0.pskId == generated.pskId }) {
+            // Shared-record fallback admission: the offered PSK is the record-mode
+            // shared record, which the server now holds as its long-term PSK.
+            await pairingStore.markUsed(pskId: generated.pskId)
+            controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
+            return
+        }
+        do {
+            try await pairingStore.insert(PairingRecord(psk: generated, serverId: currentServerId))
+            controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
+        } catch {
+            // Pairing PSK is already committed to the wire before the server's acknowledgement;
+            // a later storage failure cannot substitute the shared record without desynchronizing keys.
+            Log.client.error("Pairing record persistence failed: \(error.localizedDescription)")
+            disconnectReason = .connectionLost(nil)
+            await transport.disconnect()
+        }
+    }
+
+    func handleServerUnpair(_: ServerUnpairMessage) async {
+        guard case .longTerm = pskCategory else { return }
+        if let pairingStore {
+            let records = await pairingStore.listRecords()
+            if let record = records.first(where: { $0.psk.pskId == matchedPskId }), record.serverId != nil {
+                await pairingStore.remove(pskId: matchedPskId)
+            }
+        }
+        try? await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: .unpaired)))
+        disconnectReason = .explicit(.unpaired)
+        await transport.disconnect()
     }
 
     func handleServerTime(
@@ -130,10 +386,13 @@ extension SendspinConnection {
             serverTransmitted: message.payload.serverTransmitted,
             clientReceived: clientReceived
         )
-        // First-sync flip: once the filter converges, allow chunks through the gate.
+        // First-sync flip: once the filter converges, allow chunks through the gate
+        // and report readiness — `available` becomes true here, and the spec's
+        // initial client/state goes out on this transition.
         if !isClockSynced, await clock.hasSynced {
             isClockSynced = true
             controlSink.enqueue(.clockSyncEstablished)
+            try? await sendClientStateIfChanged()
         }
 
         // Push updated snapshot for sync correction (per-frame cross-boundary).
@@ -362,7 +621,7 @@ extension SendspinConnection {
         case .volume:
             if let volume = playerCmd.volume {
                 // Clamp to the spec's 0–100 range rather than trusting the server,
-                // matching set_static_delay below and the local setVolume API.
+                // matching set_output_delay below and the local setVolume API.
                 let clamped = max(0, min(100, volume))
                 currentVolume = clamped
                 await audioEngine.setGain(Float(clamped) / 100.0)
@@ -378,13 +637,13 @@ extension SendspinConnection {
                 try? await sendClientStateIfChanged()
             }
 
-        case .setStaticDelay:
-            if let delayMs = playerCmd.staticDelayMs {
+        case .setOutputDelay:
+            if let delayMs = playerCmd.outputDelayMs {
                 // Clamp to the spec range rather than trusting the server.
-                let clamped = max(0, min(maxStaticDelayMs, delayMs))
-                currentStaticDelayMs = clamped
-                audioEngine.commands.enqueue(.setStaticDelay(clamped))
-                controlSink.enqueue(.staticDelayChanged(milliseconds: clamped))
+                let clamped = max(0, min(maxOutputDelayMs, delayMs))
+                currentOutputDelayMs = clamped
+                audioEngine.commands.enqueue(.setOutputDelay(clamped))
+                controlSink.enqueue(.outputDelayChanged(milliseconds: clamped))
                 try? await sendClientStateIfChanged()
             }
         }

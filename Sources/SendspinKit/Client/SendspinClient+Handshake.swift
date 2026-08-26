@@ -7,7 +7,28 @@ struct SessionFormatNegotiation: Sendable {
     let effectivePlayerFormats: [AudioFormatSpec]?
 }
 
+enum PairingCandidateBuilder {
+    static func candidates(configuration: PairingConfiguration?) async -> [PskCandidate] {
+        var candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]
+        guard let configuration else { return candidates }
+        let current = await configuration.runtime.snapshot()
+        if current.pairingPskEnabled {
+            candidates.append(PskCandidate(psk: current.pairingPsk, category: .pairing))
+        }
+        let records = await configuration.store.listRecords()
+        candidates.append(contentsOf: records.map {
+            PskCandidate(psk: $0.psk, category: .longTerm, requiredServerId: $0.serverId)
+        })
+        return candidates
+    }
+}
+
 extension SendspinClient {
+    /// Build the live candidate set for one connection attempt.
+    func pairingCandidates() async -> [PskCandidate] {
+        await PairingCandidateBuilder.candidates(configuration: pairingConfiguration)
+    }
+
     /// Capture one capability snapshot and derive the player catalog for a session.
     func makeSessionFormatNegotiation() async throws(OutputFormatError) -> SessionFormatNegotiation {
         await sessionNegotiationHook()
@@ -33,8 +54,40 @@ extension SendspinClient {
         )
     }
 
+    /// Prepare pairing storage and restore persisted management settings once per client lifetime.
+    func preparePairingConfiguration() async {
+        guard !pairingSetupComplete, let configuration = pairingConfiguration else { return }
+        pairingSetupComplete = true
+        await configuration.store.ensurePreProvisionedSharedRecord(configuration.preProvisionedSharedRecord)
+        let current = await configuration.runtime.snapshot()
+        let initial = PairingManagementConfiguration(
+            pairingPsk: current.pairingPsk,
+            pairingPskEnabled: current.pairingPskEnabled,
+            recordModePskId: current.recordModePskId,
+            unpairedAccessEnabled: unpairedAccessEnabled
+        )
+        let loaded = await configuration.store.loadManagementConfiguration(default: initial)
+        await configuration.runtime.update(loaded)
+    }
+
+    func pairingRuntimeConfiguration() async -> PairingManagementConfiguration {
+        guard let runtime = pairingConfiguration?.runtime else {
+            return PairingManagementConfiguration(
+                pairingPsk: .sentinel,
+                pairingPskEnabled: false,
+                recordModePskId: "",
+                unpairedAccessEnabled: unpairedAccessEnabled
+            )
+        }
+        return await runtime.snapshot()
+    }
+
     /// Build the client/hello payload from the catalog fixed for this session.
-    func buildClientHelloPayload(effectivePlayerFormats: [AudioFormatSpec]? = nil) -> ClientHelloPayload {
+    func buildClientHelloPayload(
+        effectivePlayerFormats: [AudioFormatSpec]? = nil,
+        pairingPskEnabled: Bool,
+        unpairedAccessEnabled: Bool? = nil
+    ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
         if roleSet.contains(.playerV1), let playerConfig {
             let formats = effectivePlayerFormats ?? playerConfig.supportedFormats
@@ -52,14 +105,17 @@ extension SendspinClient {
         }
 
         return ClientHelloPayload(
-            clientId: clientId,
             name: name,
             deviceInfo: deviceInfo,
-            version: 1,
+            trustLevel: .none,
+            supportedPairMethods: pairingPskEnabled
+                ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
+                : [],
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled ?? self.unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,
             artworkV1Support: artworkV1Support,
-            visualizerV1Support: roleSet.contains(.visualizerV1) ? VisualizerSupport() : nil
+            visualizerV1Support: nil
         )
     }
 }

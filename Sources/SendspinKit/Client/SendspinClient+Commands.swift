@@ -83,6 +83,9 @@ public extension SendspinClient {
         try requireOpen()
         guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
+        guard await connection.isRehandshakeInProgress == false else {
+            throw SendspinClientError.handshakeIncomplete
+        }
         try await connection.requireActiveRole(.playerV1)
         let request = PlayerFormatRequest(
             codec: codec,
