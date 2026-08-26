@@ -163,7 +163,7 @@ actor NWWebSocketTransport: ClientDialingTransport {
     }
 
     func sendRawText(_ text: String) async throws {
-        // Same dead-but-non-nil guard as send() above.
+        // Text frames require an established connection.
         guard let connection, connection.state == .ready else {
             throw TransportError.notConnected
         }
@@ -178,7 +178,7 @@ actor NWWebSocketTransport: ClientDialingTransport {
     }
 
     func sendBinary(_ data: Data) async throws {
-        // Same dead-but-non-nil guard as send() above.
+        // Binary frames require an established connection.
         guard let connection, connection.state == .ready else {
             throw TransportError.notConnected
         }

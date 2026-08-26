@@ -346,13 +346,15 @@ struct SendspinConnectionTests {
         // Enable goodbye gate so disconnect can run to its await
         await transport.enableGoodbyeGate()
 
-        // Start disconnect (will park on goodbye gate)
+        // Start disconnect (will park on the next outbound frame).
         async let disconnectTask = connection.disconnect(reason: .userRequest)
 
-        // Give it time to reach the gate
-        try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+        #expect(
+            await waitUntil { await transport.isGoodbyeGateWaiting },
+            "disconnect must reach the outbound gate before the competing loss"
+        )
 
-        // Now inject loss while goodbye is parked
+        // Now inject loss while the goodbye is parked
         await transport.finishStreams()
 
         // Release the gate to let disconnect complete

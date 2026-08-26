@@ -39,11 +39,9 @@ actor MockTransport: ClientDialingTransport {
     /// exactly once across idempotent/concurrent shutdown paths (not just "did not hang").
     private(set) var disconnectCallCount = 0
 
-    /// When enabled, a `client/goodbye` send suspends until ``releaseGoodbyeGate()``.
+    /// When enabled, the next outbound frame suspends until ``releaseGoodbyeGate()``.
     private var goodbyeGateEnabled = false
     private var goodbyeGateContinuation: CheckedContinuation<Void, Never>?
-
-    private let encoder = SendspinEncoding.makeEncoder()
 
     // MARK: - SendspinTransport conformance
 
@@ -53,26 +51,11 @@ actor MockTransport: ClientDialingTransport {
         await inbox.next()
     }
 
-    func send(_ message: some Codable & Sendable) async throws {
-        if shouldFailOnSend {
-            throw MockTransportError.simulatedFailure
-        }
-        let data = try encoder.encode(message)
-        // Deterministic seam for the disconnect-vs-loss race: block only the
-        // `client/goodbye` send so a test can pin `disconnect()` past its entry
-        // guard, mid-teardown, while another teardown path runs.
-        // Match "goodbye" rather than the full "client/goodbye": JSONEncoder escapes
-        // the slash ("client\/goodbye"), and only the goodbye message carries the word.
-        if goodbyeGateEnabled, let text = String(data: data, encoding: .utf8), text.contains("goodbye") {
-            await withCheckedContinuation { goodbyeGateContinuation = $0 }
-        }
-        sentTextMessages.append(data)
-    }
-
     func sendRawText(_ text: String) async throws {
         if shouldFailOnSend {
             throw MockTransportError.simulatedFailure
         }
+        await parkNextOutboundFrameIfArmed()
         sentTextMessages.append(Data(text.utf8))
         outbox.yield(.text(text))
     }
@@ -81,8 +64,15 @@ actor MockTransport: ClientDialingTransport {
         if shouldFailOnSend {
             throw MockTransportError.simulatedFailure
         }
+        await parkNextOutboundFrameIfArmed()
         sentBinaryMessages.append(data)
         outbox.yield(.binary(data))
+    }
+
+    private func parkNextOutboundFrameIfArmed() async {
+        guard goodbyeGateEnabled else { return }
+        goodbyeGateEnabled = false
+        await withCheckedContinuation { goodbyeGateContinuation = $0 }
     }
 
     /// Full teardown: marks disconnected and finishes both streams.
@@ -158,13 +148,13 @@ actor MockTransport: ClientDialingTransport {
         shouldFailOnSend = value
     }
 
-    /// Arm the goodbye gate: the next `client/goodbye` send will suspend until
+    /// Arm the gate: the next outbound frame will suspend until
     /// ``releaseGoodbyeGate()``.
     func enableGoodbyeGate() {
         goodbyeGateEnabled = true
     }
 
-    /// Whether a `client/goodbye` send is currently parked on the gate.
+    /// Whether an outbound frame is currently parked on the gate.
     var isGoodbyeGateWaiting: Bool {
         goodbyeGateContinuation != nil
     }

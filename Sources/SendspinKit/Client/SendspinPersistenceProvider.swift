@@ -12,7 +12,7 @@ import Foundation
 /// the stored value for arbitration. Back it with whatever storage is appropriate —
 /// `UserDefaults`, a file, the keychain, etc.
 ///
-/// If no provider is supplied to ``SendspinClient/init(clientId:name:roles:deviceInfo:playerConfig:artworkConfig:persistenceProvider:)``,
+/// If no provider is supplied to ``SendspinClient/init(identity:name:roles:deviceInfo:playerConfig:artworkConfig:persistenceProvider:)``,
 /// SendspinKit performs no implicit persistence and treats the last-played value as
 /// absent during multi-server arbitration. Host apps that need the spec's persisted
 /// last-played tiebreak should provide an implementation explicitly.

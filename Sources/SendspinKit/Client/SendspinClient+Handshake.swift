@@ -12,8 +12,9 @@ enum PairingCandidateBuilder {
         var candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]
         guard let configuration else { return candidates }
         let current = await configuration.runtime.snapshot()
-        guard current.pairingPskEnabled else { return candidates }
-        candidates.append(PskCandidate(psk: current.pairingPsk, category: .pairing))
+        if current.pairingPskEnabled {
+            candidates.append(PskCandidate(psk: current.pairingPsk, category: .pairing))
+        }
         let records = await configuration.store.listRecords()
         candidates.append(contentsOf: records.map {
             PskCandidate(psk: $0.psk, category: .longTerm, requiredServerId: $0.serverId)
@@ -84,7 +85,7 @@ extension SendspinClient {
     /// Build the client/hello payload from the catalog fixed for this session.
     func buildClientHelloPayload(
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
-        pairingPskEnabled: Bool = false,
+        pairingPskEnabled: Bool,
         unpairedAccessEnabled: Bool? = nil
     ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?

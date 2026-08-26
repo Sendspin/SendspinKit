@@ -97,7 +97,7 @@ final class CLIPlayer {
         let pairing = enablePairing ? PairingConfiguration() : nil
         if let pairing {
             let token = PairingToken(clientKey: identity.publicKeyBytes, pairingPsk: pairing.pairingPsk)
-            print("[PAIRING] SP:0 token: \(token.string)")
+            print("[PAIRING] token: \(token.string)")
         }
         let client = try SendspinClient(
             identity: identity,
@@ -432,7 +432,7 @@ final class CLIPlayer {
         let pairing = enablePairing ? PairingConfiguration() : nil
         if let pairing {
             let token = PairingToken(clientKey: identity.publicKeyBytes, pairingPsk: pairing.pairingPsk)
-            print("[PAIRING] SP:0 token: \(token.string)")
+            print("[PAIRING] token: \(token.string)")
         }
         let client = try SendspinClient(
             identity: identity,

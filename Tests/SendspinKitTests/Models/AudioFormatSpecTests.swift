@@ -647,8 +647,6 @@ struct AudioFormatSpecTests {
         let service = AudioOutputCapabilityService(
             initialSnapshot: initial,
             platformMonitor: monitor,
-            queueSettleInterval: .milliseconds(30),
-            queueMaximumSuppression: .milliseconds(60),
             sleep: { _ in
                 await sleepEntered.set(true)
                 for await _ in sleepRelease {

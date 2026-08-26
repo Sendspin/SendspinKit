@@ -153,12 +153,11 @@ extension SendspinConnection {
             if candidate.category == .longTerm, let pairingStore {
                 await pairingStore.markUsed(pskId: candidate.psk.pskId)
             }
-            let unpairedAccessEnabled = await pairingConfigurationRuntime?.snapshot().unpairedAccessEnabled
-                ?? sessionContext.unpairedAccessEnabled
+            let advertisement = await livePairingAdvertisement()
             sessionContext = ActivationAdmissibility.SessionContext(
                 category: candidate.category,
-                unpairedAccessEnabled: unpairedAccessEnabled,
-                offeredPairMethods: Set(clientHelloPayload.supportedPairMethods.map(\.method))
+                unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
+                offeredPairMethods: advertisement.offeredPairMethods
             )
             activeRoles = []
             lastSentClientState = nil
@@ -178,11 +177,40 @@ extension SendspinConnection {
         }
     }
 
+    func livePairingAdvertisement() async -> (
+        supportedPairMethods: [PairMethodDescriptor],
+        unpairedAccessEnabled: Bool,
+        offeredPairMethods: Set<String>
+    ) {
+        guard let runtime = pairingConfigurationRuntime else {
+            return (
+                clientHelloPayload.supportedPairMethods,
+                clientHelloPayload.unpairedAccess.enabled,
+                Set(clientHelloPayload.supportedPairMethods.map(\.method))
+            )
+        }
+        let configuration = await runtime.snapshot()
+        let methods = configuration.pairingPskEnabled
+            ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
+            : []
+        return (methods, configuration.unpairedAccessEnabled, Set(methods.map(\.method)))
+    }
+
     func handleServerHello(_ message: ServerHelloMessage) async {
         guard awaitingRehandshakeActivation else { return }
         serverName = message.payload.name
-        var hello = clientHelloPayload
-        hello.trustLevel = pskCategory == .longTerm ? .user : .none
+        let advertisement = await livePairingAdvertisement()
+        let hello = ClientHelloPayload(
+            name: clientHelloPayload.name,
+            deviceInfo: clientHelloPayload.deviceInfo,
+            trustLevel: pskCategory == .longTerm ? .user : .none,
+            supportedPairMethods: advertisement.supportedPairMethods,
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: advertisement.unpairedAccessEnabled),
+            supportedRoles: clientHelloPayload.supportedRoles,
+            playerV1Support: clientHelloPayload.playerV1Support,
+            artworkV1Support: clientHelloPayload.artworkV1Support,
+            visualizerV1Support: clientHelloPayload.visualizerV1Support
+        )
         do {
             try await sendWrapped(ClientHelloMessage(payload: hello), bypassRehandshakeGate: true)
         } catch {
@@ -191,6 +219,12 @@ extension SendspinConnection {
     }
 
     func handleServerActivate(_ message: ServerActivateMessage) async {
+        let advertisement = await livePairingAdvertisement()
+        sessionContext = ActivationAdmissibility.SessionContext(
+            category: sessionContext.category,
+            unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
+            offeredPairMethods: advertisement.offeredPairMethods
+        )
         let nextActivities = Set(message.payload.activities)
         let nextRoles: Set<VersionedRole> = if let announcedRoles = message.payload.activeRoles {
             Set(announcedRoles).intersection(roles)

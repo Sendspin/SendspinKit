@@ -586,19 +586,20 @@ struct MessageEncodingTests {
 
         let managementJSON = """
         {
-            "type": "management/result",
+            "type": "management/set-pairing-config",
             "payload": {
-                "result": "ok",
-                "data": {"records": []},
-                "storage": null,
+                "pairing_psk": {"enabled": true},
+                "static_pairing_code": null,
+                "dynamic_pairing_code": null,
+                "record_mode": null,
+                "unpaired_access": null,
                 "future_management_field": false
             }
         }
         """
         let managementData = try #require(managementJSON.data(using: .utf8))
-        let management = try decoder.decode(ManagementResultMessage.self, from: managementData)
-        #expect(management.payload.result == .success)
-        #expect(management.payload.data != nil)
+        let management = try decoder.decode(ManagementSetPairingConfigMessage.self, from: managementData)
+        #expect(management.payload.pairingPsk?.enabled == true)
 
         let serverHelloJSON = """
         {

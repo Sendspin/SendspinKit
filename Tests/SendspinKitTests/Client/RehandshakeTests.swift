@@ -12,6 +12,7 @@ struct RehandshakeTests {
         let server: MockNoiseServer
         let store: any PairingRecordStore
         let pairingPsk: Psk
+        let runtime: PairingConfigurationRuntime
     }
 
     /// A facade session established on the sentinel PSK, with a pairing
@@ -24,6 +25,7 @@ struct RehandshakeTests {
         activeRoles: [VersionedRole] = [.playerV1],
         seededLongTermPsk: Psk? = nil,
         seededLongTermShared: Bool = false,
+        pairingEnabled: Bool = true,
         initialPsk: Psk = .sentinel,
         store suppliedStore: (any PairingRecordStore)? = nil,
         pairingAttemptTimeout: Duration = .seconds(120)
@@ -41,7 +43,7 @@ struct RehandshakeTests {
             name: "Rehandshake Client",
             roles: [.playerV1],
             playerConfig: playerConfig,
-            pairing: PairingConfiguration(pairingPsk: pairingPsk, store: store),
+            pairing: PairingConfiguration(pairingPsk: pairingPsk, store: store, enabled: pairingEnabled),
             audioOutputCapabilityProvider: AudioOutputCapabilityService(),
             pairingAttemptTimeout: pairingAttemptTimeout
         )
@@ -56,7 +58,8 @@ struct RehandshakeTests {
         try await server.establishSession(activities: activities, activeRoles: activeRoles)
         try await accepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
-        return Session(client: client, server: server, store: store, pairingPsk: pairingPsk)
+        let runtime = try #require(await MainActor.run { client.pairingConfiguration?.runtime })
+        return Session(client: client, server: server, store: store, pairingPsk: pairingPsk, runtime: runtime)
     }
 
     /// Drive one re-handshake and the post-swap `server/hello`, returning once the
@@ -75,10 +78,60 @@ struct RehandshakeTests {
         })
     }
 
+    private func supportedPairMethods(inHello hello: Data) throws -> [String] {
+        let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        let methods = try #require(payload["supported_pair_methods"] as? [[String: Any]])
+        return try methods.map { try #require($0["method"] as? String) }
+    }
+
     private func trustLevel(inHello hello: Data) throws -> String {
         let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
         let payload = try #require(object["payload"] as? [String: Any])
         return try #require(payload["trust_level"] as? String)
+    }
+
+    @Test("Re-handshake omits a pairing method disabled at runtime")
+    func rehandshakeUsesLiveDisabledPairingAdvertisement() async throws {
+        let session = try await makePairableSession()
+        let runtime = session.runtime
+        let current = await runtime.snapshot()
+        await runtime.update(PairingManagementConfiguration(
+            pairingPsk: current.pairingPsk,
+            pairingPskEnabled: false,
+            recordModePskId: current.recordModePskId,
+            unpairedAccessEnabled: current.unpairedAccessEnabled
+        ))
+
+        try await rehandshake(session.server, to: .sentinel)
+        let hello = try #require(await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).last)
+        #expect(try supportedPairMethods(inHello: hello).isEmpty)
+        try await session.server.sendActivation(activities: [], activeRoles: [])
+        await session.client.disconnect()
+    }
+
+    @Test("Re-handshake enables pairing admission from a disabled session")
+    func rehandshakeUsesLiveEnabledPairingAdvertisementAndAdmission() async throws {
+        let session = try await makePairableSession(pairingEnabled: false)
+        let runtime = session.runtime
+        let current = await runtime.snapshot()
+        await runtime.update(PairingManagementConfiguration(
+            pairingPsk: current.pairingPsk,
+            pairingPskEnabled: true,
+            recordModePskId: current.recordModePskId,
+            unpairedAccessEnabled: current.unpairedAccessEnabled
+        ))
+
+        try await rehandshake(session.server, to: session.pairingPsk)
+        let hello = try #require(await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).last)
+        #expect(try supportedPairMethods(inHello: hello) == [PairMethod.pairingPsk])
+        try await session.server.sendJSON(
+            #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
+        )
+        #expect(await waitUntil {
+            await session.server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).count == 1
+        })
+        await session.client.disconnect()
     }
 
     @Test("Pairing promotion: sentinel to pairing PSK to persisted long-term PSK")

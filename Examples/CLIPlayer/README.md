@@ -28,7 +28,7 @@ The CLI player supports both automatic discovery and manual connection:
 # Auto-discover servers on the network
 swift run CLIPlayer
 
-# Enable Pairing PSK and print the one-time setup token
+# Enable Pairing PSK and print the setup token (valid for this process's pairing configuration lifetime)
 swift run CLIPlayer --pairing
 
 # Auto-discover with custom client name
@@ -116,10 +116,10 @@ let config = PlayerConfiguration(
 )
 
 // Create client
-let client = SendspinClient(
-    identity: SendspinIdentity.generate(),
+let client = try SendspinClient(
+    identity: .generate(),
     name: "My Player",
-    roles: [.player],
+    roles: [.playerV1],
     playerConfig: config
 )
 
@@ -136,8 +136,8 @@ for await event in client.events() {
 }
 
 // Control playback
-await client.setVolume(0.75)
-await client.setMute(true)
+try await client.setVolume(75)
+try await client.setMute(true)
 ```
 
 ## Requirements

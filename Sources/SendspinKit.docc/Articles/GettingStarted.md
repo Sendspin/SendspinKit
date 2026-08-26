@@ -23,8 +23,8 @@ A ``SendspinClient`` needs a unique ID, display name, and at least one role. Pla
 ```swift
 import SendspinKit
 
-let client = SendspinClient(
-    clientId: UUID().uuidString,
+let client = try SendspinClient(
+    identity: .generate(),
     name: "Kitchen Speaker",
     roles: [.playerV1, .metadataV1],
     playerConfig: PlayerConfiguration(
