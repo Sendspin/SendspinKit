@@ -246,6 +246,14 @@ live run against Music Assistant (unpaired access).
 **Review gate 3:** live Music Assistant pair → disconnect → reconnect-on-long-term-PSK
 round trip; crypto-adjacent review of re-handshake key-swap boundaries.
 
+**Gate 3 outcome (PASSED):** verified live against head-of-dev Music Assistant —
+SP:0 token through MA's setup-flow API, pairing re-handshake, trust `none → user`,
+long-term record persisted and reused across reconnects and MA restarts, and
+audible FLAC playback. The run surfaced and fixed a real engine bug (format change
+during startup priming wedged on the disposed queue). Note: the wire currently
+speaks `static_delay_ms`/`set_static_delay` to match deployed servers; flip the
+coding keys back once the spec's output-delay rename is mainlined server-side.
+
 ## Phase 4 — Management
 
 - All six requests + single `management/result` reply (one-in-flight, ordered):
@@ -275,6 +283,10 @@ round trip; crypto-adjacent review of re-handshake key-swap boundaries.
 of the green outcome-matrix tests.
 
 ## Phase 5 — Polish, audit, docs
+
+- Conformance adapter: opt into `supports_request_format` and drive the two
+  `stream/request-format` renegotiation scenarios (SendspinKit supports the flow;
+  only the adapter capability metadata and trigger wiring are missing).
 
 - Forward-compat audit: unknown payload fields ignored everywhere; we send no
   undefined fields.
