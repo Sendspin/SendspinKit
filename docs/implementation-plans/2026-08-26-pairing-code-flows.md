@@ -96,6 +96,15 @@ The current `jedisct1/swift-sodium` package is the best packaging baseline:
 
 ### Provisional decision for implementation
 
+**Experiment outcome (executed): MISMATCH.** Monocypher `crypto_elligator_map`
+(commit 1830c06d) does not reproduce the draft's `calculate_generator` vector
+(input `03998087…e4aed153` → Monocypher `97ef2dc8…cd72fe23` vs expected
+`d04bf6d4…2f05a73f`); bit-mask variants don't close the gap, the algebraic
+diagnosis shows the draft's value is RFC 9380 Elligator2 with Z=2 while
+Monocypher implements a different documented convention, and the cpace-py
+oracle independently confirms the expected value. Phase A therefore takes the
+fallback branch below: the vendored-libsodium fe25519 composition shim.
+
 Phase A begins with a **bounded vector experiment**, not an implementation commitment. Run the draft-irtf-cfrg-cpace-21 Appendix B `calculate_generator` vectors against Monocypher's `crypto_elligator_map`, feeding `SHA-512(generator_string)` through RFC 7748 `decodeUCoordinate` exactly as the draft specifies. Run the same vectors against `arturpragacz/cpace-py` as the second test oracle. This pure-Python CPACE-X25519-SHA512 implementation targets draft-21, passes the official vectors, and is the implementation on which aiosendspin depends; use it for independent A-side transcript fixtures as well. It is not a shipped dependency: Python and non-constant-time code are unsuitable for production.
 
 If the bounded experiment matches, the generator map comes from Monocypher's small, audited C implementation under its permissive license, usable on all Apple platforms. Pin `https://github.com/jedisct1/swift-sodium.git` at `0.9.1`, consume the `Clibsodium` binary target rather than the broad Swift convenience API, and record the resolved binary/libsodium revision. Use libsodium only for `crypto_scalarmult_curve25519` behind `scalar_mult`/`scalar_mult_vfy` and any other primitives already used by SendspinKit. If the vectors do **not** match, proceed directly to the fallback: vendor libsodium **source** and add a ≤~30-line C composition shim exposing its internal `fe25519` field operations composed into the RFC 9380 §6.7.1 Elligator2 Montgomery map plus the draft's generator derivation. The fallback is composition only: no newly authored field arithmetic. Both branches end with vector-pinned generator, scalar, ISK, and MCF behavior.
