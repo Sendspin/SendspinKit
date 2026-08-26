@@ -540,11 +540,11 @@ struct DynamicPairingTimeoutTests {
         try await session.server.sendJSON(pairInit)
         let initialCode = await codeEvent(session.events)
         #expect(initialCode != nil)
-        let endedTask = Task { await endedEvent(session.events, reason: .userCancelled) }
-        let clearedTask = Task { await collectClientEvent(from: session.events) { $0 == .pairingCodeChanged(nil) } }
         try await session.server.sendJSON("{\"type\":\"pair/abort\",\"payload\":{\"reason\":\"user_cancelled\"}}")
-        #expect(await endedTask.value != nil)
-        #expect(await clearedTask.value != nil)
+        // The events stream is single-consumer and the connection enqueues the
+        // ended reason before the code clear, so sequential reads are ordered.
+        #expect(await endedEvent(session.events, reason: .userCancelled) != nil)
+        #expect(await collectClientEvent(from: session.events) { $0 == .pairingCodeChanged(nil) } != nil)
         await session.client.disconnect()
     }
 

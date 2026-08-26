@@ -100,10 +100,16 @@ extension SendspinConnection {
             return
         }
         let configuration = await runtime.snapshot()
+        let failureCount = await pairingStore?.dynamicPairingFailureCount() ?? 0
         await sendManagementResult(
             .success,
             data: .pairingConfig(ManagementPairingConfigData(
                 pairingPsk: ManagementPairingPskData(enabled: configuration.pairingPskEnabled),
+                staticPairingCode: ManagementPairingCodeData(enabled: configuration.staticPairingCodeEnabled),
+                dynamicPairingCode: ManagementDynamicPairingCodeData(
+                    enabled: configuration.dynamicPairingCodeEnabled,
+                    escalated: failureCount >= 5
+                ),
                 recordMode: ManagementRecordModeData(pskId: configuration.recordModePskId),
                 unpairedAccess: ManagementUnpairedAccessData(enabled: configuration.unpairedAccessEnabled)
             )),
@@ -111,6 +117,8 @@ extension SendspinConnection {
         )
     }
 
+    // The patch applies several independent fields before one atomic save.
+    // swiftlint:disable:next function_body_length
     func handleManagementSetPairingConfig(_ message: ManagementSetPairingConfigMessage) async throws {
         guard managementGuard(), let runtime = pairingConfigurationRuntime, let store = pairingStore else {
             await sendManagementResult(.permissionDenied)
@@ -135,20 +143,54 @@ extension SendspinConnection {
                     pairingPsk: psk,
                     pairingPskEnabled: patch.enabled ?? old.pairingPskEnabled,
                     recordModePskId: next.recordModePskId,
-                    unpairedAccessEnabled: next.unpairedAccessEnabled
+                    unpairedAccessEnabled: next.unpairedAccessEnabled,
+                    dynamicPairingCodeEnabled: next.dynamicPairingCodeEnabled,
+                    staticPairingCodeEnabled: next.staticPairingCodeEnabled,
+                    staticPairingCode: next.staticPairingCode
                 )
             } else if let enabled = patch.enabled {
                 next = PairingManagementConfiguration(
                     pairingPsk: old.pairingPsk,
                     pairingPskEnabled: enabled,
                     recordModePskId: next.recordModePskId,
-                    unpairedAccessEnabled: next.unpairedAccessEnabled
+                    unpairedAccessEnabled: next.unpairedAccessEnabled,
+                    dynamicPairingCodeEnabled: next.dynamicPairingCodeEnabled,
+                    staticPairingCodeEnabled: next.staticPairingCodeEnabled,
+                    staticPairingCode: next.staticPairingCode
                 )
             }
         }
-        if message.payload.staticPairingCode != nil || message.payload.dynamicPairingCode != nil {
-            await sendManagementResult(.invalid)
-            return
+        if let patch = message.payload.staticPairingCode {
+            guard patch.code == nil || patch.code.map(PairingManagementConfiguration.isValidStaticPairingCode) == true else {
+                await sendManagementResult(.invalid)
+                return
+            }
+            let code = patch.code ?? next.staticPairingCode
+            let enabled = patch.enabled ?? next.staticPairingCodeEnabled
+            guard !enabled || code != nil else {
+                await sendManagementResult(.invalid)
+                return
+            }
+            next = PairingManagementConfiguration(
+                pairingPsk: next.pairingPsk,
+                pairingPskEnabled: next.pairingPskEnabled,
+                recordModePskId: next.recordModePskId,
+                unpairedAccessEnabled: next.unpairedAccessEnabled,
+                dynamicPairingCodeEnabled: next.dynamicPairingCodeEnabled,
+                staticPairingCodeEnabled: enabled,
+                staticPairingCode: code
+            )
+        }
+        if let patch = message.payload.dynamicPairingCode, let enabled = patch.enabled {
+            next = PairingManagementConfiguration(
+                pairingPsk: next.pairingPsk,
+                pairingPskEnabled: next.pairingPskEnabled,
+                recordModePskId: next.recordModePskId,
+                unpairedAccessEnabled: next.unpairedAccessEnabled,
+                dynamicPairingCodeEnabled: enabled,
+                staticPairingCodeEnabled: next.staticPairingCodeEnabled,
+                staticPairingCode: next.staticPairingCode
+            )
         }
         if let recordMode = message.payload.recordMode {
             let records = await store.listRecords()
@@ -160,7 +202,10 @@ extension SendspinConnection {
                 pairingPsk: next.pairingPsk,
                 pairingPskEnabled: next.pairingPskEnabled,
                 recordModePskId: record.pskId,
-                unpairedAccessEnabled: next.unpairedAccessEnabled
+                unpairedAccessEnabled: next.unpairedAccessEnabled,
+                dynamicPairingCodeEnabled: next.dynamicPairingCodeEnabled,
+                staticPairingCodeEnabled: next.staticPairingCodeEnabled,
+                staticPairingCode: next.staticPairingCode
             )
         }
         if let unpairedAccess = message.payload.unpairedAccess, let enabled = unpairedAccess.enabled {
@@ -168,16 +213,20 @@ extension SendspinConnection {
                 pairingPsk: next.pairingPsk,
                 pairingPskEnabled: next.pairingPskEnabled,
                 recordModePskId: next.recordModePskId,
-                unpairedAccessEnabled: enabled
+                unpairedAccessEnabled: enabled,
+                dynamicPairingCodeEnabled: next.dynamicPairingCodeEnabled,
+                staticPairingCodeEnabled: next.staticPairingCodeEnabled,
+                staticPairingCode: next.staticPairingCode
             )
         }
         do {
             try await store.saveManagementConfiguration(next)
             await runtime.update(next)
+            let advertisement = await livePairingAdvertisement()
             sessionContext = ActivationAdmissibility.SessionContext(
                 category: sessionContext.category,
-                unpairedAccessEnabled: next.unpairedAccessEnabled,
-                offeredPairMethods: sessionContext.offeredPairMethods
+                unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
+                offeredPairMethods: advertisement.offeredPairMethods
             )
             await sendManagementResult(.success)
         } catch PairingRecordStoreError.storageExhausted {
@@ -200,6 +249,14 @@ extension SendspinConnection {
             await sendManagementResult(.permissionDenied)
             return
         }
-        await sendManagementResult(.invalid)
+        let configuration = await pairingConfigurationRuntime?.snapshot()
+        guard configuration?.dynamicPairingCodeEnabled == true
+            || (configuration?.staticPairingCodeEnabled == true && configuration?.staticPairingCode != nil)
+        else {
+            await sendManagementResult(.invalid)
+            return
+        }
+        await openPairingWindow()
+        await sendManagementResult(.success)
     }
 }

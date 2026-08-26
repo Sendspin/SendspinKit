@@ -172,8 +172,9 @@ struct ManagementTests {
         #expect((data["pairing_psk"] as? [String: Any])?["enabled"] as? Bool == false)
         #expect((data["record_mode"] as? [String: Any])?["psk_id"] as? String == fallback.pskId)
         #expect((data["unpaired_access"] as? [String: Any])?["enabled"] as? Bool == false)
-        #expect(data["static_pairing_code"] == nil)
-        #expect(data["dynamic_pairing_code"] == nil)
+        #expect((data["static_pairing_code"] as? [String: Any])?["enabled"] as? Bool == false)
+        #expect((data["dynamic_pairing_code"] as? [String: Any])?["enabled"] as? Bool == false)
+        #expect((data["dynamic_pairing_code"] as? [String: Any])?["escalated"] as? Bool == false)
         #expect((data["pairing_psk"] as? [String: Any])?["psk"] == nil)
         #expect(String(data: reply, encoding: .utf8)?.contains(pairing.base64URL) == false)
         await fixture.connection.shutdown()
@@ -268,7 +269,7 @@ struct ManagementTests {
         await fixture.connection.shutdown()
     }
 
-    @Test("set-pairing-config rejects missing, stored-pubkey, static-code, and dynamic-code configuration")
+    @Test("set-pairing-config rejects malformed and unsupported configuration")
     func setPairingConfigInvalid() async throws {
         let pairing = Psk.generate()
         let stored = Psk.generate()
@@ -288,7 +289,7 @@ struct ManagementTests {
         try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"enabled":true}}}"#)
         #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: 2)) == .invalid)
         try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"dynamic_pairing_code":{"enabled":true}}}"#)
-        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: 3)) == .invalid)
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: 3)) == .success)
         await fixture.connection.shutdown()
     }
 
@@ -388,6 +389,111 @@ struct ManagementTests {
         let reply = try await waitForManagementResult(from: fixture.server)
         #expect(resultCode(reply) == .permissionDenied)
         #expect(try rawPayload(reply)["storage"] == nil)
+        await fixture.connection.shutdown()
+    }
+
+    @Test("static code management validates, rotates, and never returns the secret")
+    func staticPairingCodePatchMatrix() async throws {
+        let pairing = Psk.generate()
+        let runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+            pairingPsk: pairing,
+            pairingPskEnabled: true,
+            recordModePskId: "unused-record-mode",
+            unpairedAccessEnabled: true
+        ))
+        let fixture = try await managementFixture(runtime: runtime)
+        var count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"enabled":true}}}"#)
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .invalid)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"1234567"}}}"#)
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .invalid)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"12345678","enabled":true}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .success)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(request(ManagementGetPairingConfigMessage.typeString))
+        let reply = try await waitForManagementResult(from: fixture.server, after: count)
+        let data = try #require(try rawPayload(reply)["data"] as? [String: Any])
+        #expect((data["static_pairing_code"] as? [String: Any])?["enabled"] as? Bool == true)
+        #expect(String(data: reply, encoding: .utf8)?.contains("12345678") == false)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"87654321"}}}"#)
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .success)
+        let snapshot = await runtime.snapshot()
+        #expect(snapshot.staticPairingCode == "87654321")
+        await fixture.connection.shutdown()
+    }
+
+    @Test("management open-pairing-window is invalid only without an enabled code method")
+    func openPairingWindowOutcomes() async throws {
+        let pairing = Psk.generate()
+        let runtime = PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing))
+        let fixture = try await managementFixture(runtime: runtime)
+        var count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(request(ManagementOpenPairingWindowMessage.typeString))
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .invalid)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"12345678","enabled":true}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .success)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(request(ManagementOpenPairingWindowMessage.typeString))
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .success)
+        count = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        try await fixture.server.sendJSON(request(ManagementOpenPairingWindowMessage.typeString))
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: count)) == .success)
+        await fixture.connection.shutdown()
+    }
+
+    @Test("management validates static-code forms, preserves records, derives escalation, and patches dynamic enablement")
+    func pairingCodeManagementCoverage() async throws {
+        let pairing = Psk.generate()
+        let established = PairingRecord(psk: Psk.generate(), serverId: "established-server")
+        let store = try InMemoryPairingRecordStore(records: [established], pairingPsk: pairing)
+        let runtime = PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing))
+        let fixture = try await managementFixture(store: store, runtime: runtime)
+        let malformed = ["", "1234567", "123456789", "1234-5678", "1234567a", "１２３４５６７８"]
+        var resultCount = await fixture.server.clientJSONMessages(ofType: ManagementResultMessage.typeString).count
+        for code in malformed {
+            try await fixture.server.sendJSON(
+                #"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"\#(code)"}}}"#
+            )
+            #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: resultCount)) == .invalid)
+            resultCount += 1
+        }
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"12345678","enabled":true}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: resultCount)) == .success)
+        resultCount += 1
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"static_pairing_code":{"code":"87654321"}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: resultCount)) == .success)
+        #expect(await store.listRecords().contains { $0.pskId == established.pskId && $0.serverId == established.serverId })
+        resultCount += 1
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"dynamic_pairing_code":{"enabled":true}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: resultCount)) == .success)
+        resultCount += 1
+        for _ in 0 ..< 5 {
+            _ = await store.incrementDynamicPairingFailureCount()
+        }
+        try await fixture.server.sendJSON(request(ManagementGetPairingConfigMessage.typeString))
+        let escalatedReply = try await waitForManagementResult(from: fixture.server, after: resultCount)
+        let escalatedData = try #require(try rawPayload(escalatedReply)["data"] as? [String: Any])
+        #expect((escalatedData["dynamic_pairing_code"] as? [String: Any])?["enabled"] as? Bool == true)
+        #expect((escalatedData["dynamic_pairing_code"] as? [String: Any])?["escalated"] as? Bool == true)
+        resultCount += 1
+        try await fixture.server.sendJSON(
+            #"{"type":"management/set-pairing-config","payload":{"dynamic_pairing_code":{"enabled":false}}}"#
+        )
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server, after: resultCount)) == .success)
         await fixture.connection.shutdown()
     }
 

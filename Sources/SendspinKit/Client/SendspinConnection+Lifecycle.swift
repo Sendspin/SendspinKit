@@ -177,6 +177,7 @@ extension SendspinConnection {
             controlSink.enqueue(.pairingCodeChanged(nil))
             dynamicPairingAttempt = nil
         }
+        staticPairingAttempt = nil
         pairingAttemptTask?.cancel()
         pairingWindowTask?.cancel()
 

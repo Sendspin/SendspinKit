@@ -65,7 +65,9 @@ extension SendspinClient {
             pairingPskEnabled: current.pairingPskEnabled,
             recordModePskId: current.recordModePskId,
             unpairedAccessEnabled: unpairedAccessEnabled,
-            dynamicPairingCodeEnabled: current.dynamicPairingCodeEnabled
+            dynamicPairingCodeEnabled: current.dynamicPairingCodeEnabled,
+            staticPairingCodeEnabled: current.staticPairingCodeEnabled,
+            staticPairingCode: current.staticPairingCode
         )
         let loaded = await configuration.store.loadManagementConfiguration(default: initial)
         await configuration.runtime.update(loaded)
@@ -78,7 +80,9 @@ extension SendspinClient {
                 pairingPskEnabled: false,
                 recordModePskId: "",
                 unpairedAccessEnabled: unpairedAccessEnabled,
-                dynamicPairingCodeEnabled: false
+                dynamicPairingCodeEnabled: false,
+                staticPairingCodeEnabled: false,
+                staticPairingCode: nil
             )
         }
         return await runtime.snapshot()
@@ -89,6 +93,7 @@ extension SendspinClient {
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
         pairingPskEnabled: Bool,
         dynamicPairingCodeEnabled: Bool = false,
+        staticPairingCodeEnabled: Bool = false,
         unpairedAccessEnabled: Bool? = nil
     ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
@@ -121,6 +126,12 @@ extension SendspinClient {
                         method: PairMethod.dynamicPairingCode,
                         outChannels: ["display"],
                         formats: ["digits", "qr_code"]
+                    ))
+                }
+                if staticPairingCodeEnabled {
+                    methods.append(PairMethodDescriptor(
+                        method: PairMethod.staticPairingCode,
+                        locations: ["operator"]
                     ))
                 }
                 return methods

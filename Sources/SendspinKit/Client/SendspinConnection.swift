@@ -135,7 +135,18 @@ actor SendspinConnection {
         var clientConfirmationSent: Bool
     }
 
+    struct StaticPairingAttempt {
+        let pairingIndex: UInt32
+        let sid: Data
+        let prs: Data
+        var serverShare: Data?
+        var cpace: CPace?
+        var secrets: CPaceSecrets?
+        var clientConfirmationSent: Bool
+    }
+
     var dynamicPairingAttempt: DynamicPairingAttempt?
+    var staticPairingAttempt: StaticPairingAttempt?
     var pairingActivateCounter: UInt32 = 0
     var pairingWindowOpen = false
     var pairingWindowTask: Task<Void, Never>?
@@ -253,6 +264,7 @@ actor SendspinConnection {
             self.pairingScalarBOverride = pairingScalarBOverride
         #endif
         dynamicPairingAttempt = nil
+        staticPairingAttempt = nil
         pairingWindowOpen = false
         pairingWindowTask = nil
         self.identityPrivateKey = identityPrivateKey

@@ -72,6 +72,8 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
     public let pairingPsk: Psk
     public let pairingPskEnabled: Bool
     public let dynamicPairingCodeEnabled: Bool
+    public let staticPairingCodeEnabled: Bool
+    public let staticPairingCode: String?
     public let recordModePskId: String
     public let unpairedAccessEnabled: Bool
 
@@ -80,13 +82,23 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
         pairingPskEnabled: Bool,
         recordModePskId: String,
         unpairedAccessEnabled: Bool,
-        dynamicPairingCodeEnabled: Bool = false
+        dynamicPairingCodeEnabled: Bool = false,
+        staticPairingCodeEnabled: Bool = false,
+        staticPairingCode: String? = nil
     ) {
+        precondition(staticPairingCode.map(Self.isValidStaticPairingCode) ?? true)
         self.pairingPsk = pairingPsk
         self.pairingPskEnabled = pairingPskEnabled
         self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
+        self.staticPairingCodeEnabled = staticPairingCodeEnabled
+        self.staticPairingCode = staticPairingCode
         self.recordModePskId = recordModePskId
         self.unpairedAccessEnabled = unpairedAccessEnabled
+    }
+
+    static func isValidStaticPairingCode(_ code: String) -> Bool {
+        let bytes = Array(code.utf8)
+        return bytes.count == 8 && bytes.allSatisfy { (48 ... 57).contains($0) }
     }
 }
 
@@ -264,6 +276,10 @@ public struct PairingConfiguration: Sendable {
     public let enabled: Bool
     /// Whether dynamic pairing-code activation is advertised.
     public let dynamicPairingCodeEnabled: Bool
+    /// Whether static pairing-code activation is advertised.
+    public let staticPairingCodeEnabled: Bool
+    /// The device-specific static pairing code, when provisioned.
+    public let staticPairingCode: String?
     /// Shared-PSK fallback used when a newly paired record cannot be stored individually.
     public let recordModePskId: String
     /// Runtime state shared by active connections and future handshakes.
@@ -275,8 +291,11 @@ public struct PairingConfiguration: Sendable {
         pairingPsk: Psk? = nil,
         store: (any PairingRecordStore)? = nil,
         enabled: Bool = true,
-        dynamicPairingCodeEnabled: Bool = false
+        dynamicPairingCodeEnabled: Bool = false,
+        staticPairingCode: String? = nil,
+        staticPairingCodeEnabled: Bool = false
     ) {
+        precondition(staticPairingCode.map(PairingManagementConfiguration.isValidStaticPairingCode) ?? true)
         let resolved = pairingPsk ?? .generate()
         let fallback = PairingRecord(psk: .generate())
         let resolvedStore = store ?? InMemoryPairingRecordStore(pairingPsk: resolved, preProvisionedRecord: fallback)
@@ -284,6 +303,8 @@ public struct PairingConfiguration: Sendable {
         self.store = resolvedStore
         self.enabled = enabled
         self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
+        self.staticPairingCodeEnabled = staticPairingCodeEnabled
+        self.staticPairingCode = staticPairingCode
         recordModePskId = fallback.pskId
         preProvisionedSharedRecord = fallback
         runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
@@ -291,7 +312,9 @@ public struct PairingConfiguration: Sendable {
             pairingPskEnabled: enabled,
             recordModePskId: fallback.pskId,
             unpairedAccessEnabled: true,
-            dynamicPairingCodeEnabled: dynamicPairingCodeEnabled
+            dynamicPairingCodeEnabled: dynamicPairingCodeEnabled,
+            staticPairingCodeEnabled: staticPairingCodeEnabled,
+            staticPairingCode: staticPairingCode
         ))
     }
 }
