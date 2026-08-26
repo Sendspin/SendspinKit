@@ -118,6 +118,8 @@ public protocol PairingRecordStore: Sendable {
     func markUsed(pskId: String) async
 
     /// Ensure the generated shared fallback record exists in the provider.
+    /// Implementations insert it only when its `psk_id` is absent; repeated calls
+    /// never create duplicates.
     func ensurePreProvisionedSharedRecord(_ record: PairingRecord) async
 
     /// Return storage accounting, or nil when the store is unbounded or unknown.
@@ -200,6 +202,11 @@ public actor InMemoryPairingRecordStore: PairingRecordStore {
         guard let index = records.firstIndex(where: { $0.pskId == pskId }) else { return }
         records[index].used = true
     }
+
+    public func ensurePreProvisionedSharedRecord(_ record: PairingRecord) async {
+        guard !records.contains(where: { $0.pskId == record.pskId }) else { return }
+        records.append(record)
+    }
 }
 
 /// Client-side Pairing PSK configuration.
@@ -214,6 +221,8 @@ public struct PairingConfiguration: Sendable {
     public let recordModePskId: String
     /// Runtime state shared by active connections and future handshakes.
     let runtime: PairingConfigurationRuntime
+    /// Shared record used by Record mode when individual records cannot be stored.
+    let preProvisionedSharedRecord: PairingRecord
 
     public init(pairingPsk: Psk? = nil, store: (any PairingRecordStore)? = nil, enabled: Bool = true) {
         let resolved = pairingPsk ?? .generate()
@@ -223,6 +232,7 @@ public struct PairingConfiguration: Sendable {
         self.store = resolvedStore
         self.enabled = enabled
         recordModePskId = fallback.pskId
+        preProvisionedSharedRecord = fallback
         runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
             pairingPsk: resolved,
             pairingPskEnabled: enabled,

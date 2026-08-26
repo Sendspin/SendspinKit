@@ -85,6 +85,7 @@ struct RehandshakeTests {
     func pairingPromotionEndToEnd() async throws {
         let session = try await makePairableSession()
         let server = session.server
+        let serverId = await server.serverId
 
         try await rehandshake(server, to: session.pairingPsk)
         try await server.sendJSON(
@@ -98,19 +99,18 @@ struct RehandshakeTests {
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
         let longTermPsk = try #require(try Psk(base64URL: #require(finalize.payload.longTermPsk)))
 
-        // Nothing persists until the server acknowledges.
-        #expect(await session.store.listRecords().isEmpty)
+        // The shared fallback is present before pairing; the server-bound record waits for acknowledgement.
+        #expect(await session.store.listRecords().allSatisfy { $0.serverId == nil })
         try await server.sendJSON(#"{"type":"server/pair-finalize","payload":{}}"#)
-        #expect(await waitUntil { await !session.store.listRecords().isEmpty })
-        let record = try #require(await session.store.listRecords().first)
+        #expect(await waitUntil { await session.store.listRecords().contains { $0.serverId == serverId } })
+        let record = try #require(await session.store.listRecords().first { $0.serverId == serverId })
         #expect(record.psk == longTermPsk)
-        #expect(await record.serverId == server.serverId)
 
         // Promotion to the delivered long-term PSK; the fresh hello asserts user trust.
         try await rehandshake(server, to: longTermPsk)
         let hellos = await server.clientJSONMessages(ofType: ClientHelloMessage.typeString)
         #expect(try trustLevel(inHello: #require(hellos.last)) == TrustLevel.user.rawValue)
-        #expect(await session.store.listRecords().first?.used == true)
+        #expect(await session.store.listRecords().first { $0.serverId == serverId }?.used == true)
 
         let timeCountBeforeActivate = await server.clientJSONMessages(ofType: ClientTimeMessage.typeString).count
         try await server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
@@ -174,7 +174,7 @@ struct RehandshakeTests {
         }, "the pending attempt must expire")
         let abort = try #require(await server.clientJSONMessages(ofType: PairAbortMessage.typeString).first)
         #expect(try JSONDecoder().decode(PairAbortMessage.self, from: abort).payload.reason == .attemptTimeout)
-        #expect(await session.store.listRecords().isEmpty)
+        #expect(await session.store.listRecords().allSatisfy { $0.serverId == nil })
         #expect(await session.client.connectionState == .connected)
         await session.client.disconnect()
     }
@@ -286,7 +286,9 @@ struct RehandshakeTests {
         try await server.sendActivation(activities: [], activeRoles: [])
         try await server.sendJSON(#"{"type":"server/pair-finalize","payload":{}}"#)
 
-        #expect(await !waitUntil(timeout: .milliseconds(300)) { await !session.store.listRecords().isEmpty })
+        #expect(await !waitUntil(timeout: .milliseconds(300)) {
+            await session.store.listRecords().contains { $0.serverId != nil }
+        })
         #expect(await MainActor.run { session.client.connectionState == .connected })
         await session.client.disconnect()
     }
@@ -301,7 +303,8 @@ struct RehandshakeTests {
         let boundServer = bound.server
         try await boundServer.sendJSON(#"{"type":"server/unpair","payload":{}}"#)
         #expect(await waitUntil { await MainActor.run { bound.client.connectionState == .disconnected } })
-        #expect(await bound.store.listRecords().isEmpty)
+        #expect(await bound.store.listRecords().isEmpty == false)
+        #expect(await bound.store.listRecords().allSatisfy { $0.serverId == nil })
         let boundGoodbye = try #require(await boundServer.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).first)
         #expect(try JSONDecoder().decode(ClientGoodbyeMessage.self, from: boundGoodbye).payload.reason == .unpaired)
 
@@ -312,9 +315,11 @@ struct RehandshakeTests {
             initialPsk: sharedPsk
         )
         let sharedServer = shared.server
+        let sharedRecordsBeforeUnpair = await shared.store.listRecords()
         try await sharedServer.sendJSON(#"{"type":"server/unpair","payload":{}}"#)
         #expect(await waitUntil { await MainActor.run { shared.client.connectionState == .disconnected } })
-        #expect(await shared.store.listRecords().count == 1)
+        #expect(await shared.store.listRecords() == sharedRecordsBeforeUnpair)
+        #expect(await shared.store.listRecords().allSatisfy { $0.serverId == nil })
         let sharedGoodbye = try #require(await sharedServer.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).first)
         #expect(try JSONDecoder().decode(ClientGoodbyeMessage.self, from: sharedGoodbye).payload.reason == .unpaired)
 
@@ -324,7 +329,8 @@ struct RehandshakeTests {
         #expect(await !waitUntil(timeout: .milliseconds(300)) {
             await MainActor.run { sentinel.client.connectionState == .disconnected }
         })
-        #expect(await sentinel.store.listRecords().isEmpty)
+        #expect(await sentinel.store.listRecords().isEmpty == false)
+        #expect(await sentinel.store.listRecords().allSatisfy { $0.serverId == nil })
         #expect(await !waitUntil(timeout: .milliseconds(300)) {
             await sentinelServer.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).count > 0
         })
@@ -366,6 +372,47 @@ struct RehandshakeTests {
         try await server.sendJSON(#"{"type":"server/pair-finalize","payload":{}}"#)
         #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
     }
+
+    @Test("Exhausted storage pairs under the record-mode shared record")
+    func exhaustedStoragePairsUnderSharedFallback() async throws {
+        let store = ExhaustedPairingRecordStore(retainsPreProvisionedRecord: true)
+        let session = try await makePairableSession(store: store)
+        let server = session.server
+        let shared = try #require(await store.records.first { $0.serverId == nil })
+
+        try await rehandshake(server, to: session.pairingPsk)
+        try await server.sendJSON(
+            #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
+        )
+        #expect(await waitUntil {
+            await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).count == 1
+        })
+        let finalizeData = try #require(await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).first)
+        let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
+        #expect(finalize.payload.longTermPsk == shared.psk.base64URL, "the shared record's PSK must be offered")
+
+        try await server.sendJSON(#"{"type":"server/pair-finalize","payload":{}}"#)
+        #expect(await waitUntil { await store.records.first { $0.serverId == nil }?.used == true })
+        #expect(await MainActor.run { session.client.connectionState == .connected })
+        await session.client.disconnect()
+    }
+
+    @Test("Exhausted storage without the fallback record stays terminal")
+    func exhaustedStorageWithoutFallbackRecordStaysTerminal() async throws {
+        let store = ExhaustedPairingRecordStore(retainsPreProvisionedRecord: false)
+        let session = try await makePairableSession(store: store)
+        let server = session.server
+
+        try await rehandshake(server, to: session.pairingPsk)
+        try await server.sendJSON(
+            #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
+        )
+        #expect(await waitUntil {
+            await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).count == 1
+        })
+        try await server.sendJSON(#"{"type":"server/pair-finalize","payload":{}}"#)
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+    }
 }
 
 private actor ThrowingPairingRecordStore: PairingRecordStore {
@@ -380,4 +427,42 @@ private actor ThrowingPairingRecordStore: PairingRecordStore {
     func remove(pskId _: String) async {}
 
     func markUsed(pskId _: String) async {}
+}
+
+/// A bounded store whose free space cannot fit a stored-pubkey record. The
+/// pre-provisioned shared record is retained (or dropped, for the defensive
+/// path) so pairing must go through the record-mode fallback.
+private actor ExhaustedPairingRecordStore: PairingRecordStore {
+    private(set) var records: [PairingRecord] = []
+    private let retainsPreProvisionedRecord: Bool
+
+    init(retainsPreProvisionedRecord: Bool) {
+        self.retainsPreProvisionedRecord = retainsPreProvisionedRecord
+    }
+
+    func listRecords() async -> [PairingRecord] {
+        records
+    }
+
+    func insert(_: PairingRecord) async throws {
+        throw PairingRecordStoreError.storageExhausted
+    }
+
+    func remove(pskId: String) async {
+        records.removeAll { $0.pskId == pskId }
+    }
+
+    func markUsed(pskId: String) async {
+        guard let index = records.firstIndex(where: { $0.pskId == pskId }) else { return }
+        records[index].used = true
+    }
+
+    func ensurePreProvisionedSharedRecord(_ record: PairingRecord) async {
+        guard retainsPreProvisionedRecord, !records.contains(where: { $0.pskId == record.pskId }) else { return }
+        records.append(record)
+    }
+
+    func storageAccounting() async -> PairingStorageAccounting? {
+        PairingStorageAccounting(free: 0, capacity: 10, costIndividual: 1, costShared: 1)
+    }
 }

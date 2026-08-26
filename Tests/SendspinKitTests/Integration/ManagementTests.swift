@@ -45,27 +45,32 @@ struct ManagementTests {
         }
     }
 
-    @Test("add-record rejects every occupied psk_id")
+    @Test("add-record rejects Sentinel, stored-record, and pairing-PSK collisions")
     func addRecordAlreadyExistsSources() async throws {
         let existing = Psk.generate()
         let pairing = Psk.generate()
-        let cases: [(Psk, Psk, [PairingRecord])] = [
-            (Psk.generate(), pairing, [PairingRecord(psk: existing)]),
-            (Psk.sentinel, pairing, []),
-            (Psk.generate(), pairing, []),
-            (Psk.generate(), pairing, [])
+        let cases: [(Psk, [PairingRecord])] = [
+            (existing, [PairingRecord(psk: existing)]),
+            (Psk.sentinel, []),
+            (pairing, [])
         ]
-        for (index, item) in cases.enumerated() {
-            let session = index == 2 ? item.0 : Psk.generate()
-            let requestPsk = index == 0 ? existing : index == 1 ? Psk.sentinel : index == 2 ? session : pairing
-            let store = try InMemoryPairingRecordStore(records: item.2, pairingPsk: pairing)
+        for (requestPsk, records) in cases {
+            let store = try InMemoryPairingRecordStore(records: records, pairingPsk: pairing)
             let runtime = PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing))
-            let fixture = try await managementFixture(psk: session, store: store, runtime: runtime)
+            let fixture = try await managementFixture(psk: Psk.generate(), store: store, runtime: runtime)
             try await fixture.server.sendJSON(addRecordRequest(requestPsk))
             let reply = try await waitForManagementResult(from: fixture.server)
             #expect(resultCode(reply) == .alreadyExists)
             await fixture.connection.shutdown()
         }
+
+        let matched = Psk.generate()
+        let matchedStore = try InMemoryPairingRecordStore(records: [PairingRecord(psk: matched)], pairingPsk: pairing)
+        let matchedRuntime = PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing))
+        let matchedFixture = try await managementFixture(psk: matched, store: matchedStore, runtime: matchedRuntime)
+        try await matchedFixture.server.sendJSON(addRecordRequest(matched))
+        #expect(try await resultCode(waitForManagementResult(from: matchedFixture.server)) == .alreadyExists)
+        await matchedFixture.connection.shutdown()
     }
 
     @Test("add-record rejects wrong-length and non-base64url PSKs")
@@ -174,6 +179,28 @@ struct ManagementTests {
         await fixture.connection.shutdown()
     }
 
+    @Test("open-pairing-window is invalid on a paired management session")
+    func openPairingWindowIsInvalidWhenPaired() async throws {
+        let fixture = try await managementFixture()
+        try await fixture.server.sendJSON(request(ManagementOpenPairingWindowMessage.typeString))
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server)) == .invalid)
+        await fixture.connection.shutdown()
+    }
+
+    @Test("set-pairing-config leaves runtime unchanged when saving is exhausted")
+    func setPairingConfigStorageExhaustedLeavesRuntimeUnchanged() async throws {
+        let pairing = Psk.generate()
+        let runtime = PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing, unpaired: true))
+        let fixture = try await managementFixture(store: TranscriptPairingStore(saveError: .storageExhausted), runtime: runtime)
+        try await fixture.server.sendJSON(#"{"type":"management/set-pairing-config","payload":{"unpaired_access":{"enabled":false}}}"#)
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server)) == .storageExhausted)
+        try await fixture.server.sendJSON(request(ManagementGetPairingConfigMessage.typeString))
+        let reply = try await waitForManagementResult(from: fixture.server, after: 1)
+        let data = try #require(try rawPayload(reply)["data"] as? [String: Any])
+        #expect((data["unpaired_access"] as? [String: Any])?["enabled"] as? Bool == true)
+        await fixture.connection.shutdown()
+    }
+
     @Test("set-pairing-config applies an unpaired-access patch without changing pairing PSK settings")
     func setPairingConfigPatchSemantics() async throws {
         let pairing = Psk.generate()
@@ -187,6 +214,18 @@ struct ManagementTests {
         let data = try #require(try rawPayload(reply)["data"] as? [String: Any])
         #expect((data["pairing_psk"] as? [String: Any])?["enabled"] as? Bool == false)
         #expect((data["unpaired_access"] as? [String: Any])?["enabled"] as? Bool == false)
+        await fixture.connection.shutdown()
+    }
+
+    @Test("set-pairing-config accepts rotating pairing PSK to its current value")
+    func setPairingConfigCurrentPairingPskIsIdempotent() async throws {
+        let pairing = Psk.generate()
+        let fixture = try await managementFixture(
+            store: TranscriptPairingStore(),
+            runtime: PairingConfigurationRuntime(configuration: configuration(pairingPsk: pairing))
+        )
+        try await fixture.server.sendJSON(setPairingPskRequest(pairing))
+        #expect(try await resultCode(waitForManagementResult(from: fixture.server)) == .success)
         await fixture.connection.shutdown()
     }
 
@@ -321,6 +360,23 @@ struct ManagementTests {
         try await assertStorage(waitForManagementResult(from: fixture.server, after: 4), detailed: true)
         try await fixture.server.sendJSON(request(ManagementGetPairingConfigMessage.typeString))
         try await assertStorage(waitForManagementResult(from: fixture.server, after: 5), detailed: true)
+        await fixture.connection.shutdown()
+    }
+
+    @Test("management requests outside activity are denied without storage accounting")
+    func managementRequestsOutsideActivityDenied() async throws {
+        let store = TranscriptPairingStore(accounting: PairingStorageAccounting(free: 17, capacity: 100, costIndividual: 11, costShared: 7))
+        let fixture = try await makeEstablishedConnection(activities: [], psk: Psk.generate(), pskCategory: .longTerm, pairingStore: store)
+        let requests = [
+            request(ManagementListRecordsMessage.typeString),
+            #"{"type":"management/unknown","payload":{}}"#
+        ]
+        for (index, requestBody) in requests.enumerated() {
+            try await fixture.server.sendJSON(requestBody)
+            let reply = try await waitForManagementResult(from: fixture.server, after: index)
+            #expect(resultCode(reply) == .permissionDenied)
+            #expect(try rawPayload(reply)["storage"] == nil)
+        }
         await fixture.connection.shutdown()
     }
 

@@ -32,15 +32,20 @@ extension SendspinClient {
         let arbitrationEpoch = sessionEpoch
 
         do {
+            await preparePairingConfiguration()
             let negotiation = try await makeSessionFormatNegotiation()
+            let runtimeConfiguration = await pairingRuntimeConfiguration()
             let outcome = try await HandshakeDriver.establish(
                 on: transport,
                 configuration: HandshakeDriver.Configuration(
                     identity: identity,
                     candidates: pairingCandidates(),
-                    clientHello: buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats),
+                    clientHello: buildClientHelloPayload(
+                        effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                        unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+                    ),
                     supportedRoles: roleSet,
-                    unpairedAccessEnabled: unpairedAccessEnabled
+                    unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                 ),
                 phaseTimeout: handshakeTimeout
             )

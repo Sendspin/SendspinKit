@@ -165,6 +165,7 @@ public final class SendspinClient {
     private(set) var isTerminated = false
     private var closeTask: Task<Void, Never>?
     private var pendingTransports: [UUID: any SendspinTransport] = [:]
+    var pairingSetupComplete = false
 
     /// Event streams
     private var eventSubscribers: [UUID: AsyncStream<ClientEvent>.Continuation] = [:]
@@ -404,6 +405,7 @@ public final class SendspinClient {
         connectionState = .connecting
         sessionEpoch += 1
         let dialEpoch = sessionEpoch
+        await preparePairingConfiguration()
 
         let transport = outboundTransportFactory(url)
         let pendingID = registerPendingTransport(transport)
@@ -433,7 +435,11 @@ public final class SendspinClient {
 
         do {
             let negotiation = try await makeSessionFormatNegotiation()
-            let hello = buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats)
+            let runtimeConfiguration = await pairingRuntimeConfiguration()
+            let hello = buildClientHelloPayload(
+                effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+            )
             let outcome = try await HandshakeDriver.establish(
                 on: transport,
                 configuration: HandshakeDriver.Configuration(
@@ -441,7 +447,7 @@ public final class SendspinClient {
                     candidates: pairingCandidates(),
                     clientHello: hello,
                     supportedRoles: roleSet,
-                    unpairedAccessEnabled: unpairedAccessEnabled
+                    unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                 ),
                 phaseTimeout: handshakeTimeout
             )
@@ -476,9 +482,14 @@ public final class SendspinClient {
         defer { pendingTransports.removeValue(forKey: pendingID) }
         if connectionState == .disconnected {
             connectionState = .connecting
+            await preparePairingConfiguration()
             do {
                 let negotiation = try await makeSessionFormatNegotiation()
-                let hello = buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats)
+                let runtimeConfiguration = await pairingRuntimeConfiguration()
+                let hello = buildClientHelloPayload(
+                    effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                    unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+                )
                 let outcome = try await HandshakeDriver.establish(
                     on: transport,
                     configuration: HandshakeDriver.Configuration(
@@ -486,7 +497,7 @@ public final class SendspinClient {
                         candidates: pairingCandidates(),
                         clientHello: hello,
                         supportedRoles: roleSet,
-                        unpairedAccessEnabled: unpairedAccessEnabled
+                        unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                     ),
                     phaseTimeout: handshakeTimeout
                 )
@@ -588,6 +599,7 @@ public final class SendspinClient {
         let outcomeServerStaticPublicKey = outcome.serverStaticPublicKey
         let outcomeSuite = outcome.suite
         let sessionChannel = outcome.takeChannel()
+        let runtimeConfiguration = await pairingRuntimeConfiguration()
         let newConnection = SendspinConnection(
             transport: transport,
             channel: sessionChannel,
@@ -606,8 +618,11 @@ public final class SendspinClient {
             candidateProvider: { [pairingConfiguration] in
                 await PairingCandidateBuilder.candidates(configuration: pairingConfiguration)
             },
-            clientHelloPayload: buildClientHelloPayload(effectivePlayerFormats: negotiation.effectivePlayerFormats),
-            unpairedAccessEnabled: unpairedAccessEnabled,
+            clientHelloPayload: buildClientHelloPayload(
+                effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+            ),
+            unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled,
             effectivePlayerFormats: negotiation.effectivePlayerFormats,
             outputSampleRatePolicy: playerConfig?.outputSampleRatePolicy,
             initialOutputSnapshot: negotiation.outputSnapshot,

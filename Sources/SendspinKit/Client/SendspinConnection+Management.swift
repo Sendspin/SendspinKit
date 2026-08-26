@@ -16,23 +16,11 @@ extension SendspinConnection {
         try? await sendWrapped(ManagementResultMessage(payload: payload))
     }
 
-    func beginManagementRequest() -> Bool {
-        guard !managementRequestInFlight else { return false }
-        managementRequestInFlight = true
-        return true
-    }
-
-    func finishManagementRequest() {
-        managementRequestInFlight = false
-    }
-
     func managementGuard() -> Bool {
         activities.contains(.management) && pskCategory == .longTerm
     }
 
     func handleManagementListRecords(_: ManagementListRecordsMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard() else {
             await sendManagementResult(.permissionDenied)
             return
@@ -48,8 +36,6 @@ extension SendspinConnection {
     }
 
     func handleManagementAddRecord(_ message: ManagementAddRecordMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard() else {
             await sendManagementResult(.permissionDenied)
             return
@@ -62,7 +48,6 @@ extension SendspinConnection {
         let pairingPskId = await pairingConfigurationRuntime?.snapshot().pairingPsk.pskId
         guard !records.contains(where: { $0.pskId == psk.pskId }),
               psk.pskId != Psk.sentinel.pskId,
-              psk.pskId != matchedPskId,
               psk.pskId != pairingPskId
         else {
             await sendManagementResult(.alreadyExists)
@@ -81,8 +66,6 @@ extension SendspinConnection {
     }
 
     func handleManagementRemoveRecord(_ message: ManagementRemoveRecordMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard() else {
             await sendManagementResult(.permissionDenied)
             return
@@ -112,8 +95,6 @@ extension SendspinConnection {
     }
 
     func handleManagementGetPairingConfig(_: ManagementGetPairingConfigMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard(), let runtime = pairingConfigurationRuntime else {
             await sendManagementResult(.permissionDenied)
             return
@@ -131,8 +112,6 @@ extension SendspinConnection {
     }
 
     func handleManagementSetPairingConfig(_ message: ManagementSetPairingConfigMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard(), let runtime = pairingConfigurationRuntime, let store = pairingStore else {
             await sendManagementResult(.permissionDenied)
             return
@@ -147,7 +126,6 @@ extension SendspinConnection {
                 }
                 let records = await store.listRecords()
                 guard psk.pskId != Psk.sentinel.pskId,
-                      psk.pskId != old.pairingPsk.pskId,
                       !records.contains(where: { $0.pskId == psk.pskId })
                 else {
                     await sendManagementResult(.alreadyExists)
@@ -210,8 +188,6 @@ extension SendspinConnection {
     }
 
     func handleMalformedManagementRequest() async {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard() else {
             await sendManagementResult(.permissionDenied)
             return
@@ -220,8 +196,6 @@ extension SendspinConnection {
     }
 
     func handleManagementOpenPairingWindow(_: ManagementOpenPairingWindowMessage) async throws {
-        guard beginManagementRequest() else { return }
-        defer { finishManagementRequest() }
         guard managementGuard() else {
             await sendManagementResult(.permissionDenied)
             return

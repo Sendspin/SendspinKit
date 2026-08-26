@@ -53,8 +53,39 @@ extension SendspinClient {
         )
     }
 
+    /// Prepare pairing storage and restore persisted management settings once per client lifetime.
+    func preparePairingConfiguration() async {
+        guard !pairingSetupComplete, let configuration = pairingConfiguration else { return }
+        pairingSetupComplete = true
+        await configuration.store.ensurePreProvisionedSharedRecord(configuration.preProvisionedSharedRecord)
+        let current = await configuration.runtime.snapshot()
+        let initial = PairingManagementConfiguration(
+            pairingPsk: current.pairingPsk,
+            pairingPskEnabled: current.pairingPskEnabled,
+            recordModePskId: current.recordModePskId,
+            unpairedAccessEnabled: unpairedAccessEnabled
+        )
+        let loaded = await configuration.store.loadManagementConfiguration(default: initial)
+        await configuration.runtime.update(loaded)
+    }
+
+    func pairingRuntimeConfiguration() async -> PairingManagementConfiguration {
+        guard let runtime = pairingConfiguration?.runtime else {
+            return PairingManagementConfiguration(
+                pairingPsk: .sentinel,
+                pairingPskEnabled: false,
+                recordModePskId: "",
+                unpairedAccessEnabled: unpairedAccessEnabled
+            )
+        }
+        return await runtime.snapshot()
+    }
+
     /// Build the client/hello payload from the catalog fixed for this session.
-    func buildClientHelloPayload(effectivePlayerFormats: [AudioFormatSpec]? = nil) -> ClientHelloPayload {
+    func buildClientHelloPayload(
+        effectivePlayerFormats: [AudioFormatSpec]? = nil,
+        unpairedAccessEnabled: Bool? = nil
+    ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
         if roleSet.contains(.playerV1), let playerConfig {
             let formats = effectivePlayerFormats ?? playerConfig.supportedFormats
@@ -78,7 +109,7 @@ extension SendspinClient {
             supportedPairMethods: pairingConfiguration?.enabled == true
                 ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
                 : [],
-            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled),
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled ?? self.unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,
             artworkV1Support: artworkV1Support,

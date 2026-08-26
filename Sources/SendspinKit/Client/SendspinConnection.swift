@@ -100,7 +100,6 @@ actor SendspinConnection {
     var matchedPskId: String
     let pairingStore: (any PairingRecordStore)?
     let pairingConfigurationRuntime: PairingConfigurationRuntime?
-    var managementRequestInFlight = false
     let pairingAttemptTimeout: Duration
     var sessionContext: ActivationAdmissibility.SessionContext
     let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey

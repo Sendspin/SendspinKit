@@ -79,7 +79,11 @@ extension SendspinConnection {
                 try await handleGroupUpdate(decoder.decode(GroupUpdateMessage.self, from: data))
 
             default:
-                Log.client.warning("Unknown message type: \(msgType)")
+                if msgType.hasPrefix("management/") {
+                    await handleMalformedManagementRequest()
+                } else {
+                    Log.client.warning("Unknown message type: \(msgType)")
+                }
             }
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
@@ -149,9 +153,11 @@ extension SendspinConnection {
             if candidate.category == .longTerm, let pairingStore {
                 await pairingStore.markUsed(pskId: candidate.psk.pskId)
             }
+            let unpairedAccessEnabled = await pairingConfigurationRuntime?.snapshot().unpairedAccessEnabled
+                ?? sessionContext.unpairedAccessEnabled
             sessionContext = ActivationAdmissibility.SessionContext(
                 category: candidate.category,
-                unpairedAccessEnabled: sessionContext.unpairedAccessEnabled,
+                unpairedAccessEnabled: unpairedAccessEnabled,
                 offeredPairMethods: Set(clientHelloPayload.supportedPairMethods.map(\.method))
             )
             activeRoles = []
@@ -250,7 +256,7 @@ extension SendspinConnection {
             }
             return
         }
-        let generated = Psk.generate()
+        let generated = await selectPairingLongTermPsk()
         pendingPairingPsk = generated
         pairingAttemptTask?.cancel()
         pairingAttemptTask = Task { [weak self] in
@@ -261,6 +267,31 @@ extension SendspinConnection {
         try? await sendWrapped(ClientPairFinalizeMessage(
             payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)
         ))
+    }
+
+    /// The long-term PSK offered in `client/pair-finalize`. Normally freshly
+    /// generated; when bounded storage cannot fit a new stored-pubkey record,
+    /// the record-mode shared record's PSK is offered instead (spec record mode) —
+    /// that record already exists, so the finalize acknowledgement persists nothing.
+    /// The PSK is committed to the wire before the server's acknowledgement, so
+    /// this choice must happen here, not at persistence time.
+    private func selectPairingLongTermPsk() async -> Psk {
+        guard let pairingStore,
+              let accounting = await pairingStore.storageAccounting(),
+              let costIndividual = accounting.costIndividual,
+              accounting.free < costIndividual,
+              let runtime = pairingConfigurationRuntime
+        else {
+            return Psk.generate()
+        }
+        let fallbackId = await runtime.snapshot().recordModePskId
+        let records = await pairingStore.listRecords()
+        guard let shared = records.first(where: { $0.pskId == fallbackId && $0.serverId == nil }) else {
+            // Mis-provisioned fallback: offer a fresh PSK; the insert failure
+            // at acknowledgement stays terminal.
+            return Psk.generate()
+        }
+        return shared.psk
     }
 
     func pairingAttemptTimedOut() async {
@@ -278,10 +309,20 @@ extension SendspinConnection {
     func handleServerPairFinalize(_: ServerPairFinalizeMessage) async {
         guard let generated = pendingPairingPsk, pskCategory == .pairing, let pairingStore else { return }
         clearPairingAttempt()
+        let records = await pairingStore.listRecords()
+        if records.contains(where: { $0.pskId == generated.pskId }) {
+            // Shared-record fallback admission: the offered PSK is the record-mode
+            // shared record, which the server now holds as its long-term PSK.
+            await pairingStore.markUsed(pskId: generated.pskId)
+            controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
+            return
+        }
         do {
             try await pairingStore.insert(PairingRecord(psk: generated, serverId: currentServerId))
             controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
         } catch {
+            // Pairing PSK is already committed to the wire before the server's acknowledgement;
+            // a later storage failure cannot substitute the shared record without desynchronizing keys.
             Log.client.error("Pairing record persistence failed: \(error.localizedDescription)")
             disconnectReason = .connectionLost(nil)
             await transport.disconnect()
@@ -290,7 +331,7 @@ extension SendspinConnection {
 
     func handleServerUnpair(_: ServerUnpairMessage) async {
         guard case .longTerm = pskCategory else { return }
-        if let pairingStore, let currentServerId {
+        if let pairingStore {
             let records = await pairingStore.listRecords()
             if let record = records.first(where: { $0.psk.pskId == matchedPskId }), record.serverId != nil {
                 await pairingStore.remove(pskId: matchedPskId)
