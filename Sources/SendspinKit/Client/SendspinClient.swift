@@ -128,6 +128,10 @@ public final class SendspinClient {
     let outputRequestTimeout: Duration
     let handshakeTimeout: Duration
     let pairingAttemptTimeout: Duration
+    #if DEBUG
+        let nonceBOverride: Data?
+        let pairingHandshakeHashOverride: Data?
+    #endif
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
     let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
     let sessionNegotiationHook: @Sendable () async -> Void
@@ -224,6 +228,8 @@ public final class SendspinClient {
         outputRequestTimeout: Duration = .seconds(3),
         handshakeTimeout: Duration = defaultHandshakeTimeout,
         pairingAttemptTimeout: Duration = .seconds(120),
+        nonceBOverride: Data? = nil,
+        pairingHandshakeHashOverride: Data? = nil,
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
@@ -257,6 +263,10 @@ public final class SendspinClient {
         self.outputRequestTimeout = outputRequestTimeout
         self.handshakeTimeout = handshakeTimeout
         self.pairingAttemptTimeout = pairingAttemptTimeout
+        #if DEBUG
+            self.nonceBOverride = nonceBOverride
+            self.pairingHandshakeHashOverride = pairingHandshakeHashOverride
+        #endif
         self.outputNegotiationSleep = outputNegotiationSleep
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
@@ -439,6 +449,7 @@ public final class SendspinClient {
             let hello = buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
                 pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
+                dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             )
             let outcome = try await HandshakeDriver.establish(
@@ -490,6 +501,7 @@ public final class SendspinClient {
                 let hello = buildClientHelloPayload(
                     effectivePlayerFormats: negotiation.effectivePlayerFormats,
                     pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
+                    dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
                     unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                 )
                 let outcome = try await HandshakeDriver.establish(
@@ -602,6 +614,13 @@ public final class SendspinClient {
         let outcomeSuite = outcome.suite
         let sessionChannel = outcome.takeChannel()
         let runtimeConfiguration = await pairingRuntimeConfiguration()
+        #if DEBUG
+            let nonceBOverride = nonceBOverride
+            let pairingHandshakeHashOverride = pairingHandshakeHashOverride
+        #else
+            let nonceBOverride: Data? = nil
+            let pairingHandshakeHashOverride: Data? = nil
+        #endif
         let newConnection = SendspinConnection(
             transport: transport,
             channel: sessionChannel,
@@ -614,6 +633,8 @@ public final class SendspinClient {
             pairingStore: pairingConfiguration?.store,
             pairingConfigurationRuntime: pairingConfiguration?.runtime,
             pairingAttemptTimeout: pairingAttemptTimeout,
+            nonceBOverride: nonceBOverride,
+            pairingHandshakeHashOverride: pairingHandshakeHashOverride,
             identityPrivateKey: outcomeIdentityPrivateKey,
             serverStaticPublicKey: outcomeServerStaticPublicKey,
             suite: outcomeSuite,
@@ -623,6 +644,7 @@ public final class SendspinClient {
             clientHelloPayload: buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
                 pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
+                dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             ),
             unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled,
@@ -873,6 +895,12 @@ public final class SendspinClient {
         switch event {
         case let .paired(serverId):
             emitEvent(.paired(serverId: serverId))
+
+        case let .pairingCodeChanged(emission):
+            emitEvent(.pairingCodeChanged(emission))
+
+        case let .pairingAttemptEnded(reason):
+            emitEvent(.pairingAttemptEnded(reason))
 
         case let .serverConnected(info):
             currentServerId = info.serverId

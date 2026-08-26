@@ -1,5 +1,10 @@
+import CryptoKit
 import Foundation
 import os
+
+enum PairingProtocolError: Error {
+    case invalidSequence
+}
 
 extension SendspinConnection {
     // MARK: - Frame routing
@@ -48,11 +53,23 @@ extension SendspinConnection {
             case ManagementOpenPairingWindowMessage.typeString:
                 try await handleManagementOpenPairingWindow(decoder.decode(ManagementOpenPairingWindowMessage.self, from: data))
 
+            case "server/pair-init":
+                try await handleServerPairInit(decoder.decode(ServerPairInitMessage.self, from: data))
+
+            case "server/pair-auth":
+                try await handleServerPairAuth(decoder.decode(ServerPairAuthMessage.self, from: data))
+
+            case "server/pair-confirm":
+                try await handleServerPairConfirm(decoder.decode(ServerPairConfirmMessage.self, from: data))
+
             case "server/pair-finalize":
                 try await handleServerPairFinalize(decoder.decode(ServerPairFinalizeMessage.self, from: data))
 
             case "pair/abort":
                 clearPairingAttempt()
+
+            case "client/pair-pending", "client/pair-init", "client/pair-auth", "client/pair-confirm":
+                break
 
             case "server/time":
                 try await handleServerTime(
@@ -90,6 +107,9 @@ extension SendspinConnection {
 
             if msgType == ServerActivateMessage.typeString
                 || msgType == NoiseHandshakeMessage.typeString
+                || msgType == "server/pair-init"
+                || msgType == "server/pair-auth"
+                || msgType == "server/pair-confirm"
                 || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
@@ -190,9 +210,17 @@ extension SendspinConnection {
             )
         }
         let configuration = await runtime.snapshot()
-        let methods = configuration.pairingPskEnabled
-            ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
-            : []
+        var methods: [PairMethodDescriptor] = []
+        if configuration.pairingPskEnabled {
+            methods.append(PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"]))
+        }
+        if configuration.dynamicPairingCodeEnabled {
+            methods.append(PairMethodDescriptor(
+                method: PairMethod.dynamicPairingCode,
+                outChannels: ["display"],
+                formats: ["digits", "qr_code"]
+            ))
+        }
         return (methods, configuration.unpairedAccessEnabled, Set(methods.map(\.method)))
     }
 
@@ -264,7 +292,9 @@ extension SendspinConnection {
             controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
             if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.pairingPsk {
                 await beginPairingAttempt()
-            } else if pendingPairingPsk != nil {
+            } else if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.dynamicPairingCode {
+                await beginDynamicPairingAttempt(format: message.payload.pairing?.format)
+            } else if pendingPairingPsk != nil || dynamicPairingAttempt != nil {
                 clearPairingAttempt()
             }
         case let .close(reason):
@@ -328,25 +358,232 @@ extension SendspinConnection {
         return shared.psk
     }
 
+    func beginDynamicPairingAttempt(format: String?) async {
+        guard pskCategory != .pairing,
+              let rawFormat = format,
+              let selectedFormat = PairingCodeFormat(rawValue: rawFormat),
+              dynamicPairingCodeIsOffered(format: selectedFormat)
+        else {
+            clearPairingAttempt(reason: .methodNotSupported)
+            try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)))
+            return
+        }
+        guard dynamicPairingAttempt == nil, pendingPairingPsk == nil else {
+            try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .concurrentAttempt)))
+            await transport.disconnect()
+            return
+        }
+        #if DEBUG
+            let nonceB = nonceBOverride ?? Psk.generate().bytes
+        #else
+            let nonceB = Psk.generate().bytes
+        #endif
+        var commitInput = Data("sendspin-pair-commit-v1".utf8)
+        commitInput.append(nonceB)
+        let commitB = Data(SHA256.hash(data: commitInput))
+        #if DEBUG
+            let pairingHandshakeHash = pairingHandshakeHashOverride ?? channel.handshakeHash
+        #else
+            let pairingHandshakeHash = channel.handshakeHash
+        #endif
+        let sid = CPaceSessionIdentifier.make(handshakeHash: pairingHandshakeHash, counter: pairingActivateCounter)
+        dynamicPairingAttempt = DynamicPairingAttempt(
+            format: selectedFormat,
+            pairingIndex: pairingActivateCounter,
+            sid: sid,
+            nonceB: nonceB,
+            commitB: commitB,
+            nonceA: nil,
+            serverShare: nil,
+            cpace: nil,
+            secrets: nil,
+            clientConfirmationSent: false
+        )
+        let count = await pairingStore?.dynamicPairingFailureCount() ?? 0
+        let escalated = count >= 5
+        if escalated, !pairingWindowOpen {
+            try? await sendWrapped(ClientPairPendingMessage(
+                payload: ClientPairPendingPayload(pairingIndex: pairingActivateCounter)
+            ))
+        } else {
+            await sendDynamicPairInit()
+        }
+    }
+
+    func dynamicPairingCodeIsOffered(format: PairingCodeFormat) -> Bool {
+        clientHelloPayload.supportedPairMethods.contains {
+            $0.method == PairMethod.dynamicPairingCode && ($0.formats ?? []).contains(format.rawValue)
+        }
+    }
+
+    func sendDynamicPairInit() async {
+        guard var attempt = dynamicPairingAttempt else { return }
+        pairingWindowOpen = false
+        pairingWindowTask?.cancel()
+        pairingWindowTask = nil
+        pairingAttemptTask?.cancel()
+        pairingAttemptTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.pairingAttemptTimeout ?? .seconds(120))
+            guard !Task.isCancelled else { return }
+            await self?.pairingAttemptTimedOut()
+        }
+        attempt.nonceA = nil
+        dynamicPairingAttempt = attempt
+        try? await sendWrapped(ClientPairInitMessage(payload: ClientPairInitPayload(
+            pairingIndex: attempt.pairingIndex,
+            commitB: Base64URL.encode(attempt.commitB)
+        )))
+    }
+
+    func openPairingWindow() async {
+        guard !pairingWindowOpen else { return }
+        pairingWindowOpen = true
+        pairingWindowTask?.cancel()
+        pairingWindowTask = Task { [weak self] in
+            try? await Task.sleep(for: self?.pairingWindowLifetime ?? .seconds(300))
+            guard !Task.isCancelled else { return }
+            await self?.closePairingWindow()
+        }
+        if dynamicPairingAttempt != nil {
+            await sendDynamicPairInit()
+        }
+    }
+
+    func closePairingWindow() {
+        pairingWindowOpen = false
+        pairingWindowTask?.cancel()
+        pairingWindowTask = nil
+    }
+
+    func cancelPairingAttempt() async {
+        guard dynamicPairingAttempt != nil || pendingPairingPsk != nil else {
+            closePairingWindow()
+            return
+        }
+        clearPairingAttempt(reason: .userCancelled)
+        try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .userCancelled)))
+    }
+
+    func handleServerPairInit(_ message: ServerPairInitMessage) async throws {
+        guard var attempt = dynamicPairingAttempt, attempt.nonceA == nil,
+              let nonceA = Base64URL.decode(message.payload.nonceA, count: 32)
+        else { throw PairingProtocolError.invalidSequence }
+        attempt.nonceA = nonceA
+        var input = Data("sendspin-pairing-code-derive-v1".utf8)
+        #if DEBUG
+            input.append(pairingHandshakeHashOverride ?? channel.handshakeHash)
+        #else
+            input.append(channel.handshakeHash)
+        #endif
+        input.append(nonceA); input.append(attempt.nonceB)
+        let digest = Data(SHA256.hash(data: input))
+        let prs: Data
+        let emission: PairingCodeEmission
+        switch attempt.format {
+        case .digits:
+            var value: UInt64 = 0
+            for byte in digest {
+                value = (value * 256 + UInt64(byte)) % 1_000_000
+            }
+            prs = Data(String(format: "%06llu", value).utf8)
+            emission = PairingCodeEmission(format: .digits, payload: String(data: prs, encoding: .utf8)!)
+        case .qrCode:
+            prs = digest.prefix(24)
+            emission = PairingCodeEmission(format: .qrCode, payload: PairingToken.dynamicCodeToken(Data(prs)))
+        }
+        attempt.cpace = try CPace(role: .responder, prs: prs, sid: attempt.sid)
+        dynamicPairingAttempt = attempt
+        controlSink.enqueue(.pairingCodeChanged(emission))
+    }
+
+    func handleServerPairAuth(_ message: ServerPairAuthMessage) async throws {
+        guard var attempt = dynamicPairingAttempt, attempt.serverShare == nil,
+              let cpace = attempt.cpace,
+              let share = Base64URL.decode(message.payload.pakeMsg1, count: 32)
+        else { throw PairingProtocolError.invalidSequence }
+        attempt.serverShare = share
+        attempt.secrets = try cpace.derive(remoteShare: share)
+        dynamicPairingAttempt = attempt
+        try await sendWrapped(ClientPairAuthMessage(payload: ClientPairAuthPayload(pakeMsg2: Base64URL.encode(cpace.publicShare))))
+    }
+
+    func handleServerPairConfirm(_ message: ServerPairConfirmMessage) async throws {
+        guard var attempt = dynamicPairingAttempt,
+              !attempt.clientConfirmationSent,
+              let cpace = attempt.cpace,
+              let secrets = attempt.secrets,
+              let serverShare = attempt.serverShare,
+              let tag = Base64URL.decode(message.payload.serverKc, count: 64)
+        else { throw PairingProtocolError.invalidSequence }
+        let expected = CPaceX25519.mcfTag(isk: secrets.isk, sid: attempt.sid, share: serverShare, associatedData: CPaceX25519.defaultInitiatorAD)
+        guard CPaceX25519.constantTimeEqual(tag, expected) else {
+            _ = await pairingStore?.incrementDynamicPairingFailureCount()
+            clearPairingAttempt(reason: .pairingCodeMismatch)
+            try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .pairingCodeMismatch)))
+            return
+        }
+        await pairingStore?.resetDynamicPairingFailureCount()
+        let clientTag = CPaceX25519.mcfTag(
+            isk: secrets.isk,
+            sid: attempt.sid,
+            share: cpace.publicShare,
+            associatedData: CPaceX25519.defaultResponderAD
+        )
+        let wrappedNonce = try PairingWrap.wrap(
+            plaintext: attempt.nonceB,
+            label: Data("sendspin-pair-nonce-wrap-v1".utf8),
+            sid: attempt.sid,
+            isk: secrets.isk,
+            suite: suite
+        )
+        let generated = await selectPairingLongTermPsk()
+        pendingPairingPsk = generated
+        attempt.clientConfirmationSent = true
+        dynamicPairingAttempt = attempt
+        try await sendWrapped(ClientPairConfirmMessage(
+            payload: ClientPairConfirmPayload(
+                clientKc: Base64URL.encode(clientTag),
+                wrappedNonceB: Base64URL.encode(wrappedNonce)
+            )
+        ))
+        let wrappedPsk = try PairingWrap.wrap(
+            plaintext: generated.bytes,
+            label: Data("sendspin-pair-psk-wrap-v1".utf8),
+            sid: attempt.sid,
+            isk: secrets.isk,
+            suite: suite
+        )
+        try await sendWrapped(ClientPairFinalizeMessage(
+            payload: ClientPairFinalizePayload(wrappedPsk: Base64URL.encode(wrappedPsk))
+        ))
+    }
+
     func pairingAttemptTimedOut() async {
-        guard pendingPairingPsk != nil else { return }
-        clearPairingAttempt()
+        guard pendingPairingPsk != nil || dynamicPairingAttempt != nil else { return }
+        clearPairingAttempt(reason: .attemptTimeout)
         try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .attemptTimeout)))
     }
 
-    func clearPairingAttempt() {
+    func clearPairingAttempt(reason: PairAbortReason? = nil) {
         pendingPairingPsk = nil
+        dynamicPairingAttempt = nil
         pairingAttemptTask?.cancel()
         pairingAttemptTask = nil
+        if let reason {
+            controlSink.enqueue(.pairingAttemptEnded(reason))
+            controlSink.enqueue(.pairingCodeChanged(nil))
+        }
     }
 
     func handleServerPairFinalize(_: ServerPairFinalizeMessage) async {
-        guard let generated = pendingPairingPsk, pskCategory == .pairing, let pairingStore else { return }
+        guard let generated = pendingPairingPsk, let pairingStore else { return }
+        let hadDynamicCode = dynamicPairingAttempt != nil
+        if hadDynamicCode {
+            controlSink.enqueue(.pairingCodeChanged(nil))
+        }
         clearPairingAttempt()
         let records = await pairingStore.listRecords()
         if records.contains(where: { $0.pskId == generated.pskId }) {
-            // Shared-record fallback admission: the offered PSK is the record-mode
-            // shared record, which the server now holds as its long-term PSK.
             await pairingStore.markUsed(pskId: generated.pskId)
             controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
             return
@@ -355,8 +592,6 @@ extension SendspinConnection {
             try await pairingStore.insert(PairingRecord(psk: generated, serverId: currentServerId))
             controlSink.enqueue(.paired(serverId: currentServerId ?? ""))
         } catch {
-            // Pairing PSK is already committed to the wire before the server's acknowledgement;
-            // a later storage failure cannot substitute the shared record without desynchronizing keys.
             Log.client.error("Pairing record persistence failed: \(error.localizedDescription)")
             disconnectReason = .connectionLost(nil)
             await transport.disconnect()

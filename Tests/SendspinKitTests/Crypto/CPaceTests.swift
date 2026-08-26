@@ -207,6 +207,145 @@ struct CPaceInvalidShareTests {
     }
 }
 
+private struct DynamicTranscriptFixture: Decodable {
+    let handshakeHash: String
+    let counter: UInt32
+    let sid: String
+    let nonceA: String
+    let nonceB: String
+    let commitB: String
+    let digest: String
+    let digitsCode: String
+    let qrCodeBytes: String
+    let qrToken: String
+    let scalarA: String
+    let scalarB: String
+    let generator: String
+    let pakeMsg1: String
+    let pakeMsg2: String
+    let isk: String
+    let serverKc: String
+    let clientKc: String
+    let wrappedNonceB: String
+    let wrappedPsk: String
+
+    enum CodingKeys: String, CodingKey {
+        case handshakeHash = "handshake_hash"
+        case counter
+        case sid
+        case nonceA = "nonce_A"
+        case nonceB = "nonce_B"
+        case commitB = "commit_B"
+        case digest
+        case digitsCode = "digits_code"
+        case qrCodeBytes = "qr_code_bytes"
+        case qrToken = "qr_token"
+        case scalarA = "scalar_A"
+        case scalarB = "scalar_B"
+        case generator
+        case pakeMsg1 = "pake_msg_1"
+        case pakeMsg2 = "pake_msg_2"
+        case isk
+        case serverKc = "server_kc"
+        case clientKc = "client_kc"
+        case wrappedNonceB = "wrapped_nonce_B"
+        case wrappedPsk = "wrapped_psk"
+    }
+}
+
+private struct PairingFixtureResource: Decodable {
+    let dynamicTranscript: DynamicTranscriptFixture
+
+    enum CodingKeys: String, CodingKey {
+        case dynamicTranscript = "dynamic_transcript"
+    }
+}
+
+@Suite("Dynamic pairing-code derivation")
+struct DynamicPairingCodeDerivationTests {
+    @Test("independent cpace-py transcript pins digits, QR token, CPace, and wrapping")
+    func independentTranscriptFixture() throws {
+        let url = try #require(Bundle.module.url(
+            forResource: "cpace-mcf-known-answer",
+            withExtension: "json",
+            subdirectory: "Resources"
+        ))
+        let resource = try JSONDecoder().decode(PairingFixtureResource.self, from: Data(contentsOf: url))
+        let fixture = resource.dynamicTranscript
+        let handshakeHash = dataFromHex(fixture.handshakeHash)
+        let nonceA = dataFromHex(fixture.nonceA)
+        let nonceB = dataFromHex(fixture.nonceB)
+        let sid = dataFromHex(fixture.sid)
+        let expectedSID = CPaceSessionIdentifier.make(handshakeHash: handshakeHash, counter: fixture.counter)
+        #expect(sid == expectedSID)
+
+        let commit = Data(SHA256.hash(data: Data("sendspin-pair-commit-v1".utf8) + nonceB))
+        #expect(commit == dataFromHex(fixture.commitB))
+        let digest = Data(SHA256.hash(
+            data: Data("sendspin-pairing-code-derive-v1".utf8) + handshakeHash + nonceA + nonceB
+        ))
+        #expect(digest == dataFromHex(fixture.digest))
+        var codeValue: UInt64 = 0
+        for byte in digest {
+            codeValue = (codeValue * 256 + UInt64(byte)) % 1_000_000
+        }
+        #expect(String(format: "%06llu", codeValue) == fixture.digitsCode)
+        #expect(Data(digest.prefix(24)) == dataFromHex(fixture.qrCodeBytes))
+        #expect(PairingToken.dynamicCodeToken(Data(digest.prefix(24))) == fixture.qrToken)
+
+        let prs = Data(fixture.digitsCode.utf8)
+        let initiator = try CPace(
+            role: .initiator,
+            prs: prs,
+            sid: sid,
+            scalarOverride: dataFromHex(fixture.scalarA)
+        )
+        let responder = try CPace(
+            role: .responder,
+            prs: prs,
+            sid: sid,
+            scalarOverride: dataFromHex(fixture.scalarB)
+        )
+        #expect(initiator.generator == dataFromHex(fixture.generator))
+        #expect(initiator.publicShare == dataFromHex(fixture.pakeMsg1))
+        #expect(responder.publicShare == dataFromHex(fixture.pakeMsg2))
+        let initiatorSecrets = try initiator.derive(remoteShare: responder.publicShare)
+        let responderSecrets = try responder.derive(remoteShare: initiator.publicShare)
+        #expect(initiatorSecrets.isk == dataFromHex(fixture.isk))
+        #expect(responderSecrets.isk == dataFromHex(fixture.isk))
+        #expect(CPaceX25519.mcfTag(
+            isk: responderSecrets.isk,
+            sid: sid,
+            share: initiator.publicShare,
+            associatedData: CPaceX25519.defaultInitiatorAD
+        ) == dataFromHex(fixture.serverKc))
+        #expect(CPaceX25519.mcfTag(
+            isk: responderSecrets.isk,
+            sid: sid,
+            share: responder.publicShare,
+            associatedData: CPaceX25519.defaultResponderAD
+        ) == dataFromHex(fixture.clientKc))
+
+        let psk = dataFromHex("909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf")
+        let nonceWrapper = try PairingWrap.wrap(
+            plaintext: nonceB,
+            label: Data("sendspin-pair-nonce-wrap-v1".utf8),
+            sid: sid,
+            isk: responderSecrets.isk,
+            suite: .chaChaPoly
+        )
+        let pskWrapper = try PairingWrap.wrap(
+            plaintext: psk,
+            label: Data("sendspin-pair-psk-wrap-v1".utf8),
+            sid: sid,
+            isk: responderSecrets.isk,
+            suite: .chaChaPoly
+        )
+        #expect(nonceWrapper == dataFromHex(fixture.wrappedNonceB))
+        #expect(pskWrapper == dataFromHex(fixture.wrappedPsk))
+    }
+}
+
 @Suite("Pairing session identifiers")
 struct PairingSessionIdentifierTests {
     @Test("uses raw hash and big-endian counter")

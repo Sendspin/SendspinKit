@@ -54,6 +54,11 @@ actor MockNoiseServer {
         Base64URL.encode(staticKey.publicKey.rawRepresentation)
     }
 
+    /// Noise `h` binds the dynamic pairing transcript to this established session.
+    var establishedHandshakeHash: Data? {
+        channel?.handshakeHash
+    }
+
     var sentTextMessages: [Data] {
         get async {
             let deadline = ContinuousClock.now + .milliseconds(500)

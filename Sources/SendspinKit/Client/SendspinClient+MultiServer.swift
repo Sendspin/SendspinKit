@@ -43,6 +43,7 @@ extension SendspinClient {
                     clientHello: buildClientHelloPayload(
                         effectivePlayerFormats: negotiation.effectivePlayerFormats,
                         pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
+                        dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
                         unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                     ),
                     supportedRoles: roleSet,

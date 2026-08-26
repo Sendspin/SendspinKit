@@ -71,6 +71,7 @@ public struct PairingStorageAccounting: Sendable, Equatable {
 public struct PairingManagementConfiguration: Sendable, Equatable {
     public let pairingPsk: Psk
     public let pairingPskEnabled: Bool
+    public let dynamicPairingCodeEnabled: Bool
     public let recordModePskId: String
     public let unpairedAccessEnabled: Bool
 
@@ -78,10 +79,12 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
         pairingPsk: Psk,
         pairingPskEnabled: Bool,
         recordModePskId: String,
-        unpairedAccessEnabled: Bool
+        unpairedAccessEnabled: Bool,
+        dynamicPairingCodeEnabled: Bool = false
     ) {
         self.pairingPsk = pairingPsk
         self.pairingPskEnabled = pairingPskEnabled
+        self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
         self.recordModePskId = recordModePskId
         self.unpairedAccessEnabled = unpairedAccessEnabled
     }
@@ -135,6 +138,15 @@ public protocol PairingRecordStore: Sendable {
 
     /// Persist management settings atomically with the store's other settings.
     func saveManagementConfiguration(_ configuration: PairingManagementConfiguration) async throws
+
+    /// Return the persisted dynamic pairing failure count.
+    func dynamicPairingFailureCount() async -> Int
+
+    /// Increment and return the dynamic pairing failure count as one atomic operation.
+    func incrementDynamicPairingFailureCount() async -> Int
+
+    /// Reset the dynamic pairing failure count atomically.
+    func resetDynamicPairingFailureCount() async
 }
 
 public extension PairingRecordStore {
@@ -149,6 +161,16 @@ public extension PairingRecordStore {
     }
 
     func saveManagementConfiguration(_: PairingManagementConfiguration) async throws {}
+
+    func dynamicPairingFailureCount() async -> Int {
+        0
+    }
+
+    func incrementDynamicPairingFailureCount() async -> Int {
+        1
+    }
+
+    func resetDynamicPairingFailureCount() async {}
 }
 
 /// Errors raised while configuring pairing records.
@@ -163,6 +185,7 @@ public enum PairingRecordStoreError: Error, Sendable, Equatable {
 /// provide an application persistence implementation.
 public actor InMemoryPairingRecordStore: PairingRecordStore {
     private var records: [PairingRecord]
+    private var dynamicPairingFailureCount = 0
     private let reservedPskIds: Set<String>
 
     public init(pairingPsk: Psk? = nil, preProvisionedRecord: PairingRecord? = nil) {
@@ -211,6 +234,19 @@ public actor InMemoryPairingRecordStore: PairingRecordStore {
         guard !records.contains(where: { $0.pskId == record.pskId }) else { return }
         records.append(record)
     }
+
+    public func dynamicPairingFailureCount() async -> Int {
+        dynamicPairingFailureCount
+    }
+
+    public func incrementDynamicPairingFailureCount() async -> Int {
+        dynamicPairingFailureCount += 1
+        return dynamicPairingFailureCount
+    }
+
+    public func resetDynamicPairingFailureCount() async {
+        dynamicPairingFailureCount = 0
+    }
 }
 
 /// Client-side Pairing PSK configuration.
@@ -226,6 +262,8 @@ public struct PairingConfiguration: Sendable {
     public let store: any PairingRecordStore
     /// Whether Pairing PSK is offered and included in handshake candidates.
     public let enabled: Bool
+    /// Whether dynamic pairing-code activation is advertised.
+    public let dynamicPairingCodeEnabled: Bool
     /// Shared-PSK fallback used when a newly paired record cannot be stored individually.
     public let recordModePskId: String
     /// Runtime state shared by active connections and future handshakes.
@@ -233,20 +271,27 @@ public struct PairingConfiguration: Sendable {
     /// Shared record used by Record mode when individual records cannot be stored.
     let preProvisionedSharedRecord: PairingRecord
 
-    public init(pairingPsk: Psk? = nil, store: (any PairingRecordStore)? = nil, enabled: Bool = true) {
+    public init(
+        pairingPsk: Psk? = nil,
+        store: (any PairingRecordStore)? = nil,
+        enabled: Bool = true,
+        dynamicPairingCodeEnabled: Bool = false
+    ) {
         let resolved = pairingPsk ?? .generate()
         let fallback = PairingRecord(psk: .generate())
         let resolvedStore = store ?? InMemoryPairingRecordStore(pairingPsk: resolved, preProvisionedRecord: fallback)
         self.pairingPsk = resolved
         self.store = resolvedStore
         self.enabled = enabled
+        self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
         recordModePskId = fallback.pskId
         preProvisionedSharedRecord = fallback
         runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
             pairingPsk: resolved,
             pairingPskEnabled: enabled,
             recordModePskId: fallback.pskId,
-            unpairedAccessEnabled: true
+            unpairedAccessEnabled: true,
+            dynamicPairingCodeEnabled: dynamicPairingCodeEnabled
         ))
     }
 }
@@ -260,6 +305,11 @@ public struct PairingToken: Sendable, Equatable, Hashable {
         precondition(clientKey.count == 32)
         self.clientKey = clientKey
         self.pairingPsk = pairingPsk
+    }
+
+    /// Encode a dynamic 24-byte code as the version-one QR-safe token.
+    static func dynamicCodeToken(_ code: Data) -> String {
+        "SP:1\(encode(code))"
     }
 
     /// Encode as `SP:0` plus the spec's QR-safe base32 body.

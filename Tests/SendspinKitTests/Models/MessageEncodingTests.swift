@@ -3,6 +3,34 @@ import Foundation
 import Testing
 
 struct MessageEncodingTests {
+    @Test("Sendspin encoder preserves exact pairing wire key casing")
+    func sendspinEncoderPreservesPairingWireKeys() throws {
+        let encoder = SendspinEncoding.makeEncoder()
+        let initJSON = try String(data: encoder.encode(ClientPairInitPayload(pairingIndex: 1, commitB: "commit")), encoding: .utf8)
+        let nonceJSON = try String(data: encoder.encode(ServerPairInitPayload(nonceA: "nonce")), encoding: .utf8)
+        let wrappedJSON = try String(data: encoder.encode(ClientPairConfirmPayload(clientKc: "tag", wrappedNonceB: "wrapped")), encoding: .utf8)
+
+        let initData = try #require(initJSON?.data(using: .utf8))
+        let nonceData = try #require(nonceJSON?.data(using: .utf8))
+        let wrappedData = try #require(wrappedJSON?.data(using: .utf8))
+        let initObject = try #require(JSONSerialization.jsonObject(with: initData) as? [String: Any])
+        let nonceObject = try #require(JSONSerialization.jsonObject(with: nonceData) as? [String: Any])
+        let wrappedObject = try #require(JSONSerialization.jsonObject(with: wrappedData) as? [String: Any])
+        #expect(initObject["commit_B"] as? String == "commit")
+        #expect(initObject["pairing_index"] as? Int == 1)
+        #expect(nonceObject["nonce_A"] as? String == "nonce")
+        #expect(wrappedObject["client_kc"] as? String == "tag")
+        #expect(wrappedObject["wrapped_nonce_B"] as? String == "wrapped")
+        #expect(initObject["commit__b"] == nil)
+        #expect(nonceObject["nonce__a"] == nil)
+        #expect(wrappedObject["wrapped_nonce__b"] == nil)
+
+        let state = try PlayerStateObject(requiredLeadTimeMs: 12, minBufferMs: 34)
+        let stateJSON = try String(data: encoder.encode(ClientStatePayload(available: true, player: state)), encoding: .utf8)
+        #expect(stateJSON?.contains("required_lead_time_ms") == true)
+        #expect(stateJSON?.contains("min_buffer_ms") == true)
+    }
+
     @Test
     func clientHello_encodesWithVersionedRoles() throws {
         let payload = try ClientHelloPayload(

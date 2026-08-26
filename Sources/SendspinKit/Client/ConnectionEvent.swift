@@ -68,6 +68,9 @@ enum ConnectionEvent: Equatable {
     /// Pairing persisted a new long-term record.
     case paired(serverId: String)
 
+    case pairingCodeChanged(PairingCodeEmission?)
+    case pairingAttemptEnded(PairAbortReason)
+
     /// Server changed admitted activities or active roles.
     case serverActivated(activities: Set<Activity>, activeRoles: Set<VersionedRole>)
 

@@ -101,6 +101,10 @@ actor SendspinConnection {
     let pairingStore: (any PairingRecordStore)?
     let pairingConfigurationRuntime: PairingConfigurationRuntime?
     let pairingAttemptTimeout: Duration
+    #if DEBUG
+        let nonceBOverride: Data?
+        let pairingHandshakeHashOverride: Data?
+    #endif
     var sessionContext: ActivationAdmissibility.SessionContext
     let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
     let serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey
@@ -116,6 +120,25 @@ actor SendspinConnection {
     var activeRoles: Set<VersionedRole>
     var pendingPairingPsk: Psk?
     var pairingAttemptTask: Task<Void, Never>?
+
+    struct DynamicPairingAttempt {
+        let format: PairingCodeFormat
+        let pairingIndex: UInt32
+        let sid: Data
+        let nonceB: Data
+        let commitB: Data
+        var nonceA: Data?
+        var serverShare: Data?
+        var cpace: CPace?
+        var secrets: CPaceSecrets?
+        var clientConfirmationSent: Bool
+    }
+
+    var dynamicPairingAttempt: DynamicPairingAttempt?
+    var pairingActivateCounter: UInt32 = 0
+    var pairingWindowOpen = false
+    var pairingWindowTask: Task<Void, Never>?
+    let pairingWindowLifetime: Duration
 
     /// Last metadata state, retained so partial server/state deltas merge
     /// rather than clobber absent fields (e.g. a title-only delta keeps album/artist).
@@ -174,6 +197,9 @@ actor SendspinConnection {
         pairingStore: (any PairingRecordStore)? = nil,
         pairingConfigurationRuntime: PairingConfigurationRuntime? = nil,
         pairingAttemptTimeout: Duration = .seconds(120),
+        pairingWindowLifetime: Duration = .seconds(300),
+        nonceBOverride: Data? = nil,
+        pairingHandshakeHashOverride: Data? = nil,
         identityPrivateKey: Curve25519.KeyAgreement.PrivateKey,
         serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey,
         suite: NoiseCipherSuite,
@@ -218,6 +244,14 @@ actor SendspinConnection {
         self.pairingStore = pairingStore
         self.pairingConfigurationRuntime = pairingConfigurationRuntime
         self.pairingAttemptTimeout = pairingAttemptTimeout
+        self.pairingWindowLifetime = pairingWindowLifetime
+        #if DEBUG
+            self.nonceBOverride = nonceBOverride
+            self.pairingHandshakeHashOverride = pairingHandshakeHashOverride
+        #endif
+        dynamicPairingAttempt = nil
+        pairingWindowOpen = false
+        pairingWindowTask = nil
         self.identityPrivateKey = identityPrivateKey
         self.serverStaticPublicKey = serverStaticPublicKey
         self.suite = suite

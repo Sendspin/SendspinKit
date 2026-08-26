@@ -178,6 +178,22 @@ extension SendspinClient {
 }
 
 public extension SendspinClient {
+    /// Open the connection-owned pairing window for one code-based attempt.
+    @MainActor
+    func openPairingWindow() async throws {
+        try requireOpen()
+        guard let connection else { throw SendspinClientError.notConnected }
+        await connection.openPairingWindow()
+    }
+
+    /// Cancel the current code-based pairing attempt, if any.
+    @MainActor
+    func cancelPairingAttempt() async throws {
+        try requireOpen()
+        guard let connection else { throw SendspinClientError.notConnected }
+        await connection.cancelPairingAttempt()
+    }
+
     /// Start playback.
     ///
     /// Requires the controller role. Check ``currentControllerState`` to verify

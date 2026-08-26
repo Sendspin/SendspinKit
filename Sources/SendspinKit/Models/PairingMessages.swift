@@ -15,20 +15,140 @@ struct PairAbortPayload: Codable, Equatable, Sendable {
     let reason: PairAbortReason
 }
 
-/// `client/pair-finalize` carries the newly generated long-term PSK.
+/// `client/pair-pending` reports that a gesture-gated attempt is waiting.
+struct ClientPairPendingMessage: SendspinMessage, Equatable {
+    static let typeString = "client/pair-pending"
+    let type = Self.typeString
+    let payload: ClientPairPendingPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ClientPairPendingPayload: Codable, Equatable, Sendable {
+    let pairingIndex: UInt32
+    enum CodingKeys: String, CodingKey { case pairingIndex = "pairing_index" }
+}
+
+/// `client/pair-init` starts a code-based pairing attempt.
+struct ClientPairInitMessage: SendspinMessage, Equatable {
+    static let typeString = "client/pair-init"
+    let type = Self.typeString
+    let payload: ClientPairInitPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ClientPairInitPayload: Codable, Equatable, Sendable {
+    let pairingIndex: UInt32
+    let commitB: String?
+    enum CodingKeys: String, CodingKey {
+        case pairingIndex = "pairing_index"
+        case commitB = "commit_B"
+    }
+}
+
+struct ServerPairInitMessage: SendspinMessage, Equatable {
+    static let typeString = "server/pair-init"
+    let type = Self.typeString
+    let payload: ServerPairInitPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerPairInitPayload: Codable, Equatable, Sendable {
+    let nonceA: String
+    enum CodingKeys: String, CodingKey { case nonceA = "nonce_A" }
+}
+
+struct ServerPairAuthMessage: SendspinMessage, Equatable {
+    static let typeString = "server/pair-auth"
+    let type = Self.typeString
+    let payload: ServerPairAuthPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerPairAuthPayload: Codable, Equatable, Sendable {
+    let pakeMsg1: String
+    enum CodingKeys: String, CodingKey { case pakeMsg1 = "pake_msg_1" }
+}
+
+struct ClientPairAuthMessage: SendspinMessage, Equatable {
+    static let typeString = "client/pair-auth"
+    let type = Self.typeString
+    let payload: ClientPairAuthPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ClientPairAuthPayload: Codable, Equatable, Sendable {
+    let pakeMsg2: String
+    enum CodingKeys: String, CodingKey { case pakeMsg2 = "pake_msg_2" }
+}
+
+struct ServerPairConfirmMessage: SendspinMessage, Equatable {
+    static let typeString = "server/pair-confirm"
+    let type = Self.typeString
+    let payload: ServerPairConfirmPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerPairConfirmPayload: Codable, Equatable, Sendable {
+    let serverKc: String
+    enum CodingKeys: String, CodingKey { case serverKc = "server_kc" }
+}
+
+struct ClientPairConfirmMessage: SendspinMessage, Equatable {
+    static let typeString = "client/pair-confirm"
+    let type = Self.typeString
+    let payload: ClientPairConfirmPayload
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ClientPairConfirmPayload: Codable, Equatable, Sendable {
+    let clientKc: String
+    let wrappedNonceB: String?
+    enum CodingKeys: String, CodingKey {
+        case clientKc = "client_kc"
+        case wrappedNonceB = "wrapped_nonce_B"
+    }
+}
+
+/// `client/pair-finalize` carries either a direct or CPace-wrapped PSK.
 struct ClientPairFinalizeMessage: SendspinMessage, Equatable {
     static let typeString = "client/pair-finalize"
     let type = Self.typeString
     let payload: ClientPairFinalizePayload
-
     private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ClientPairFinalizePayload: Codable, Equatable, Sendable {
     let longTermPsk: String
-
+    let wrappedPsk: String?
     enum CodingKeys: String, CodingKey {
         case longTermPsk = "long_term_psk"
+        case wrappedPsk = "wrapped_psk"
+    }
+
+    init(longTermPsk: String) {
+        self.longTermPsk = longTermPsk
+        wrappedPsk = nil
+    }
+
+    init(wrappedPsk: String) {
+        longTermPsk = ""
+        self.wrappedPsk = wrappedPsk
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        longTermPsk = try container.decodeIfPresent(String.self, forKey: .longTermPsk) ?? ""
+        wrappedPsk = try container.decodeIfPresent(String.self, forKey: .wrappedPsk)
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        if !longTermPsk.isEmpty {
+            try container.encode(longTermPsk, forKey: .longTermPsk)
+        }
+        if let wrappedPsk {
+            try container.encode(wrappedPsk, forKey: .wrappedPsk)
+        }
     }
 }
 
@@ -54,7 +174,7 @@ struct ServerUnpairMessage: SendspinMessage, Equatable {
 
 struct ServerUnpairPayload: Codable, Equatable, Sendable {}
 
-enum PairAbortReason: String, Codable, Sendable, Hashable {
+public enum PairAbortReason: String, Codable, Sendable, Hashable {
     case attemptTimeout = "attempt_timeout"
     case concurrentAttempt = "concurrent_attempt"
     case methodNotSupported = "method_not_supported"

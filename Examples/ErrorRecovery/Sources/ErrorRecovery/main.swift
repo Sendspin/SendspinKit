@@ -252,7 +252,7 @@ struct ErrorRecovery: AsyncParsableCommand {
                         }
                         break eventLoop
 
-                    case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                    case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                          .streamFormatChanged, .streamCleared, .groupUpdated, .metadataReceived,
                          .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
                          .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
