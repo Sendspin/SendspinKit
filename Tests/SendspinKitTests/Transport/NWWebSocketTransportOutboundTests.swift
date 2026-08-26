@@ -90,7 +90,7 @@ struct NWWebSocketTransportOutboundTests {
 
     // MARK: - Send on a dead-but-non-nil connection
 
-    /// `send`/`sendBinary` must reject a connection that is no longer `.ready` rather
+    /// Text and binary sends must reject a connection that is no longer `.ready` rather
     /// than entering Network.framework's send path. The bounded calls keep a dead
     /// connection from leaving the test parked if completion never arrives.
     @Test
@@ -109,7 +109,7 @@ struct NWWebSocketTransportOutboundTests {
         await server.stop()
         let died = await waitUntil(timeout: .seconds(3)) {
             _ = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
-                try await transport.send(Ping())
+                try await transport.sendRawText("ping")
             }
             return await !transport.isConnected
         }
@@ -118,9 +118,9 @@ struct NWWebSocketTransportOutboundTests {
         // Locally-known-dead (state != .ready, connection non-nil): both send
         // paths must fail fast with the typed error, no NW I/O attempted.
         let textOutcome = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
-            try await transport.send(Ping())
+            try await transport.sendRawText("ping")
         }
-        expectNotConnected(textOutcome, "send")
+        expectNotConnected(textOutcome, "sendRawText")
         let binaryOutcome = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
             try await transport.sendBinary(Data([0x01]))
         }

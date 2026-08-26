@@ -84,6 +84,7 @@ extension SendspinClient {
     /// Build the client/hello payload from the catalog fixed for this session.
     func buildClientHelloPayload(
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
+        pairingPskEnabled: Bool = false,
         unpairedAccessEnabled: Bool? = nil
     ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
@@ -106,7 +107,7 @@ extension SendspinClient {
             name: name,
             deviceInfo: deviceInfo,
             trustLevel: .none,
-            supportedPairMethods: pairingConfiguration?.enabled == true
+            supportedPairMethods: pairingPskEnabled
                 ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
                 : [],
             unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled ?? self.unpairedAccessEnabled),

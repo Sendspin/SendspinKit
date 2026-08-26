@@ -555,6 +555,51 @@ struct MessageEncodingTests {
     func handshakeAndStreamMessages_ignoreUnrecognizedPayloadFields() throws {
         let decoder = JSONDecoder()
 
+        let activateJSON = """
+        {
+            "type": "server/activate",
+            "payload": {
+                "activities": [],
+                "active_roles": [],
+                "pairing": null,
+                "future_activate_field": true
+            }
+        }
+        """
+        let activateData = try #require(activateJSON.data(using: .utf8))
+        let activate = try decoder.decode(ServerActivateMessage.self, from: activateData)
+        #expect(activate.payload.activities.isEmpty)
+        #expect(activate.payload.activeRoles?.isEmpty == true)
+
+        let noiseJSON = """
+        {
+            "type": "noise/handshake",
+            "payload": {
+                "data": "AQ",
+                "future_noise_field": "ignored"
+            }
+        }
+        """
+        let noiseData = try #require(noiseJSON.data(using: .utf8))
+        let noise = try decoder.decode(NoiseHandshakeMessage.self, from: noiseData)
+        #expect(noise.payload.data == "AQ")
+
+        let managementJSON = """
+        {
+            "type": "management/result",
+            "payload": {
+                "result": "ok",
+                "data": {"records": []},
+                "storage": null,
+                "future_management_field": false
+            }
+        }
+        """
+        let managementData = try #require(managementJSON.data(using: .utf8))
+        let management = try decoder.decode(ManagementResultMessage.self, from: managementData)
+        #expect(management.payload.result == .success)
+        #expect(management.payload.data != nil)
+
         let serverHelloJSON = """
         {
             "type": "server/hello",

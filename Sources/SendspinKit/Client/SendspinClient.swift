@@ -438,6 +438,7 @@ public final class SendspinClient {
             let runtimeConfiguration = await pairingRuntimeConfiguration()
             let hello = buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             )
             let outcome = try await HandshakeDriver.establish(
@@ -488,6 +489,7 @@ public final class SendspinClient {
                 let runtimeConfiguration = await pairingRuntimeConfiguration()
                 let hello = buildClientHelloPayload(
                     effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                    pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                     unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
                 )
                 let outcome = try await HandshakeDriver.establish(
@@ -620,6 +622,7 @@ public final class SendspinClient {
             },
             clientHelloPayload: buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
+                pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
                 unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
             ),
             unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled,

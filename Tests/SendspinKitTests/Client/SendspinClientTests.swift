@@ -33,6 +33,37 @@ struct SendspinClientTests {
     }
 
     @Test
+    func clientHelloPairingMethodUsesLiveRuntimeConfiguration() async throws {
+        let pairingPsk = Psk.generate()
+        let pairing = PairingConfiguration(pairingPsk: pairingPsk, enabled: true)
+        let client = try SendspinClient(
+            identity: .generate(),
+            name: "Pairing Test",
+            roles: [.metadataV1],
+            pairing: pairing
+        )
+
+        let enabled = await pairing.runtime.snapshot()
+        #expect(enabled.pairingPskEnabled)
+        #expect(client.buildClientHelloPayload(pairingPskEnabled: enabled.pairingPskEnabled)
+            .supportedPairMethods.map(\.method) == [PairMethod.pairingPsk])
+
+        await pairing.runtime.update(PairingManagementConfiguration(
+            pairingPsk: pairingPsk,
+            pairingPskEnabled: false,
+            recordModePskId: pairing.recordModePskId,
+            unpairedAccessEnabled: enabled.unpairedAccessEnabled
+        ))
+        let disabled = await pairing.runtime.snapshot()
+        #expect(!disabled.pairingPskEnabled)
+        #expect(client.buildClientHelloPayload(pairingPskEnabled: disabled.pairingPskEnabled)
+            .supportedPairMethods.isEmpty)
+
+        let candidates = await PairingCandidateBuilder.candidates(configuration: pairing)
+        #expect(candidates.contains(where: { $0.category == .pairing }) == false)
+    }
+
+    @Test
     func colorRoleIsAdvertisedWithoutASupportObject() throws {
         let client = try SendspinClient(
             identity: .generate(),

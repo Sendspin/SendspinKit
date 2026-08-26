@@ -13,9 +13,6 @@ actor NWWebSocketTransport: ClientDialingTransport {
     /// out of order and shuffle frames (audio included). Safe as a plain `nonisolated
     /// let`: `FrameInbox` is `Sendable` and the reference never changes.
     private nonisolated let inbox = FrameInbox()
-    /// Confined to actor isolation — do not pass across isolation boundaries.
-    private let encoder = SendspinEncoding.makeEncoder()
-
     /// Per-send deadline used by `timedSend`. The default is intentionally generous
     /// (a healthy send completes in microseconds); only a wedged/dead NWConnection
     /// can plausibly hit it. `nonisolated let` so the `nonisolated` helper can read
@@ -163,24 +160,6 @@ actor NWWebSocketTransport: ClientDialingTransport {
 
     func nextFrame() async -> TransportFrame? {
         await inbox.next()
-    }
-
-    func send(_ message: some Codable & Sendable) async throws {
-        // state == .ready also rejects a dead-but-non-nil connection: NW behavior
-        // on a failed/cancelled connection is undefined here (raw POSIX errors,
-        // or a completion that never fires — an unbounded hang).
-        guard let connection, connection.state == .ready else {
-            throw TransportError.notConnected
-        }
-
-        let sendData = try encoder.encode(message)
-        let metadata = NWProtocolWebSocket.Metadata(opcode: .text)
-        let context = NWConnection.ContentContext(
-            identifier: "wsText",
-            metadata: [metadata]
-        )
-
-        try await timedSend(sendData, context: context, on: connection)
     }
 
     func sendRawText(_ text: String) async throws {
