@@ -598,6 +598,7 @@ public final class SendspinClient {
             pskCategory: outcomeCategory,
             matchedPskId: outcomePskId,
             pairingStore: pairingConfiguration?.store,
+            pairingConfigurationRuntime: pairingConfiguration?.runtime,
             pairingAttemptTimeout: pairingAttemptTimeout,
             identityPrivateKey: outcomeIdentityPrivateKey,
             serverStaticPublicKey: outcomeServerStaticPublicKey,

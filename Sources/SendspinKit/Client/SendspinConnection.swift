@@ -99,6 +99,8 @@ actor SendspinConnection {
     var pskCategory: PskCategory
     var matchedPskId: String
     let pairingStore: (any PairingRecordStore)?
+    let pairingConfigurationRuntime: PairingConfigurationRuntime?
+    var managementRequestInFlight = false
     let pairingAttemptTimeout: Duration
     var sessionContext: ActivationAdmissibility.SessionContext
     let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
@@ -171,6 +173,7 @@ actor SendspinConnection {
         pskCategory: PskCategory,
         matchedPskId: String = "",
         pairingStore: (any PairingRecordStore)? = nil,
+        pairingConfigurationRuntime: PairingConfigurationRuntime? = nil,
         pairingAttemptTimeout: Duration = .seconds(120),
         identityPrivateKey: Curve25519.KeyAgreement.PrivateKey,
         serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey,
@@ -214,6 +217,7 @@ actor SendspinConnection {
         self.pskCategory = pskCategory
         self.matchedPskId = matchedPskId
         self.pairingStore = pairingStore
+        self.pairingConfigurationRuntime = pairingConfigurationRuntime
         self.pairingAttemptTimeout = pairingAttemptTimeout
         self.identityPrivateKey = identityPrivateKey
         self.serverStaticPublicKey = serverStaticPublicKey

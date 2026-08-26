@@ -53,6 +53,57 @@ public struct PairingRecord: Sendable, Equatable, Hashable {
 /// SendspinKit never persists pairing records implicitly. Applications provide a
 /// Keychain, file, or database implementation when records must survive process
 /// restarts. Methods are async so storage I/O stays outside the main actor.
+public struct PairingStorageAccounting: Sendable, Equatable {
+    public let free: Int
+    public let capacity: Int?
+    public let costIndividual: Int?
+    public let costShared: Int?
+
+    public init(free: Int, capacity: Int? = nil, costIndividual: Int? = nil, costShared: Int? = nil) {
+        self.free = free
+        self.capacity = capacity
+        self.costIndividual = costIndividual
+        self.costShared = costShared
+    }
+}
+
+/// The mutable pairing settings exposed through the management role.
+public struct PairingManagementConfiguration: Sendable, Equatable {
+    public let pairingPsk: Psk
+    public let pairingPskEnabled: Bool
+    public let recordModePskId: String
+    public let unpairedAccessEnabled: Bool
+
+    public init(
+        pairingPsk: Psk,
+        pairingPskEnabled: Bool,
+        recordModePskId: String,
+        unpairedAccessEnabled: Bool
+    ) {
+        self.pairingPsk = pairingPsk
+        self.pairingPskEnabled = pairingPskEnabled
+        self.recordModePskId = recordModePskId
+        self.unpairedAccessEnabled = unpairedAccessEnabled
+    }
+}
+
+/// Shared mutable state used by handshake candidates and management updates.
+public actor PairingConfigurationRuntime {
+    private var configuration: PairingManagementConfiguration
+
+    public init(configuration: PairingManagementConfiguration) {
+        self.configuration = configuration
+    }
+
+    public func snapshot() -> PairingManagementConfiguration {
+        configuration
+    }
+
+    public func update(_ configuration: PairingManagementConfiguration) {
+        self.configuration = configuration
+    }
+}
+
 public protocol PairingRecordStore: Sendable {
     /// Return all configured records in a stable implementation-defined order.
     func listRecords() async -> [PairingRecord]
@@ -65,12 +116,41 @@ public protocol PairingRecordStore: Sendable {
 
     /// Mark a record as used after successful Noise authentication.
     func markUsed(pskId: String) async
+
+    /// Ensure the generated shared fallback record exists in the provider.
+    func ensurePreProvisionedSharedRecord(_ record: PairingRecord) async
+
+    /// Return storage accounting, or nil when the store is unbounded or unknown.
+    func storageAccounting() async -> PairingStorageAccounting?
+
+    /// Load management settings. The supplied value is used by stores without
+    /// separate configuration persistence.
+    func loadManagementConfiguration(default configuration: PairingManagementConfiguration) async -> PairingManagementConfiguration
+
+    /// Persist management settings atomically with the store's other settings.
+    func saveManagementConfiguration(_ configuration: PairingManagementConfiguration) async throws
+}
+
+public extension PairingRecordStore {
+    func ensurePreProvisionedSharedRecord(_: PairingRecord) async {}
+
+    func storageAccounting() async -> PairingStorageAccounting? {
+        nil
+    }
+
+    func loadManagementConfiguration(default configuration: PairingManagementConfiguration) async -> PairingManagementConfiguration {
+        configuration
+    }
+
+    func saveManagementConfiguration(_: PairingManagementConfiguration) async throws {}
 }
 
 /// Errors raised while configuring pairing records.
 public enum PairingRecordStoreError: Error, Sendable, Equatable {
     /// The PSK identifier is already occupied by another category or record.
     case duplicatePskId
+    /// The backing store cannot persist another entry or setting.
+    case storageExhausted
 }
 
 /// A non-persistent pairing store suitable for clients and tests that do not
@@ -79,13 +159,13 @@ public actor InMemoryPairingRecordStore: PairingRecordStore {
     private var records: [PairingRecord]
     private let reservedPskIds: Set<String>
 
-    public init(pairingPsk: Psk? = nil) {
+    public init(pairingPsk: Psk? = nil, preProvisionedRecord: PairingRecord? = nil) {
         var reserved = Set([Psk.sentinel.pskId])
         if let pairingPsk {
             reserved.insert(pairingPsk.pskId)
         }
         reservedPskIds = reserved
-        records = []
+        records = preProvisionedRecord.map { [$0] } ?? []
     }
 
     public init(records: [PairingRecord], pairingPsk: Psk? = nil) throws {
@@ -130,12 +210,25 @@ public struct PairingConfiguration: Sendable {
     public let store: any PairingRecordStore
     /// Whether Pairing PSK is offered and included in handshake candidates.
     public let enabled: Bool
+    /// Shared-PSK fallback used when a newly paired record cannot be stored individually.
+    public let recordModePskId: String
+    /// Runtime state shared by active connections and future handshakes.
+    let runtime: PairingConfigurationRuntime
 
     public init(pairingPsk: Psk? = nil, store: (any PairingRecordStore)? = nil, enabled: Bool = true) {
         let resolved = pairingPsk ?? .generate()
+        let fallback = PairingRecord(psk: .generate())
+        let resolvedStore = store ?? InMemoryPairingRecordStore(pairingPsk: resolved, preProvisionedRecord: fallback)
         self.pairingPsk = resolved
-        self.store = store ?? InMemoryPairingRecordStore(pairingPsk: resolved)
+        self.store = resolvedStore
         self.enabled = enabled
+        recordModePskId = fallback.pskId
+        runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+            pairingPsk: resolved,
+            pairingPskEnabled: enabled,
+            recordModePskId: fallback.pskId,
+            unpairedAccessEnabled: true
+        ))
     }
 }
 

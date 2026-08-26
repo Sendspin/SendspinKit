@@ -30,6 +30,24 @@ extension SendspinConnection {
             case "server/unpair":
                 try await handleServerUnpair(decoder.decode(ServerUnpairMessage.self, from: data))
 
+            case ManagementListRecordsMessage.typeString:
+                try await handleManagementListRecords(decoder.decode(ManagementListRecordsMessage.self, from: data))
+
+            case ManagementAddRecordMessage.typeString:
+                try await handleManagementAddRecord(decoder.decode(ManagementAddRecordMessage.self, from: data))
+
+            case ManagementRemoveRecordMessage.typeString:
+                try await handleManagementRemoveRecord(decoder.decode(ManagementRemoveRecordMessage.self, from: data))
+
+            case ManagementGetPairingConfigMessage.typeString:
+                try await handleManagementGetPairingConfig(decoder.decode(ManagementGetPairingConfigMessage.self, from: data))
+
+            case ManagementSetPairingConfigMessage.typeString:
+                try await handleManagementSetPairingConfig(decoder.decode(ManagementSetPairingConfigMessage.self, from: data))
+
+            case ManagementOpenPairingWindowMessage.typeString:
+                try await handleManagementOpenPairingWindow(decoder.decode(ManagementOpenPairingWindowMessage.self, from: data))
+
             case "server/pair-finalize":
                 try await handleServerPairFinalize(decoder.decode(ServerPairFinalizeMessage.self, from: data))
 
@@ -71,6 +89,11 @@ extension SendspinConnection {
                 || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
+            } else if msgType.hasPrefix("management/") {
+                // A malformed management request still owes the server its single
+                // ordered reply: permission_denied outside a management session,
+                // otherwise invalid.
+                await handleMalformedManagementRequest()
             }
         }
     }
