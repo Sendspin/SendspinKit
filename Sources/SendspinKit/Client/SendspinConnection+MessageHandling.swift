@@ -66,10 +66,11 @@ extension SendspinConnection {
                 try await handleServerPairFinalize(decoder.decode(ServerPairFinalizeMessage.self, from: data))
 
             case "pair/abort":
-                clearPairingAttempt()
+                let abort = try JSONDecoder().decode(PairAbortMessage.self, from: data)
+                clearPairingAttempt(reason: abort.payload.reason)
 
             case "client/pair-pending", "client/pair-init", "client/pair-auth", "client/pair-confirm":
-                break
+                throw PairingProtocolError.invalidSequence
 
             case "server/time":
                 try await handleServerTime(
@@ -110,6 +111,11 @@ extension SendspinConnection {
                 || msgType == "server/pair-init"
                 || msgType == "server/pair-auth"
                 || msgType == "server/pair-confirm"
+                || msgType == "client/pair-pending"
+                || msgType == "client/pair-init"
+                || msgType == "client/pair-auth"
+                || msgType == "client/pair-confirm"
+                || msgType == "pair/abort"
                 || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
@@ -182,6 +188,7 @@ extension SendspinConnection {
             activeRoles = []
             lastSentClientState = nil
             clearPairingAttempt()
+            pairingActivateCounter = 0
             awaitingRehandshakeActivation = true
             controlSink.enqueue(.serverConnected(ServerInfo(
                 serverId: currentServerId ?? "",
@@ -254,6 +261,9 @@ extension SendspinConnection {
             offeredPairMethods: advertisement.offeredPairMethods
         )
         let nextActivities = Set(message.payload.activities)
+        if nextActivities == [.pairing] {
+            pairingActivateCounter = pairingActivateCounter == .max ? 0 : pairingActivateCounter + 1
+        }
         let nextRoles: Set<VersionedRole> = if let announcedRoles = message.payload.activeRoles {
             Set(announcedRoles).intersection(roles)
         } else if ActivationAdmissibility.isPlaybackCapable(
@@ -295,6 +305,9 @@ extension SendspinConnection {
             } else if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.dynamicPairingCode {
                 await beginDynamicPairingAttempt(format: message.payload.pairing?.format)
             } else if pendingPairingPsk != nil || dynamicPairingAttempt != nil {
+                if dynamicPairingAttempt != nil {
+                    controlSink.enqueue(.pairingCodeChanged(nil))
+                }
                 clearPairingAttempt()
             }
         case let .close(reason):
@@ -302,6 +315,9 @@ extension SendspinConnection {
             disconnectReason = .explicit(reason)
             await transport.disconnect()
         case .abortPairing:
+            if pendingPairingPsk != nil || dynamicPairingAttempt != nil {
+                clearPairingAttempt(reason: .methodNotSupported)
+            }
             try? await sendWrapped(
                 PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)),
                 bypassRehandshakeGate: awaitingRehandshakeActivation
@@ -362,7 +378,7 @@ extension SendspinConnection {
         guard pskCategory != .pairing,
               let rawFormat = format,
               let selectedFormat = PairingCodeFormat(rawValue: rawFormat),
-              dynamicPairingCodeIsOffered(format: selectedFormat)
+              await dynamicPairingCodeIsOffered(format: selectedFormat)
         else {
             clearPairingAttempt(reason: .methodNotSupported)
             try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)))
@@ -410,8 +426,9 @@ extension SendspinConnection {
         }
     }
 
-    func dynamicPairingCodeIsOffered(format: PairingCodeFormat) -> Bool {
-        clientHelloPayload.supportedPairMethods.contains {
+    func dynamicPairingCodeIsOffered(format: PairingCodeFormat) async -> Bool {
+        let advertisement = await livePairingAdvertisement()
+        return advertisement.supportedPairMethods.contains {
             $0.method == PairMethod.dynamicPairingCode && ($0.formats ?? []).contains(format.rawValue)
         }
     }
@@ -491,7 +508,12 @@ extension SendspinConnection {
             prs = digest.prefix(24)
             emission = PairingCodeEmission(format: .qrCode, payload: PairingToken.dynamicCodeToken(Data(prs)))
         }
-        attempt.cpace = try CPace(role: .responder, prs: prs, sid: attempt.sid)
+        attempt.cpace = try CPace(
+            role: .responder,
+            prs: prs,
+            sid: attempt.sid,
+            scalarOverride: pairingScalarBOverride
+        )
         dynamicPairingAttempt = attempt
         controlSink.enqueue(.pairingCodeChanged(emission))
     }

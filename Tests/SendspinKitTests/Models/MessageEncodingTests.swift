@@ -9,6 +9,12 @@ struct MessageEncodingTests {
         let initJSON = try String(data: encoder.encode(ClientPairInitPayload(pairingIndex: 1, commitB: "commit")), encoding: .utf8)
         let nonceJSON = try String(data: encoder.encode(ServerPairInitPayload(nonceA: "nonce")), encoding: .utf8)
         let wrappedJSON = try String(data: encoder.encode(ClientPairConfirmPayload(clientKc: "tag", wrappedNonceB: "wrapped")), encoding: .utf8)
+        let methodsJSON = try String(data: encoder.encode(PairMethodDescriptor(
+            method: "dynamic_pairing_code",
+            outChannels: ["display"],
+            formats: ["digits", "qr_code"]
+        )), encoding: .utf8)
+        let finalizeJSON = try String(data: encoder.encode(ClientPairFinalizePayload(wrappedPsk: "wrapped")), encoding: .utf8)
 
         let initData = try #require(initJSON?.data(using: .utf8))
         let nonceData = try #require(nonceJSON?.data(using: .utf8))
@@ -16,6 +22,10 @@ struct MessageEncodingTests {
         let initObject = try #require(JSONSerialization.jsonObject(with: initData) as? [String: Any])
         let nonceObject = try #require(JSONSerialization.jsonObject(with: nonceData) as? [String: Any])
         let wrappedObject = try #require(JSONSerialization.jsonObject(with: wrappedData) as? [String: Any])
+        let methodsData = try #require(methodsJSON?.data(using: .utf8))
+        let finalizeData = try #require(finalizeJSON?.data(using: .utf8))
+        let methodsObject = try #require(JSONSerialization.jsonObject(with: methodsData) as? [String: Any])
+        let finalizeObject = try #require(JSONSerialization.jsonObject(with: finalizeData) as? [String: Any])
         #expect(initObject["commit_B"] as? String == "commit")
         #expect(initObject["pairing_index"] as? Int == 1)
         #expect(nonceObject["nonce_A"] as? String == "nonce")
@@ -24,6 +34,11 @@ struct MessageEncodingTests {
         #expect(initObject["commit__b"] == nil)
         #expect(nonceObject["nonce__a"] == nil)
         #expect(wrappedObject["wrapped_nonce__b"] == nil)
+        #expect(methodsObject["out_channels"] as? [String] == ["display"])
+        #expect(methodsObject["formats"] as? [String] == ["digits", "qr_code"])
+        #expect(methodsObject["out__channels"] == nil)
+        #expect(finalizeObject["wrapped_psk"] as? String == "wrapped")
+        #expect(finalizeObject["wrapped__psk"] == nil)
 
         let state = try PlayerStateObject(requiredLeadTimeMs: 12, minBufferMs: 34)
         let stateJSON = try String(data: encoder.encode(ClientStatePayload(available: true, player: state)), encoding: .utf8)

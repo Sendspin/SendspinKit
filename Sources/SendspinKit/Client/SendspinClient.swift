@@ -128,9 +128,11 @@ public final class SendspinClient {
     let outputRequestTimeout: Duration
     let handshakeTimeout: Duration
     let pairingAttemptTimeout: Duration
+    let pairingWindowLifetime: Duration
     #if DEBUG
         let nonceBOverride: Data?
         let pairingHandshakeHashOverride: Data?
+        let pairingScalarBOverride: Data?
     #endif
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
     let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
@@ -228,8 +230,10 @@ public final class SendspinClient {
         outputRequestTimeout: Duration = .seconds(3),
         handshakeTimeout: Duration = defaultHandshakeTimeout,
         pairingAttemptTimeout: Duration = .seconds(120),
+        pairingWindowLifetime: Duration = .seconds(300),
         nonceBOverride: Data? = nil,
         pairingHandshakeHashOverride: Data? = nil,
+        pairingScalarBOverride: Data? = nil,
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
@@ -263,9 +267,11 @@ public final class SendspinClient {
         self.outputRequestTimeout = outputRequestTimeout
         self.handshakeTimeout = handshakeTimeout
         self.pairingAttemptTimeout = pairingAttemptTimeout
+        self.pairingWindowLifetime = pairingWindowLifetime
         #if DEBUG
             self.nonceBOverride = nonceBOverride
             self.pairingHandshakeHashOverride = pairingHandshakeHashOverride
+            self.pairingScalarBOverride = pairingScalarBOverride
         #endif
         self.outputNegotiationSleep = outputNegotiationSleep
         self.outboundTransportFactory = outboundTransportFactory
@@ -617,9 +623,11 @@ public final class SendspinClient {
         #if DEBUG
             let nonceBOverride = nonceBOverride
             let pairingHandshakeHashOverride = pairingHandshakeHashOverride
+            let pairingScalarBOverride = pairingScalarBOverride
         #else
             let nonceBOverride: Data? = nil
             let pairingHandshakeHashOverride: Data? = nil
+            let pairingScalarBOverride: Data? = nil
         #endif
         let newConnection = SendspinConnection(
             transport: transport,
@@ -633,8 +641,10 @@ public final class SendspinClient {
             pairingStore: pairingConfiguration?.store,
             pairingConfigurationRuntime: pairingConfiguration?.runtime,
             pairingAttemptTimeout: pairingAttemptTimeout,
+            pairingWindowLifetime: pairingWindowLifetime,
             nonceBOverride: nonceBOverride,
             pairingHandshakeHashOverride: pairingHandshakeHashOverride,
+            pairingScalarBOverride: pairingScalarBOverride,
             identityPrivateKey: outcomeIdentityPrivateKey,
             serverStaticPublicKey: outcomeServerStaticPublicKey,
             suite: outcomeSuite,

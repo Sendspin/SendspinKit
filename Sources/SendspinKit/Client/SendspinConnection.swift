@@ -104,6 +104,7 @@ actor SendspinConnection {
     #if DEBUG
         let nonceBOverride: Data?
         let pairingHandshakeHashOverride: Data?
+        let pairingScalarBOverride: Data?
     #endif
     var sessionContext: ActivationAdmissibility.SessionContext
     let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
@@ -200,6 +201,7 @@ actor SendspinConnection {
         pairingWindowLifetime: Duration = .seconds(300),
         nonceBOverride: Data? = nil,
         pairingHandshakeHashOverride: Data? = nil,
+        pairingScalarBOverride: Data? = nil,
         identityPrivateKey: Curve25519.KeyAgreement.PrivateKey,
         serverStaticPublicKey: Curve25519.KeyAgreement.PublicKey,
         suite: NoiseCipherSuite,
@@ -248,6 +250,7 @@ actor SendspinConnection {
         #if DEBUG
             self.nonceBOverride = nonceBOverride
             self.pairingHandshakeHashOverride = pairingHandshakeHashOverride
+            self.pairingScalarBOverride = pairingScalarBOverride
         #endif
         dynamicPairingAttempt = nil
         pairingWindowOpen = false
