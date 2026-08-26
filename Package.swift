@@ -18,14 +18,27 @@ let package = Package(
     dependencies: [
         .package(url: "https://github.com/sbooth/flac-binary-xcframework.git", from: "0.1.0"),
         .package(url: "https://github.com/sbooth/ogg-binary-xcframework.git", from: "0.1.0"),
+        .package(url: "https://github.com/jedisct1/swift-sodium.git", exact: "0.9.1"),
         .package(url: "https://github.com/swiftlang/swift-docc-plugin", from: "1.4.3")
     ],
     targets: [
         .target(
+            name: "CElligator",
+            path: "Sources/CElligator",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("vendor"),
+                .headerSearchPath("vendor/private"),
+                .headerSearchPath("vendor/fe_25_5")
+            ]
+        ),
+        .target(
             name: "SendspinKit",
             dependencies: [
                 .product(name: "FLAC", package: "flac-binary-xcframework"),
-                .product(name: "ogg", package: "ogg-binary-xcframework")
+                .product(name: "ogg", package: "ogg-binary-xcframework"),
+                "CElligator",
+                .product(name: "Clibsodium", package: "swift-sodium")
             ],
             exclude: [
                 "Client/AGENTS.md"
