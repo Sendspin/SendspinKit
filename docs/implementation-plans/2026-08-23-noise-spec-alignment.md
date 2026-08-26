@@ -282,6 +282,15 @@ coding keys back once the spec's output-delay rename is mainlined server-side.
 **Review gate 4:** management semantics review against management.md tables, on top
 of the green outcome-matrix tests.
 
+**Gate 4 outcome (PASSED):** four-model panel adjudicated. Accepted and fixed:
+store lifecycle wiring (pre-provisioned shared record + persisted config load),
+unpaired-access single source of truth via the runtime snapshot, idempotent
+pairing-PSK rotation, dead one-in-flight gate removed, unknown management
+subtypes answered, and the record-mode storage-exhaustion fallback at
+pair-finalize (the fallback PSK is chosen before the wire commit). Rebutted:
+open-pairing-window's always-`invalid` is the spec's rule while no pairing-code
+method exists.
+
 ## Phase 5 — Polish, audit, docs
 
 - Conformance adapter: opt into `supports_request_format` and drive the two
