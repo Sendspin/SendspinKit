@@ -104,6 +104,10 @@ public actor PairingConfigurationRuntime {
     }
 }
 
+/// The store is the host app's durability boundary: mutating operations must be
+/// serialized with one another and complete durably before they return. This prevents
+/// a successful pairing or management update from being lost while a new handshake
+/// is already using the changed record set.
 public protocol PairingRecordStore: Sendable {
     /// Return all configured records in a stable implementation-defined order.
     func listRecords() async -> [PairingRecord]
@@ -210,8 +214,13 @@ public actor InMemoryPairingRecordStore: PairingRecordStore {
 }
 
 /// Client-side Pairing PSK configuration.
+///
+/// The host app owns the lifetime and persistence of the pairing PSK and record store.
+/// Keep the PSK private; construct a ``PairingToken`` only for an intentional setup flow
+/// and treat its ``PairingToken/string`` value as a secret until it is delivered securely.
 public struct PairingConfiguration: Sendable {
-    /// The per-device Pairing PSK. A value is generated when omitted.
+    /// The per-device Pairing PSK. A value is generated when omitted; persist the chosen
+    /// value with the identity if pairing must remain available after a process restart.
     public let pairingPsk: Psk
     /// Application persistence for long-term records.
     public let store: any PairingRecordStore

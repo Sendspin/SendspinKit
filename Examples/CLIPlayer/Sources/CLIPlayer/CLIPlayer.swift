@@ -73,7 +73,13 @@ final class CLIPlayer {
     }()
 
     @MainActor
-    func run(serverURL: String, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software) async throws {
+    func run(
+        serverURL: String,
+        clientName: String,
+        useTUI: Bool = true,
+        volumeMode: VolumeMode = .software,
+        enablePairing: Bool = false
+    ) async throws {
         // Simple startup banner before TUI takes over
         print("🎵 Sendspin CLI Player")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -87,16 +93,23 @@ final class CLIPlayer {
 
         // Create client
         let config = try Self.playerConfig(volumeMode: volumeMode)
+        let identity = SendspinIdentity.generate()
+        let pairing = enablePairing ? PairingConfiguration() : nil
+        if let pairing {
+            let token = PairingToken(clientKey: identity.publicKeyBytes, pairingPsk: pairing.pairingPsk)
+            print("[PAIRING] SP:0 token: \(token.string)")
+        }
         let client = try SendspinClient(
-            identity: .generate(),
+            identity: identity,
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,
-            artworkConfig: Self.artworkConfig
+            artworkConfig: Self.artworkConfig,
+            pairing: pairing
         )
         self.client = client
 
-        fputs("[CONFIG] Volume mode: \(volumeMode)\n", stderr)
+        fputs("[CONFIG] Volume mode: \(volumeMode) pairing=\(enablePairing)\n", stderr)
 
         // Start event monitoring
         eventTask = Task {
@@ -185,8 +198,10 @@ final class CLIPlayer {
         // Ignored in TUI mode — these are either handled by log mode only, or
         // have no corresponding on-screen element yet. Keep the list explicit
         // so adding a new case is a compiler error, not a silent drop.
-        case .paired,
-             .audioOutputChanged,
+        case .paired:
+            break
+
+        case .audioOutputChanged,
              .outputFormatStatusChanged,
              .streamingFailed,
              .groupUpdated,
@@ -207,10 +222,10 @@ final class CLIPlayer {
     private nonisolated func handleEventLog(_ event: ClientEvent) {
         switch event {
         case let .serverConnected(info):
-            print("[EVENT] Server connected: \(info.name) (\(info.serverId))")
+            print("[EVENT] Server connected: \(info.name) (\(info.serverId)) trust=\(info.trustLevel)")
 
         case let .paired(serverId):
-            print("[EVENT] Paired with server: \(serverId)")
+            print("[EVENT] Paired with server: \(serverId) trust=user")
 
         case let .audioOutputChanged(output):
             print("[AUDIO OUTPUT] \(output.diagnosticDescription ?? "unknown") rate=\(output.sampleRate.map(String.init) ?? "unknown")")
@@ -407,18 +422,25 @@ final class CLIPlayer {
     /// Listen for incoming server connections (server-initiated path).
     /// Advertises via mDNS and waits for servers to connect.
     @MainActor
-    func listen(port: UInt16, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software) async throws {
+    func listen(port: UInt16, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software, enablePairing: Bool = false) async throws {
         print("🎵 Sendspin CLI Player (Listen Mode)")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Advertising on port \(port)...")
 
         let config = try Self.playerConfig(volumeMode: volumeMode)
+        let identity = SendspinIdentity.generate()
+        let pairing = enablePairing ? PairingConfiguration() : nil
+        if let pairing {
+            let token = PairingToken(clientKey: identity.publicKeyBytes, pairingPsk: pairing.pairingPsk)
+            print("[PAIRING] SP:0 token: \(token.string)")
+        }
         let client = try SendspinClient(
-            identity: .generate(),
+            identity: identity,
             name: clientName,
             roles: [.playerV1, .metadataV1, .controllerV1, .artworkV1],
             playerConfig: config,
-            artworkConfig: Self.artworkConfig
+            artworkConfig: Self.artworkConfig,
+            pairing: pairing
         )
         self.client = client
 

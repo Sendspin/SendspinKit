@@ -58,8 +58,10 @@ extension SendspinIdentity: CustomStringConvertible, CustomDebugStringConvertibl
 
 /// Storage hook for the client's static identity keypair. The identity must survive
 /// reboots (it *is* the `client_id`), and SendspinKit never persists anything itself,
-/// so the host app backs this — Keychain, file, whatever fits. A `nil` load means
-/// first run: generate a fresh identity and save its secret.
+/// so the host app backs this — normally with a Keychain item or another protected store.
+/// Treat the loaded and saved bytes as a secret and make the save durable before exposing
+/// the identity to connections. A `nil` load means first run: generate a fresh identity
+/// and save its secret.
 public protocol SendspinIdentityProvider: Sendable {
     /// The persisted 32-byte identity secret key, or `nil` if none has been stored yet.
     func loadIdentitySecret() async -> Data?

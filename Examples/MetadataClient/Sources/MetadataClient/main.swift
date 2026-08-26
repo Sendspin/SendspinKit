@@ -169,9 +169,10 @@ struct MetadataClient: AsyncParsableCommand {
                 }
                 return
 
-            default:
-                // Events like .controllerStateUpdated, .artworkStreamStarted, etc.
-                // are not relevant for a metadata-only client.
+            case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                 .streamFormatChanged, .streamCleared, .controllerStateUpdated,
+                 .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
+                 .outputDelayChanged, .lastPlayedServerChanged:
                 break
             }
         }

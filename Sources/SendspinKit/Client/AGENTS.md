@@ -28,10 +28,11 @@ for SwiftUI.
   (`requestPlayerFormat`, `requestArtworkFormat`, controller commands) route through connection
   methods (`requestFormat(player:)`/`requestFormat(artwork:)`/`send(clientMessage:)`). The facade
   stores no transport, channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
-  through Noise establishment and the first admitted activation, then transfers the channel to
-  the connection.
-- **Expects:** a `SendspinTransport` (pull interface — `nextFrame()`, single-consumer, returns nil on
-  close) and a `ClockSyncProtocol`.
+  through raw init, Noise establishment, encrypted `server/hello`/`client/hello`, pairing setup,
+  and the first admitted activation, then transfers the channel to the connection.
+- **Expects:** a `SendspinTransport` (pull interface — `nextFrame()`, `sendRawText`,
+  `sendBinary`, `disconnect`; single-consumer receive, returns nil on close) and a
+  `ClockSyncProtocol`. There is no `send(Codable)` transport contract.
 
 ## Key Decisions
 - **Lifetime = owned objects, not generation counters.** The old `connectionGeneration` machinery was
@@ -52,6 +53,9 @@ for SwiftUI.
   nothing. `stream/request-format` is valid even when no stream is active; the server must not start
   one in response, but should remember the request for the next stream. `stream/clear` clears buffers
   WITHOUT ending the stream (spec): mirrors and format survive it on both sides.
+- **Pairing configuration has one runtime source of truth.** `PairingConfigurationRuntime` supplies
+  the snapshot shared by handshake candidates and the management responder; updates do not rely on
+  stale copies held by individual connections.
 - **The `currentArtwork` MainActor observer honors `SessionValidityToken`** just like the public
   binary yields — a retired connection's in-flight artwork must not mutate facade state.
 
@@ -63,8 +67,8 @@ for SwiftUI.
 
 ## Key Files
 - `SendspinClient.swift` — facade; `connect`/`disconnect`, `drainConnectionEvents`, state setters.
-- `HandshakeDriver.swift` — candidate Noise establishment, encrypted hello/activate admission, channel handoff.
-- `SendspinConnection.swift` — encrypted message loop, gates, supervisor, `reportDrain`, binary emission.
+- `HandshakeDriver.swift` — candidate Noise establishment, pairing setup, encrypted hello/activate admission, channel handoff.
+- `SendspinConnection.swift` — encrypted message loop, gates, supervisor, management responder, `reportDrain`, binary emission.
 - `ConnectionEvent.swift` — control-plane event enum + `ConnectionLifecycle`.
 - `SessionValidityToken.swift` — atomic check-and-yield guard for stale binary events.
 - `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` / `minBufferMs` (player role, `client/state` player object).

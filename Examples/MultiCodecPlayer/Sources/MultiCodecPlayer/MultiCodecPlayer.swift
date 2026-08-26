@@ -166,7 +166,9 @@ struct MultiCodecPlayer: AsyncParsableCommand {
                 print("[disconnected] \(reason)")
                 return
 
-            default:
+            case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+                 .streamCleared, .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
+                 .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
                 break
             }
         }

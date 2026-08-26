@@ -31,12 +31,28 @@ dependencies: [
 
 ## Quick Start
 
+A `SendspinIdentity` is the device's long-lived cryptographic identity. The host app owns its
+secret-key persistence: load `secretKeyBytes` from the Keychain (or another protected store) on
+launch, and save the bytes from a newly generated identity before connecting. Rotating the secret
+changes the device's `clientId`.
+
+Pairing is also host-owned. Pass a `PairingConfiguration` with an app-backed
+`PairingRecordStore` when pairing should survive process restarts. The default in-memory store is
+useful for tests and demonstrations, but is not persistent. Treat the pairing PSK and the resulting
+`PairingToken.string` as secrets; display or encode the token as a QR code only through a trusted
+setup flow.
+
 ```swift
 import SendspinKit
 
 // Create a player client
+let identity = SendspinIdentity.generate()
+let pairing = PairingConfiguration() // Pass an app-backed PairingRecordStore in production.
+let token = PairingToken(clientKey: identity.publicKeyBytes, pairingPsk: pairing.pairingPsk)
+print("Pairing token: \(token.string)") // display or encode as a QR code
+
 let client = try SendspinClient(
-    clientId: "my-device",
+    identity: identity,
     name: "Living Room Speaker",
     roles: [.playerV1],
     playerConfig: try PlayerConfiguration(
@@ -45,7 +61,9 @@ let client = try SendspinClient(
             try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
             try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
         ]
-    )
+    ),
+    unpairedAccessEnabled: false,
+    pairing: pairing
 )
 
 // Discover and connect to the first server found
@@ -57,23 +75,35 @@ if let server = servers.first {
 // React to events
 for await event in client.events() {
     switch event {
-    case .streamStarted(let format):
+    case let .serverConnected(info):
+        print("Connected to \(info.name); trust: \(info.trustLevel)")
+    case let .paired(serverId):
+        print("Paired with \(serverId)")
+    case let .streamStarted(format):
         print("Playing \(format.codec) at \(format.sampleRate)Hz")
-    case .metadataReceived(let metadata):
+    case let .metadataReceived(metadata):
         print("Now playing: \(metadata.title ?? "Unknown")")
-    case .disconnected(let reason):
-        print("Disconnected: \(reason)")
-    default:
+    case .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+         .streamFormatChanged, .streamEnded, .streamCleared, .groupUpdated,
+         .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
+         .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
         break
+    case let .disconnected(reason):
+        print("Disconnected: \(reason)")
     }
 }
 ```
+
+`ServerInfo.trustLevel` reports whether the active session is backed by a pairing record
+(`.user`) or is unpaired (`.none`). Set `unpairedAccessEnabled` to `false` when every server must
+be paired. Enabling unpaired access deliberately permits unauthenticated server access, so an
+on-path attacker can impersonate a server.
 
 ### Controller + Metadata
 
 ```swift
 let controller = try SendspinClient(
-    clientId: "my-remote",
+    identity: SendspinIdentity.generate(),
     name: "Kitchen Display",
     roles: [.controllerV1, .metadataV1]
 )
@@ -106,7 +136,7 @@ extension Color {
 }
 
 let colorDisplay = try SendspinClient(
-    clientId: "my-display",
+    identity: SendspinIdentity.generate(),
     name: "Kitchen Display",
     roles: [.colorV1]
 )
