@@ -18,7 +18,7 @@ private struct CPaceMCFKnownAnswer: Decodable {
 @Suite("CPace-X25519 vectors")
 struct CPaceX25519VectorTests {
     private let prs = dataFromHex("50617373776f7264")
-    private let clientInfo = dataFromHex("0b415f696e69746961746f720b425f726573706f6e646572")
+    private let channelInfo = dataFromHex("0b415f696e69746961746f720b425f726573706f6e646572")
     private let sid = dataFromHex("7e4b4791d6a8ef019b936c79fb7f2c57")
     private let generator = dataFromHex("d04bf6d41f6a289632a2e929fa29bebd51092512a7829fdde7d314b62f05a73f")
     private let scalarA = dataFromHex("21b4f4bd9e64ed355c3eb676a28ebedaf6d8f17bdc365995b319097153044080")
@@ -33,7 +33,7 @@ struct CPaceX25519VectorTests {
 
     @Test("calculate_generator matches Appendix B.1.1")
     func calculateGenerator() {
-        #expect(CPaceX25519.generator(prs: prs, clientInfo: clientInfo, sid: sid) == generator)
+        #expect(CPaceX25519.generator(prs: prs, channelInfo: channelInfo, sid: sid) == generator)
     }
 
     @Test("scalar multiplication matches Appendix B.1.2 through B.1.4")
@@ -44,12 +44,55 @@ struct CPaceX25519VectorTests {
         #expect(try CPaceX25519.scalarMult(scalar: scalarB, point: shareA) == shared)
     }
 
+    @Test("scalar_mult_vfy masks bit 255, returns Appendix B.1.10 outputs, and aborts weak points")
+    func scalarMultVfyLowOrderTable() throws {
+        let scalar = dataFromHex("af46e36bf0527c9d3b16154b82465edd62144c0ac1fc5a18506a2244ba449aff")
+        let cases: [(String, String?)] = [
+            ("0000000000000000000000000000000000000000000000000000000000000000", nil),
+            ("0100000000000000000000000000000000000000000000000000000000000000", nil),
+            ("ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", nil),
+            ("e0eb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b800", nil),
+            ("5f9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f1157", nil),
+            ("edffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", nil),
+            ("daffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "d8e2c776bbacd510d09fd9278b7edcd25fc5ae9adfba3b6e040e8d3b71b21806"),
+            ("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", nil),
+            ("dbffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "c85c655ebe8be44ba9c0ffde69f2fe10194458d137f09bbff725ce58803cdb38"),
+            ("d9ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "db64dafa9b8fdd136914e61461935fe92aa372cb056314e1231bc4ec12417456"),
+            ("cdeb7a7c3b41b8ae1656e3faf19fc46ada098deb9c32b1fd866205165f49b880", "e062dcd5376d58297be2618c7498f55baa07d7e03184e8aada20bca28888bf7a"),
+            ("4c9c95bca3508c24b1d0b1559c83ef5b04445cc4581c8e86d8224eddd09f11d7", "993c6ad11c4c29da9a56f7691fd0ff8d732e49de6250b6c2e80003ff4629a175")
+        ]
+        for (point, expected) in cases {
+            if let expected {
+                #expect(try CPaceX25519.scalarMult(scalar: scalar, point: dataFromHex(point)) == dataFromHex(expected))
+            } else {
+                #expect(throws: CPaceError.invalidShare) {
+                    try CPaceX25519.scalarMult(scalar: scalar, point: dataFromHex(point))
+                }
+            }
+        }
+    }
+
+    @Test("default associated-data values match the pinned CPace ISK")
+    func defaultAssociatedDataIsPinned() throws {
+        let initiator = try CPace(
+            role: .initiator, prs: prs, channelInfo: channelInfo, sid: sid, scalarOverride: scalarA
+        )
+        let responder = try CPace(
+            role: .responder, prs: prs, channelInfo: channelInfo, sid: sid, scalarOverride: scalarB
+        )
+        let expected = dataFromHex(
+            "d90a1cf7ad7fecae899f8c08139243e86782253e214b26abe112cfe8e1b6a6eb2bd8f6bc005b482f42105b8e2d278c6595d0733167a3d798d2623ddd212bb93e"
+        )
+        #expect(try initiator.derive(remoteShare: responder.publicShare).isk == expected)
+        #expect(try responder.derive(remoteShare: initiator.publicShare).isk == expected)
+    }
+
     @Test("initiator and responder derive the Appendix B.1.5 ISK")
     func bothRolesDeriveISK() throws {
         let initiator = try CPaceX25519.derive(CPaceDerivationInput(
             role: .initiator,
             prs: prs,
-            clientInfo: clientInfo,
+            channelInfo: channelInfo,
             sid: sid,
             scalar: scalarA,
             remoteShare: shareB,
@@ -59,7 +102,7 @@ struct CPaceX25519VectorTests {
         let responder = try CPaceX25519.derive(CPaceDerivationInput(
             role: .responder,
             prs: prs,
-            clientInfo: clientInfo,
+            channelInfo: channelInfo,
             sid: sid,
             scalar: scalarB,
             remoteShare: shareA,
@@ -83,7 +126,7 @@ struct CPaceTranscriptTests {
         let base = try CPaceX25519.derive(CPaceDerivationInput(
             role: .initiator,
             prs: Data("Password".utf8),
-            clientInfo: Data(),
+            channelInfo: Data(),
             sid: Data(repeating: 7, count: 16),
             scalar: Data(repeating: 9, count: 32),
             remoteShare: Data(repeating: 8, count: 32),
@@ -93,7 +136,7 @@ struct CPaceTranscriptTests {
         let swapped = try CPaceX25519.derive(CPaceDerivationInput(
             role: .initiator,
             prs: Data("Password".utf8),
-            clientInfo: Data(),
+            channelInfo: Data(),
             sid: Data(repeating: 7, count: 16),
             scalar: Data(repeating: 9, count: 32),
             remoteShare: Data(repeating: 8, count: 32),
@@ -132,6 +175,16 @@ struct CPaceTranscriptTests {
         #expect(tagB == dataFromHex(knownAnswer.tagB))
         #expect(CPaceX25519.constantTimeEqual(tagA, tagA))
         #expect(!CPaceX25519.constantTimeEqual(tagA, tagB))
+        let truncatedISK = Data(isk.dropLast())
+        #expect(CPaceX25519.mcfKey(isk: truncatedISK, sid: sid) != dataFromHex(knownAnswer.macKey))
+        #expect(
+            CPaceX25519.mcfTag(
+                isk: truncatedISK,
+                sid: sid,
+                share: dataFromHex("1d13c89278cdadd826f6d8d7f887701430f8380ddc17611cdd6dc989ce0c9f32"),
+                associatedData: Data("ADa".utf8)
+            ) != tagA
+        )
     }
 }
 
@@ -173,6 +226,8 @@ struct PairingWrapTests {
 
     @Test("ChaChaPoly matches the independent zero-nonce fixture")
     func chaChaPoly() throws {
+        // The byte-exact fixtures below come from Python cryptography.
+        // It uses SHA-256(label || sid || ISK), a zero nonce, and empty AAD.
         let ciphertext = try PairingWrap.wrap(plaintext: plaintext, label: label, sid: sid, isk: isk, suite: .chaChaPoly)
         #expect(ciphertext == dataFromHex("bde5062af30077da392973ca683fec01f2550e840189615c3b1ff716b85603e232490de095bbc4d69aef2a62b77d69d8"))
         #expect(try PairingWrap.unwrap(ciphertext: ciphertext, label: label, sid: sid, isk: isk, suite: .chaChaPoly) == plaintext)
@@ -188,6 +243,8 @@ struct PairingWrapTests {
     @Test("wrong key inputs and authenticated data do not match the fixture")
     func fixtureRejectsMutations() throws {
         let expected = dataFromHex("bde5062af30077da392973ca683fec01f2550e840189615c3b1ff716b85603e232490de095bbc4d69aef2a62b77d69d8")
+        let mutatedISK = isk.dropLast() + Data([0])
+        #expect(try PairingWrap.wrap(plaintext: plaintext, label: label, sid: sid, isk: mutatedISK, suite: .chaChaPoly) != expected)
         #expect(
             try PairingWrap.wrap(
                 plaintext: plaintext,

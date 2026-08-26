@@ -34,7 +34,6 @@ enum CPaceError: Error, Equatable {
 }
 
 struct CPaceSecrets: Sendable {
-    let scalar: Data
     let generator: Data
     let publicShare: Data
     let isk: Data
@@ -43,7 +42,7 @@ struct CPaceSecrets: Sendable {
 struct CPaceDerivationInput {
     let role: CPaceRole
     let prs: Data
-    let clientInfo: Data
+    let channelInfo: Data
     let sid: Data
     let scalar: Data
     let remoteShare: Data
@@ -54,7 +53,7 @@ struct CPaceDerivationInput {
 struct CPace: Sendable {
     let role: CPaceRole
     let prs: Data
-    let clientInfo: Data
+    let channelInfo: Data
     let sid: Data
     let initiatorAD: Data
     let responderAD: Data
@@ -65,19 +64,23 @@ struct CPace: Sendable {
     init(
         role: CPaceRole,
         prs: Data,
-        clientInfo: Data = Data(),
+        channelInfo: Data = Data(),
         sid: Data,
         initiatorAD: Data = CPaceX25519.defaultInitiatorAD,
         responderAD: Data = CPaceX25519.defaultResponderAD,
         scalarOverride: Data? = nil
     ) throws {
-        let scalar = scalarOverride ?? CPace.randomScalar()
+        #if DEBUG
+            let scalar = scalarOverride ?? CPace.randomScalar()
+        #else
+            let scalar = CPace.randomScalar()
+        #endif
         guard scalar.count == CPaceX25519.fieldLength else { throw CPaceError.invalidScalar }
-        let generator = CPaceX25519.generator(prs: prs, clientInfo: clientInfo, sid: sid)
+        let generator = CPaceX25519.generator(prs: prs, channelInfo: channelInfo, sid: sid)
         let publicShare = try CPaceX25519.scalarMult(scalar: scalar, point: generator)
         self.role = role
         self.prs = prs
-        self.clientInfo = clientInfo
+        self.channelInfo = channelInfo
         self.sid = sid
         self.initiatorAD = initiatorAD
         self.responderAD = responderAD
@@ -87,16 +90,20 @@ struct CPace: Sendable {
     }
 
     func derive(remoteShare: Data) throws -> CPaceSecrets {
-        try CPaceX25519.derive(CPaceDerivationInput(
-            role: role,
-            prs: prs,
-            clientInfo: clientInfo,
+        let sharedPoint = try CPaceX25519.scalarMult(scalar: scalar, point: remoteShare)
+        let initiatorShare = role == .initiator ? publicShare : remoteShare
+        let responderShare = role == .initiator ? remoteShare : publicShare
+        let isk = CPaceX25519.deriveISK(
             sid: sid,
-            scalar: scalar,
-            remoteShare: remoteShare,
-            initiatorAD: initiatorAD,
-            responderAD: responderAD
-        ))
+            sharedPoint: sharedPoint,
+            transcriptData: CPaceX25519.transcript(
+                initiatorShare: initiatorShare,
+                initiatorAD: initiatorAD,
+                responderShare: responderShare,
+                responderAD: responderAD
+            )
+        )
+        return CPaceSecrets(generator: generator, publicShare: publicShare, isk: isk)
     }
 
     private static func randomScalar() -> Data {
@@ -130,15 +137,15 @@ enum CPaceX25519 {
         values.reduce(into: Data()) { $0.append(prependLength($1)) }
     }
 
-    static func generatorString(prs: Data, clientInfo: Data, sid: Data) -> Data {
+    static func generatorString(prs: Data, channelInfo: Data, sid: Data) -> Data {
         let dsiLength = prependLength(generatorDSI).count
         let prsLength = prependLength(prs).count
         let paddingLength = max(0, hashBlockLength - 1 - prsLength - dsiLength)
-        return lengthValueConcat(generatorDSI, prs, Data(repeating: 0, count: paddingLength), clientInfo, sid)
+        return lengthValueConcat(generatorDSI, prs, Data(repeating: 0, count: paddingLength), channelInfo, sid)
     }
 
-    static func generator(prs: Data, clientInfo: Data, sid: Data) -> Data {
-        let input = generatorString(prs: prs, clientInfo: clientInfo, sid: sid)
+    static func generator(prs: Data, channelInfo: Data, sid: Data) -> Data {
+        let input = generatorString(prs: prs, channelInfo: channelInfo, sid: sid)
         let digest = Data(SHA512.hash(data: input)).prefix(fieldLength)
         var inputBytes = Array(digest)
         inputBytes[fieldLength - 1] &= 0x7F
@@ -154,6 +161,7 @@ enum CPaceX25519 {
     static func scalarMult(scalar: Data, point: Data) throws -> Data {
         guard scalar.count == fieldLength, point.count == fieldLength else { throw CPaceError.invalidInput }
         var output = Data(repeating: 0, count: fieldLength)
+        // sodium_init() is deliberately absent because this stateless operation receives CryptoKit scalars.
         let result = output.withUnsafeMutableBytes { outputBytes in
             scalar.withUnsafeBytes { scalarBytes in
                 point.withUnsafeBytes { pointBytes in
@@ -165,7 +173,11 @@ enum CPaceX25519 {
                 }
             }
         }
-        guard result == 0, output.contains(where: { $0 != 0 }) else { throw CPaceError.invalidShare }
+        var nonzero: UInt8 = 0
+        for byte in output {
+            nonzero |= byte
+        }
+        guard result == 0, nonzero != 0 else { throw CPaceError.invalidShare }
         return output
     }
 
@@ -197,7 +209,7 @@ enum CPaceX25519 {
     }
 
     static func derive(_ input: CPaceDerivationInput) throws -> CPaceSecrets {
-        let generator = generator(prs: input.prs, clientInfo: input.clientInfo, sid: input.sid)
+        let generator = generator(prs: input.prs, channelInfo: input.channelInfo, sid: input.sid)
         let publicShare = try scalarMult(scalar: input.scalar, point: generator)
         let sharedPoint = try scalarMult(scalar: input.scalar, point: input.remoteShare)
         let initiatorShare = input.role == .initiator ? publicShare : input.remoteShare
@@ -212,7 +224,7 @@ enum CPaceX25519 {
                 responderAD: input.responderAD
             )
         )
-        return CPaceSecrets(scalar: input.scalar, generator: generator, publicShare: publicShare, isk: isk)
+        return CPaceSecrets(generator: generator, publicShare: publicShare, isk: isk)
     }
 }
 
@@ -221,6 +233,7 @@ enum PairingWrapError: Error, Equatable {
     case authenticationFailed
 }
 
+/// PairingWrap is single-use for each `(label, sid, ISK)` tuple, so its zero nonce never repeats.
 enum PairingWrap {
     static let nonceLength = 12
     static let plaintextLength = 32
