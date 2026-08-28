@@ -64,7 +64,10 @@ extension SendspinClient {
             pairingPsk: current.pairingPsk,
             pairingPskEnabled: current.pairingPskEnabled,
             recordModePskId: current.recordModePskId,
-            unpairedAccessEnabled: unpairedAccessEnabled
+            unpairedAccessEnabled: unpairedAccessEnabled,
+            dynamicPairingCodeEnabled: current.dynamicPairingCodeEnabled,
+            staticPairingCodeEnabled: current.staticPairingCodeEnabled,
+            staticPairingCode: current.staticPairingCode
         )
         let loaded = await configuration.store.loadManagementConfiguration(default: initial)
         await configuration.runtime.update(loaded)
@@ -76,7 +79,10 @@ extension SendspinClient {
                 pairingPsk: .sentinel,
                 pairingPskEnabled: false,
                 recordModePskId: "",
-                unpairedAccessEnabled: unpairedAccessEnabled
+                unpairedAccessEnabled: unpairedAccessEnabled,
+                dynamicPairingCodeEnabled: false,
+                staticPairingCodeEnabled: false,
+                staticPairingCode: nil
             )
         }
         return await runtime.snapshot()
@@ -86,6 +92,8 @@ extension SendspinClient {
     func buildClientHelloPayload(
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
         pairingPskEnabled: Bool,
+        dynamicPairingCodeEnabled: Bool = false,
+        staticPairingCodeEnabled: Bool = false,
         unpairedAccessEnabled: Bool? = nil
     ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
@@ -108,9 +116,26 @@ extension SendspinClient {
             name: name,
             deviceInfo: deviceInfo,
             trustLevel: .none,
-            supportedPairMethods: pairingPskEnabled
-                ? [PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"])]
-                : [],
+            supportedPairMethods: {
+                var methods: [PairMethodDescriptor] = []
+                if pairingPskEnabled {
+                    methods.append(PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"]))
+                }
+                if dynamicPairingCodeEnabled {
+                    methods.append(PairMethodDescriptor(
+                        method: PairMethod.dynamicPairingCode,
+                        outChannels: ["display"],
+                        formats: ["digits", "qr_code"]
+                    ))
+                }
+                if staticPairingCodeEnabled {
+                    methods.append(PairMethodDescriptor(
+                        method: PairMethod.staticPairingCode,
+                        locations: ["operator"]
+                    ))
+                }
+                return methods
+            }(),
             unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled ?? self.unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,

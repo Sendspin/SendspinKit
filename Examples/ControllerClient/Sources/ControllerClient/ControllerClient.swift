@@ -178,7 +178,7 @@ struct ControllerClient: AsyncParsableCommand {
                 print("\n[disconnected] \(reason)")
                 return
 
-            case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+            case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                  .streamStarted, .streamFormatChanged, .streamEnded, .streamCleared,
                  .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
                  .outputDelayChanged, .lastPlayedServerChanged:

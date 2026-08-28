@@ -201,6 +201,9 @@ final class CLIPlayer {
         case .paired:
             break
 
+        case .pairingCodeChanged, .pairingAttemptEnded:
+            break
+
         case .audioOutputChanged,
              .outputFormatStatusChanged,
              .streamingFailed,
@@ -226,6 +229,16 @@ final class CLIPlayer {
 
         case let .paired(serverId):
             print("[EVENT] Paired with server: \(serverId) trust=user")
+
+        case let .pairingCodeChanged(emission):
+            if let emission {
+                print("[PAIRING] Code \(emission.format.rawValue): \(emission.payload)")
+            } else {
+                print("[PAIRING] Code cleared")
+            }
+
+        case let .pairingAttemptEnded(reason):
+            print("[PAIRING] Attempt ended: \(reason.rawValue)")
 
         case let .audioOutputChanged(output):
             print("[AUDIO OUTPUT] \(output.diagnosticDescription ?? "unknown") rate=\(output.sampleRate.map(String.init) ?? "unknown")")

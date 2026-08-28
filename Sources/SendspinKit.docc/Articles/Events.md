@@ -13,6 +13,8 @@ SendspinKit provides two complementary ways to observe state: an event stream fo
 | Event | When |
 |-------|------|
 | ``ClientEvent/serverConnected(_:)`` | Handshake complete, roles activated |
+| ``ClientEvent/pairingCodeChanged(_:)`` | Dynamic pairing code emitted or cleared (`nil`) |
+| ``ClientEvent/pairingAttemptEnded(_:)`` | Code-based pairing attempt ends with a ``PairAbortReason`` |
 | ``ClientEvent/streamStarted(_:)`` | Audio stream begins with format info |
 | ``ClientEvent/streamFormatChanged(_:)`` | Codec or sample rate changed mid-stream |
 | ``ClientEvent/streamEnded`` | Server stopped the audio stream |

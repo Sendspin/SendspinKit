@@ -112,11 +112,15 @@ struct ManagementRecordsData: Codable, Sendable, Equatable {
 
 struct ManagementPairingConfigData: Codable, Sendable, Equatable {
     let pairingPsk: ManagementPairingPskData
+    let staticPairingCode: ManagementPairingCodeData?
+    let dynamicPairingCode: ManagementDynamicPairingCodeData?
     let recordMode: ManagementRecordModeData
     let unpairedAccess: ManagementUnpairedAccessData
 
     enum CodingKeys: String, CodingKey {
         case pairingPsk = "pairing_psk"
+        case staticPairingCode = "static_pairing_code"
+        case dynamicPairingCode = "dynamic_pairing_code"
         case recordMode = "record_mode"
         case unpairedAccess = "unpaired_access"
     }
@@ -124,6 +128,15 @@ struct ManagementPairingConfigData: Codable, Sendable, Equatable {
 
 struct ManagementPairingPskData: Codable, Sendable, Equatable {
     let enabled: Bool
+}
+
+struct ManagementPairingCodeData: Codable, Sendable, Equatable {
+    let enabled: Bool
+}
+
+struct ManagementDynamicPairingCodeData: Codable, Sendable, Equatable {
+    let enabled: Bool
+    let escalated: Bool
 }
 
 struct ManagementRecordModeData: Codable, Sendable, Equatable {

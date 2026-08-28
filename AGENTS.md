@@ -19,6 +19,7 @@ exhaustively over `ClientEvent` on purpose — add the missing case, not a `defa
 
 ## Project Structure
 - `Sources/SendspinKit/Client/` — facade, connection actor, message handling. See its AGENTS.md.
+- `Sources/CElligator/` — vendored libsodium field operations and RFC 9380 Elligator2 composition used by CPace. Keep this target verbatim to its recorded upstream provenance; it contains no authored field arithmetic.
 - `Sources/SendspinKit/Audio/` — `AudioEngine` actor, data-plane channel, scheduler, decoders.
 - `Sources/SendspinKit/Transport/` — `SendspinTransport` pull interface (`nextFrame`, `sendRawText`, `sendBinary`, `disconnect`) + `NWWebSocketTransport`.
 - `Sources/SendspinKit/Synchronization/` — Kalman clock sync (`ClockSyncProtocol`).

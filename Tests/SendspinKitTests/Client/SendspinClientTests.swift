@@ -32,6 +32,39 @@ struct SendspinClientTests {
         #expect(payload.supportedRoles == [.metadataV1, .controllerV1])
     }
 
+    @Test("accept hello omits static pairing when runtime has no code")
+    func acceptHelloOmitsUnconfiguredStaticPairing() async throws {
+        let pairing = PairingConfiguration(staticPairingCode: "12345678", staticPairingCodeEnabled: true)
+        let client = try SendspinClient(
+            identity: .generate(),
+            name: "Accept Pairing Test",
+            roles: [.metadataV1],
+            pairing: pairing
+        )
+        await client.preparePairingConfiguration()
+        let configuration = await pairing.runtime.snapshot()
+        await pairing.runtime.update(PairingManagementConfiguration(
+            pairingPsk: configuration.pairingPsk,
+            pairingPskEnabled: configuration.pairingPskEnabled,
+            recordModePskId: configuration.recordModePskId,
+            unpairedAccessEnabled: configuration.unpairedAccessEnabled,
+            dynamicPairingCodeEnabled: configuration.dynamicPairingCodeEnabled,
+            staticPairingCodeEnabled: true,
+            staticPairingCode: nil
+        ))
+
+        let transport = MockTransport()
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.beginAdmission()
+        try await server.sendActivation()
+        try await accepted
+        let helloData = try #require(await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).first)
+        let hello = try JSONDecoder().decode(ClientHelloMessage.self, from: helloData)
+        #expect(!hello.payload.supportedPairMethods.contains { $0.method == PairMethod.staticPairingCode })
+        await client.disconnect()
+    }
+
     @Test
     func clientHelloPairingMethodUsesLiveRuntimeConfiguration() async throws {
         let pairingPsk = Psk.generate()

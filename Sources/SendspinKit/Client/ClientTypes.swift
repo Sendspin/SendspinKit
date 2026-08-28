@@ -127,8 +127,25 @@ public struct VisualizerData: Sendable, Equatable {
     public let localDisplayTime: Int64
 }
 
+public enum PairingCodeFormat: String, Codable, Sendable, Equatable {
+    case digits
+    case qrCode = "qr_code"
+}
+
+public struct PairingCodeEmission: Sendable, Equatable {
+    public let format: PairingCodeFormat
+    public let payload: String
+
+    public init(format: PairingCodeFormat, payload: String) {
+        self.format = format
+        self.payload = payload
+    }
+}
+
 public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
+    case pairingCodeChanged(PairingCodeEmission?)
+    case pairingAttemptEnded(PairAbortReason)
     case paired(serverId: String)
     /// The client observed a new advisory audio-output capability snapshot.
     case audioOutputChanged(AudioOutputSnapshot)

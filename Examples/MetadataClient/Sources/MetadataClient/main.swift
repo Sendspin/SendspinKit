@@ -169,7 +169,7 @@ struct MetadataClient: AsyncParsableCommand {
                 }
                 return
 
-            case .paired, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
+            case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                  .streamFormatChanged, .streamCleared, .controllerStateUpdated,
                  .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
                  .outputDelayChanged, .lastPlayedServerChanged:

@@ -85,8 +85,15 @@ enum ActivationAdmissibility {
         }
 
         func pairingMethodAcceptable(_ pairing: PairingDirective) -> Bool {
-            // pairing_psk is the method iff the matched PSK is the Pairing PSK.
-            let methodAllowedForCategory = (pairing.method == PairMethod.pairingPsk) == (category == .pairing)
+            // Pairing PSK is restricted to its dedicated PSK; code methods use
+            // sentinel or long-term sessions.
+            let methodAllowedForCategory: Bool = if pairing.method == PairMethod.pairingPsk {
+                category == .pairing
+            } else if pairing.method == PairMethod.dynamicPairingCode || pairing.method == PairMethod.staticPairingCode {
+                category != .pairing
+            } else {
+                false
+            }
             return methodAllowedForCategory && offeredPairMethods.contains(pairing.method)
         }
 

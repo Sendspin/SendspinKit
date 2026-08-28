@@ -173,6 +173,13 @@ extension SendspinConnection {
 
         // Invalidate the token
         validity.invalidate()
+        if dynamicPairingAttempt != nil {
+            controlSink.enqueue(.pairingCodeChanged(nil))
+            dynamicPairingAttempt = nil
+        }
+        staticPairingAttempt = nil
+        pairingAttemptTask?.cancel()
+        pairingWindowTask?.cancel()
 
         // Stop the engine (async cleanup: close output, finish channels)
         await audioEngine.shutdown()
