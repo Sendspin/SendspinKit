@@ -6,12 +6,16 @@ struct ManagementListRecordsMessage: SendspinMessage, Equatable {
     static let typeString = "management/list-records"
     let type = Self.typeString
     let payload: ManagementEmptyPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementAddRecordMessage: SendspinMessage, Equatable {
     static let typeString = "management/add-record"
     let type = Self.typeString
     let payload: ManagementAddRecordPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementAddRecordPayload: Codable, Sendable, Equatable {
@@ -28,6 +32,8 @@ struct ManagementRemoveRecordMessage: SendspinMessage, Equatable {
     static let typeString = "management/remove-record"
     let type = Self.typeString
     let payload: ManagementRemoveRecordPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementRemoveRecordPayload: Codable, Sendable, Equatable {
@@ -40,12 +46,16 @@ struct ManagementGetPairingConfigMessage: SendspinMessage, Equatable {
     static let typeString = "management/get-pairing-config"
     let type = Self.typeString
     let payload: ManagementEmptyPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementSetPairingConfigMessage: SendspinMessage, Equatable {
     static let typeString = "management/set-pairing-config"
     let type = Self.typeString
     let payload: ManagementSetPairingConfigPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementSetPairingConfigPayload: Codable, Sendable, Equatable {
@@ -92,6 +102,8 @@ struct ManagementOpenPairingWindowMessage: SendspinMessage, Equatable {
     static let typeString = "management/open-pairing-window"
     let type = Self.typeString
     let payload: ManagementEmptyPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementRecordData: Codable, Sendable, Equatable {
@@ -191,6 +203,8 @@ struct ManagementResultMessage: SendspinMessage, Equatable {
     static let typeString = "management/result"
     let type = Self.typeString
     let payload: ManagementResultPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
 }
 
 struct ManagementResultPayload: Codable, Sendable, Equatable {

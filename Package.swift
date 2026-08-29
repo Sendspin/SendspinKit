@@ -29,7 +29,11 @@ let package = Package(
             cSettings: [
                 .headerSearchPath("vendor"),
                 .headerSearchPath("vendor/private"),
-                .headerSearchPath("vendor/fe_25_5")
+                .headerSearchPath("vendor/fe_25_5"),
+                // The vendored libsodium sources emit "#warning undocumented method"
+                // unless the build declares itself configured; SwiftPM has no
+                // ./configure step, so declare it here.
+                .define("CONFIGURED", to: "1")
             ]
         ),
         .target(
