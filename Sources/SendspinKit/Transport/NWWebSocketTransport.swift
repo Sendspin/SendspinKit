@@ -255,12 +255,24 @@ actor NWWebSocketTransport: ClientDialingTransport {
 
     func disconnect() async {
         recordCloseReason(.cancelled)
+        await sendCloseFrame()
         // Finish the stream before cancelling the connection so parked nextFrame()
         // callers are unblocked — cancellation alone doesn't release them.
         finishStreams()
         connection?.cancel()
         connection = nil
         connectionForDeinit = nil
+    }
+
+    /// Send a WebSocket close frame (normal closure) before cancelling: without one the
+    /// peer only detects the disconnect via ping timeout, which can outlast a fast client
+    /// relaunch and strand both sides. Bounded by ``sendTimeout``; send failures are ignored.
+    private func sendCloseFrame() async {
+        guard let connection, connection.state == .ready else { return }
+        let metadata = NWProtocolWebSocket.Metadata(opcode: .close)
+        metadata.closeCode = .protocolCode(.normalClosure)
+        let context = NWConnection.ContentContext(identifier: "wsClose", metadata: [metadata])
+        try? await timedSend(Data(), context: context, on: connection)
     }
 
     // MARK: - Private
