@@ -150,7 +150,7 @@ struct RehandshakeTests {
         })
         let finalizeData = await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString)[0]
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
-        let longTermPsk = try #require(try Psk(base64URL: #require(finalize.payload.longTermPsk)))
+        let longTermPsk = try #require(Psk(base64URL: finalize.payload.longTermPsk))
 
         // The shared fallback is present before pairing; the server-bound record waits for acknowledgement.
         #expect(await session.store.listRecords().allSatisfy { $0.serverId == nil })

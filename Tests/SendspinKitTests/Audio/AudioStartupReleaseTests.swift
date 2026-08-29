@@ -497,7 +497,7 @@ struct AudioStartupReleaseTests {
         await output.blockNextOutputDeviceProbe()
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: 1_000_000))
         #expect(await waitUntil { await output.outputDeviceProbeCount == 1 })
-        await engine.commands.enqueue(.streamEnd(roles: ["player"]))
+        engine.commands.enqueue(.streamEnd(roles: ["player"]))
         #expect(await waitUntil { await engine.appliedCommandKinds().last == .streamEnd })
         await output.releaseBlockedOutputDeviceProbe()
         try? await Task.sleep(for: .milliseconds(100))

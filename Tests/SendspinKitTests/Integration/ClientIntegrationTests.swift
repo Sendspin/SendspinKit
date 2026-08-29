@@ -1408,7 +1408,7 @@ struct ClientIntegrationTests {
             }
         }
 
-        let mock = try await connectClient(
+        _ = try await connectClient(
             client,
             activeRoles: [.playerV1, .controllerV1],
             activities: [.playback]
