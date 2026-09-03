@@ -19,6 +19,8 @@ public extension SendspinClient {
     ///     let positionMs = progress.currentPositionMs(at: serverTime)
     /// }
     /// ```
+    /// Server-clock instant; compare only with server-domain timestamps. Convert before mixing
+    /// with `Date`, `time()`, or `MonotonicClock`.
     @MainActor
     func currentServerTimeMicroseconds() async -> Int64? {
         guard let connection else { return nil }

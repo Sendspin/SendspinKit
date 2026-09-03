@@ -226,6 +226,9 @@ public struct GroupInfo: Sendable, Hashable {
 /// Playback progress information.
 /// Use `currentPositionMs(at:)` to get the real-time interpolated position.
 ///
+/// ``trackProgressMs`` is track-relative milliseconds; ``timestamp`` is a server-clock instant.
+/// Playback speed is the only bridge: position advances by `elapsed × speed` only while playing.
+/// Sendspin has no pause state; a paused position is a retained track-relative offset.
 /// Constructed internally by `SendspinClient` — consumers observe these
 /// via ``TrackMetadata/progress``.
 public struct PlaybackProgress: Sendable, Hashable {
