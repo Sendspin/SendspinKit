@@ -67,7 +67,10 @@ public struct PairingStorageAccounting: Sendable, Equatable {
     }
 }
 
-/// The mutable pairing settings exposed through the management role.
+/// Dynamic pairing failures required before a code attempt waits for the host gesture.
+let dynamicPairingFailureEscalationThreshold = 5
+
+/// Host-local pairing settings shared by handshake candidates and active sessions.
 public struct PairingManagementConfiguration: Sendable, Equatable {
     public let pairingPsk: Psk
     public let pairingPskEnabled: Bool
@@ -76,6 +79,8 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
     public let staticPairingCode: String?
     public let recordModePskId: String
     public let unpairedAccessEnabled: Bool
+    /// Optional speaker playback format requested for dynamic digit pairing.
+    public let digitAudio: DigitAudioDescriptor?
 
     public init(
         pairingPsk: Psk,
@@ -84,9 +89,11 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
         unpairedAccessEnabled: Bool,
         dynamicPairingCodeEnabled: Bool = false,
         staticPairingCodeEnabled: Bool = false,
-        staticPairingCode: String? = nil
+        staticPairingCode: String? = nil,
+        digitAudio: DigitAudioDescriptor? = nil
     ) {
         precondition(staticPairingCode.map(Self.isValidStaticPairingCode) ?? true)
+        precondition(!(dynamicPairingCodeEnabled && staticPairingCodeEnabled), "Advertise at most one pairing-code method")
         self.pairingPsk = pairingPsk
         self.pairingPskEnabled = pairingPskEnabled
         self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
@@ -94,6 +101,7 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
         self.staticPairingCode = staticPairingCode
         self.recordModePskId = recordModePskId
         self.unpairedAccessEnabled = unpairedAccessEnabled
+        self.digitAudio = digitAudio
     }
 
     var staticPairingCodeIsAdvertised: Bool {
@@ -106,7 +114,7 @@ public struct PairingManagementConfiguration: Sendable, Equatable {
     }
 }
 
-/// Shared mutable state used by handshake candidates and management updates.
+/// Shared mutable state used by handshake candidates and active sessions.
 public actor PairingConfigurationRuntime {
     private var configuration: PairingManagementConfiguration
 
@@ -125,8 +133,8 @@ public actor PairingConfigurationRuntime {
 
 /// The store is the host app's durability boundary: mutating operations must be
 /// serialized with one another and complete durably before they return. This prevents
-/// a successful pairing or management update from being lost while a new handshake
-/// is already using the changed record set.
+/// a successful pairing from being lost while a new handshake is already using the
+/// changed record set.
 public protocol PairingRecordStore: Sendable {
     /// Return all configured records in a stable implementation-defined order.
     func listRecords() async -> [PairingRecord]
@@ -148,13 +156,6 @@ public protocol PairingRecordStore: Sendable {
     /// Return storage accounting, or nil when the store is unbounded or unknown.
     func storageAccounting() async -> PairingStorageAccounting?
 
-    /// Load management settings. The supplied value is used by stores without
-    /// separate configuration persistence.
-    func loadManagementConfiguration(default configuration: PairingManagementConfiguration) async -> PairingManagementConfiguration
-
-    /// Persist management settings atomically with the store's other settings.
-    func saveManagementConfiguration(_ configuration: PairingManagementConfiguration) async throws
-
     /// Return the persisted dynamic pairing failure count.
     func dynamicPairingFailureCount() async -> Int
 
@@ -171,12 +172,6 @@ public extension PairingRecordStore {
     func storageAccounting() async -> PairingStorageAccounting? {
         nil
     }
-
-    func loadManagementConfiguration(default configuration: PairingManagementConfiguration) async -> PairingManagementConfiguration {
-        configuration
-    }
-
-    func saveManagementConfiguration(_: PairingManagementConfiguration) async throws {}
 
     func dynamicPairingFailureCount() async -> Int {
         0
@@ -284,6 +279,8 @@ public struct PairingConfiguration: Sendable {
     public let staticPairingCodeEnabled: Bool
     /// The device-specific static pairing code, when provisioned.
     public let staticPairingCode: String?
+    /// Optional speaker digit-audio capability advertised with dynamic pairing.
+    public let digitAudio: DigitAudioDescriptor?
     /// Shared-PSK fallback used when a newly paired record cannot be stored individually.
     public let recordModePskId: String
     /// Runtime state shared by active connections and future handshakes.
@@ -297,10 +294,12 @@ public struct PairingConfiguration: Sendable {
         enabled: Bool = true,
         dynamicPairingCodeEnabled: Bool = false,
         staticPairingCode: String? = nil,
-        staticPairingCodeEnabled: Bool = false
+        staticPairingCodeEnabled: Bool = false,
+        digitAudio: DigitAudioDescriptor? = nil
     ) {
         precondition(!staticPairingCodeEnabled || staticPairingCode != nil)
         precondition(staticPairingCode.map(PairingManagementConfiguration.isValidStaticPairingCode) ?? true)
+        precondition(!(dynamicPairingCodeEnabled && staticPairingCodeEnabled), "Advertise at most one pairing-code method")
         let resolved = pairingPsk ?? .generate()
         let fallback = PairingRecord(psk: .generate())
         let resolvedStore = store ?? InMemoryPairingRecordStore(pairingPsk: resolved, preProvisionedRecord: fallback)
@@ -310,6 +309,7 @@ public struct PairingConfiguration: Sendable {
         self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
         self.staticPairingCodeEnabled = staticPairingCodeEnabled
         self.staticPairingCode = staticPairingCode
+        self.digitAudio = digitAudio
         recordModePskId = fallback.pskId
         preProvisionedSharedRecord = fallback
         runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
@@ -319,7 +319,8 @@ public struct PairingConfiguration: Sendable {
             unpairedAccessEnabled: true,
             dynamicPairingCodeEnabled: dynamicPairingCodeEnabled,
             staticPairingCodeEnabled: staticPairingCodeEnabled,
-            staticPairingCode: staticPairingCode
+            staticPairingCode: staticPairingCode,
+            digitAudio: digitAudio
         ))
     }
 }

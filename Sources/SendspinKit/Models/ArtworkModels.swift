@@ -4,7 +4,7 @@ public enum ArtworkSource: String, Codable, Sendable, Hashable {
     case album
     /// Artist artwork
     case artist
-    /// No artwork — channel disabled (allows toggling channels via stream/request-format)
+    /// No artwork — channel disabled.
     case none
 }
 
@@ -12,33 +12,40 @@ public enum ArtworkSource: String, Codable, Sendable, Hashable {
 public enum ImageFormat: String, Codable, Sendable, Hashable {
     case jpeg
     case png
-    case bmp
 }
 
-/// Configuration for a single artwork channel in client/hello.
+/// An explicit update to one artwork channel's client/state preference.
+public enum ArtworkChannelPreference: Sendable, Hashable {
+    /// Disable the channel and omit format and dimensions from client/state.
+    case disable
+    /// Enable the channel with a complete source, format, and size.
+    case set(source: ArtworkSource, format: ImageFormat, width: Int, height: Int)
+}
+
+/// Configuration for a single artwork channel in the artwork `client/state` object.
 /// Array index determines the channel number (0-3) and corresponding binary message type (8-11).
 public struct ArtworkChannel: Codable, Sendable, Hashable {
     /// Artwork source type
     public let source: ArtworkSource
-    /// Image format. Required by the spec even for disabled channels (`source: .none`);
-    /// use ``disabled`` for a convenient placeholder.
+    /// Image format used for the channel's initial configuration. Disabled channels use
+    /// ``ArtworkChannelPreference/disable`` when published in `client/state`.
     public let format: ImageFormat
     /// Max width in pixels
-    public let mediaWidth: Int
+    public let width: Int
     /// Max height in pixels
-    public let mediaHeight: Int
+    public let height: Int
 
     // A disabled channel placeholder. Format is `.jpeg` by arbitrary convention;
     // any format is valid since the server ignores it for `source: .none` channels.
     // Uses `try!` because `.none` source with zero dimensions always passes validation.
     // swiftlint:disable:next force_try
-    public static let disabled = try! ArtworkChannel(source: .none, format: .jpeg, mediaWidth: 0, mediaHeight: 0)
+    public static let disabled = try! ArtworkChannel(source: .none, format: .jpeg, width: 0, height: 0)
 
     enum CodingKeys: String, CodingKey {
         case source
         case format
-        case mediaWidth = "media_width"
-        case mediaHeight = "media_height"
+        case width
+        case height
     }
 
     /// Validates dimensions for the given source type.
@@ -61,20 +68,20 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
     /// - Throws: ``ConfigurationError`` if dimensions are invalid for the source type.
     ///   Active channels (`source` != `.none`) require positive dimensions.
     ///   Disabled channels (`.none`) allow zero dimensions.
-    public init(source: ArtworkSource, format: ImageFormat, mediaWidth: Int, mediaHeight: Int) throws(ConfigurationError) {
-        try Self.validateDimensions(source: source, width: mediaWidth, height: mediaHeight)
+    public init(source: ArtworkSource, format: ImageFormat, width: Int, height: Int) throws(ConfigurationError) {
+        try Self.validateDimensions(source: source, width: width, height: height)
         self.source = source
         self.format = format
-        self.mediaWidth = mediaWidth
-        self.mediaHeight = mediaHeight
+        self.width = width
+        self.height = height
     }
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let source = try container.decode(ArtworkSource.self, forKey: .source)
         let format = try container.decode(ImageFormat.self, forKey: .format)
-        let width = try container.decode(Int.self, forKey: .mediaWidth)
-        let height = try container.decode(Int.self, forKey: .mediaHeight)
+        let width = try container.decode(Int.self, forKey: .width)
+        let height = try container.decode(Int.self, forKey: .height)
 
         do {
             try Self.validateDimensions(source: source, width: width, height: height)
@@ -89,8 +96,8 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
 
         self.source = source
         self.format = format
-        mediaWidth = width
-        mediaHeight = height
+        self.width = width
+        self.height = height
     }
 }
 

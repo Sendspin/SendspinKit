@@ -37,6 +37,15 @@ actor MockNoiseServer {
 
     /// Establishment facts retained for later re-handshakes.
     private var clientStaticKey: Curve25519.KeyAgreement.PublicKey?
+
+    private func defaultCategory(for psk: Psk) -> PskCategory {
+        psk == .sentinel ? .sentinel : .longTerm
+    }
+
+    private func defaultRehandshakeCategory(for psk: Psk) -> PskCategory {
+        psk == .sentinel ? .sentinel : .pairing
+    }
+
     private var establishedSuite: NoiseCipherSuite = .chaChaPoly
 
     /// In-flight re-handshake (initiator side): the handshake awaiting the client's
@@ -138,7 +147,8 @@ actor MockNoiseServer {
     /// Overrides let tests inject spec violations at each step.
     func respondToHandshake(
         serverInitVersion: Int = sendspinCoreVersion,
-        pskIdOverride: String? = nil
+        pskIdOverride: String? = nil,
+        pskCategoryOverride: PskCategory? = nil
     ) async throws {
         // client/init — learn the client's static key (KK pre-known via client_id).
         guard case let .text(clientInitText) = await transport.nextSentFrame() else {
@@ -184,9 +194,12 @@ actor MockNoiseServer {
             prologue: prologue
         )
 
-        // Noise message 1 with the psk_id payload.
+        // Noise message 1 declares both the referenced PSK and its category.
         let message1Payload = try JSONEncoder().encode(
-            NoiseMessage1Payload(pskId: pskIdOverride ?? psk.pskId)
+            NoiseMessage1Payload(
+                pskId: pskIdOverride ?? psk.pskId,
+                pskCategory: pskCategoryOverride ?? defaultCategory(for: psk)
+            )
         )
         let message1 = try handshake.writeMessage1(payload: message1Payload)
         let message1Bytes = try encoder.encode(
@@ -206,7 +219,16 @@ actor MockNoiseServer {
         ), let noiseMessage2 = Base64URL.decode(message2.payload.data) else {
             throw Failure.malformedClientMessage
         }
-        message2Payload = try handshake.readMessage2(noiseMessage2, psk: psk)
+        let handshakeBeforeMessage2 = handshake
+        do {
+            message2Payload = try handshake.readMessage2(noiseMessage2, psk: psk)
+        } catch {
+            // Initial credential mismatches use the published Sentinel fallback;
+            // the server validates the reply under the referenced PSK first.
+            guard psk != .sentinel else { throw error }
+            handshake = handshakeBeforeMessage2
+            message2Payload = try handshake.readMessage2(noiseMessage2, psk: .sentinel)
+        }
         channel = try NoiseChannel(transport: handshake.makeTransport())
         self.clientStaticKey = clientStaticKey
         establishedSuite = suite
@@ -218,6 +240,7 @@ actor MockNoiseServer {
     func beginRehandshake(
         to newPsk: Psk,
         pskIdOverride: String? = nil,
+        pskCategoryOverride: PskCategory? = nil,
         mintStaleFrame: Bool = false
     ) async throws {
         guard let clientStaticKey, let priorHash = channel?.handshakeHash else {
@@ -231,7 +254,10 @@ actor MockNoiseServer {
             prologue: priorHash
         )
         let payload = try JSONEncoder().encode(
-            NoiseMessage1Payload(pskId: pskIdOverride ?? newPsk.pskId)
+            NoiseMessage1Payload(
+                pskId: pskIdOverride ?? newPsk.pskId,
+                pskCategory: pskCategoryOverride ?? defaultRehandshakeCategory(for: newPsk)
+            )
         )
         let message1 = try handshake.writeMessage1(payload: payload)
         pendingRehandshake = handshake
@@ -285,8 +311,8 @@ actor MockNoiseServer {
         // dedicated tests — both vary with the client's pairing configuration.
         #expect(object["type"] as? String == ClientHelloMessage.typeString)
         #expect(payload["name"] is String)
-        #expect(payload["trust_level"] is String)
-        #expect(payload["supported_pair_methods"] is [Any])
+        #expect(payload["trust_level"] == nil)
+        #expect(payload["supported_pair_methods"] is [String: Any])
         #expect(payload["unpaired_access"] is [String: Any])
         startReadback()
     }

@@ -101,17 +101,72 @@ struct NoiseChannelTests {
         var message = Data([BinaryMessageType.artworkChannel0.rawValue])
         message.append(payload)
         let frames = try pair.server.encryptMessage(message)
-        #expect(frames.count == 4) // 200_000 payload bytes: 65517 + 65518 + 65518 + remainder
+        #expect(frames.count == 4) // 200_000 payload bytes: 65516 + 65517 + 65517 + 3450
         #expect(try deliver(frames, to: &pair.client) == message)
     }
 
-    @Test("Fragment-end with no message in flight closes the connection")
-    func fragmentEndWithoutInFlight() throws {
+    @Test("A second first fragment while reassembling closes the connection")
+    func secondFirstFragmentWhileReassembling() throws {
+        var (rogueServer, clientTransport) = try makeTransportPair()
+        var client = NoiseChannel(transport: clientTransport)
+        let opening = try rogueServer.send.encrypt(
+            associatedData: Data(),
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, NoiseFrameType.json, 0x01])
+        )
+        #expect(try client.decryptFrame(opening) == nil)
+        let duplicateOpening = try rogueServer.send.encrypt(
+            associatedData: Data(),
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, NoiseFrameType.json, 0x02])
+        )
+        #expect(throws: NoiseError.fragmentationViolation) {
+            _ = try client.decryptFrame(duplicateOpening)
+        }
+    }
+
+    @Test("A digit clip type passes through as a normal unfragmented message")
+    func digitClipTypeIsNotFragmentation() throws {
+        var (rogueServer, clientTransport) = try makeTransportPair()
+        var client = NoiseChannel(transport: clientTransport)
+        let digitClip = try rogueServer.send.encrypt(
+            associatedData: Data(),
+            plaintext: Data([2, 7, 0xA5])
+        )
+        #expect(try client.decryptFrame(digitClip) == Data([2, 7, 0xA5]))
+    }
+
+    @Test("Sender envelope bytes use the independent fragmentation dialect")
+    func senderEnvelopeBytesMatchSpec() throws {
+        let (serverTransport, clientTransport) = try makeTransportPair()
+        var sender = NoiseChannel(transport: serverTransport)
+        var message = Data([NoiseFrameType.json])
+        message.append(Data(repeating: 0xAB, count: 200_000))
+        let frames = try sender.encryptMessage(message)
+
+        var independentReceiver = clientTransport
+        var plaintexts: [Data] = []
+        for frame in frames {
+            let plaintext = try independentReceiver.receive.decrypt(associatedData: Data(), ciphertext: frame)
+            plaintexts.append(plaintext)
+        }
+        #expect(plaintexts.count == 4)
+        #expect(plaintexts[0][0] == 1)
+        #expect(plaintexts[0][1] == 0b10)
+        #expect(plaintexts[0][2] == 0)
+        #expect(plaintexts[1][0] == 1)
+        #expect(plaintexts[1][1] == 0)
+        #expect(plaintexts[2][0] == 1)
+        #expect(plaintexts[2][1] == 0)
+        #expect(plaintexts[3][0] == 1)
+        #expect(plaintexts[3][1] == 0b01)
+    }
+
+    @Test("Non-first fragment with no message in flight closes the connection")
+    func fragmentWithoutInFlight() throws {
         var (rogueServer, clientTransport) = try makeTransportPair()
         var client = NoiseChannel(transport: clientTransport)
         let rogue = try rogueServer.send.encrypt(
             associatedData: Data(),
-            plaintext: Data([NoiseFrameType.fragmentEnd, 0x00])
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.last, 0x00])
         )
         #expect(throws: NoiseError.fragmentationViolation) {
             _ = try client.decryptFrame(rogue)
@@ -124,7 +179,7 @@ struct NoiseChannelTests {
         var client = NoiseChannel(transport: clientTransport)
         let opening = try rogueServer.send.encrypt(
             associatedData: Data(),
-            plaintext: Data([NoiseFrameType.fragmentMore, NoiseFrameType.json, 0x01])
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, NoiseFrameType.json, 0x01])
         )
         #expect(try client.decryptFrame(opening) == nil)
         let interloper = try rogueServer.send.encrypt(
@@ -143,7 +198,7 @@ struct NoiseChannelTests {
         var sender = NoiseChannel(transport: rogueServer)
 
         // Sender refuses to build such a message at all.
-        var oversized = Data([NoiseFrameType.fragmentEnd])
+        var oversized = Data([NoiseFrameType.fragment])
         oversized.append(Data(count: NoiseChannel.maxPlaintext))
         #expect(throws: NoiseError.fragmentationViolation) {
             _ = try sender.encryptMessage(oversized)
@@ -151,11 +206,35 @@ struct NoiseChannelTests {
         // Receiver treats it as a protocol error.
         let rogue = try rogueServer.send.encrypt(
             associatedData: Data(),
-            plaintext: Data([NoiseFrameType.fragmentMore, NoiseFrameType.fragmentMore, 0x00])
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, NoiseFrameType.fragment, 0x00])
         )
         #expect(throws: NoiseError.fragmentationViolation) {
             _ = try client.decryptFrame(rogue)
         }
+    }
+
+    @Test("Reserved flags are rejected")
+    func reservedFlagsRejected() throws {
+        var (rogueServer, clientTransport) = try makeTransportPair()
+        var client = NoiseChannel(transport: clientTransport)
+        let rogue = try rogueServer.send.encrypt(
+            associatedData: Data(),
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first | 0x04, NoiseFrameType.json])
+        )
+        #expect(throws: NoiseError.fragmentationViolation) {
+            _ = try client.decryptFrame(rogue)
+        }
+    }
+
+    @Test("A first-and-last fragment is reassembled as one message")
+    func firstAndLastFragment() throws {
+        var (rogueServer, clientTransport) = try makeTransportPair()
+        var client = NoiseChannel(transport: clientTransport)
+        let rogue = try rogueServer.send.encrypt(
+            associatedData: Data(),
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first | NoiseFragmentFlags.last, NoiseFrameType.json, 0x42])
+        )
+        #expect(try client.decryptFrame(rogue) == Data([NoiseFrameType.json, 0x42]))
     }
 
     @Test("Reassembly past the cap is rejected instead of buffering unbounded data")
@@ -164,11 +243,11 @@ struct NoiseChannelTests {
         var client = NoiseChannel(transport: clientTransport)
         let opening = try rogueServer.send.encrypt(
             associatedData: Data(),
-            plaintext: Data([NoiseFrameType.fragmentMore, NoiseFrameType.json])
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, NoiseFrameType.json])
         )
         #expect(try client.decryptFrame(opening) == nil)
         // Continuation chunks large enough to cross the cap in a bounded loop.
-        var continuation = Data([NoiseFrameType.fragmentMore])
+        var continuation = Data([NoiseFrameType.fragment, NoiseFragmentFlags.none])
         continuation.append(Data(repeating: 0xEE, count: NoiseChannel.maxSinglePayload))
         var delivered = 0
         var caught = false

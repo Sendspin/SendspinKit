@@ -95,9 +95,17 @@ public struct AudioChunk: Sendable, Equatable {
     /// This is the timestamp exactly as sent on the wire. SendspinKit's internal
     /// playback engine subtracts `output_delay_ms` and translates server time to
     /// local time before scheduling. Consumers that use raw audio chunks for their
-    /// own playback scheduling must apply the same static-delay adjustment and
+    /// own playback scheduling must apply the same output-delay adjustment and
     /// clock-domain conversion themselves.
     public let serverTimestamp: Int64
+    /// Server-reported lead time in microseconds, used for arrival-delay measurement only.
+    public let sendAhead: UInt32
+
+    public init(data: Data, serverTimestamp: Int64, sendAhead: UInt32 = 0) {
+        self.data = data
+        self.serverTimestamp = serverTimestamp
+        self.sendAhead = sendAhead
+    }
 }
 
 /// Artwork bytes received for one artwork stream channel.
@@ -135,10 +143,12 @@ public enum PairingCodeFormat: String, Codable, Sendable, Equatable {
 public struct PairingCodeEmission: Sendable, Equatable {
     public let format: PairingCodeFormat
     public let payload: String
+    public let digitAudioPack: DigitAudioPack?
 
-    public init(format: PairingCodeFormat, payload: String) {
+    public init(format: PairingCodeFormat, payload: String, digitAudioPack: DigitAudioPack? = nil) {
         self.format = format
         self.payload = payload
+        self.digitAudioPack = digitAudioPack
     }
 }
 
@@ -154,7 +164,7 @@ public enum ClientEvent: Sendable, Equatable {
     /// Streaming could not continue with the server-selected format or audio output.
     case streamingFailed(StreamingError)
     case streamStarted(AudioFormatSpec)
-    /// Format changed mid-stream (e.g. after a `stream/request-format` request)
+    /// Format changed mid-stream after the server applies a client format preference.
     case streamFormatChanged(AudioFormatSpec)
     /// Server sent `stream/end` — one or more streams have ended and buffers
     /// should be cleared for those roles. `roles` contains the ended roles, or
@@ -171,6 +181,8 @@ public enum ClientEvent: Sendable, Equatable {
     case groupUpdated(GroupInfo)
     case metadataReceived(TrackMetadata)
     case controllerStateUpdated(ControllerState)
+    /// The server cleared the complete controller role state.
+    case controllerStateCleared
     case colorStateUpdated(ColorState)
     /// The server cleared the complete color role state.
     case colorStateCleared
@@ -273,6 +285,10 @@ public struct PlaybackProgress: Sendable, Hashable {
 /// Constructed internally by `SendspinClient` — consumers observe these
 /// via ``ClientEvent/metadataReceived(_:)``.
 public struct TrackMetadata: Sendable, Hashable {
+    static let empty = TrackMetadata(
+        title: nil, artist: nil, album: nil, albumArtist: nil, track: nil, year: nil, artworkURL: nil, progress: nil
+    )
+
     public let title: String?
     public let artist: String?
     public let album: String?
@@ -397,8 +413,7 @@ public struct ControllerState: Sendable, Hashable {
     }
 }
 
-/// A role that carries its own independently-negotiated stream and can be the
-/// subject of a `stream/request-format`.
+/// A role that carries its own independently-negotiated stream.
 public enum StreamRole: String, Sendable, Hashable {
     case player
     case artwork

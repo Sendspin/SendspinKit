@@ -27,7 +27,9 @@ struct SendspinClientTests {
             roles: [.metadataV1, .controllerV1, .metadataV1]
         )
 
-        let payload = client.buildClientHelloPayload(pairingPskEnabled: false)
+        let payload = client.buildClientHelloPayload(configuration: PairingManagementConfiguration(
+            pairingPsk: .sentinel, pairingPskEnabled: false, recordModePskId: "", unpairedAccessEnabled: true
+        ))
 
         #expect(payload.supportedRoles == [.metadataV1, .controllerV1])
     }
@@ -61,7 +63,7 @@ struct SendspinClientTests {
         try await accepted
         let helloData = try #require(await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).first)
         let hello = try JSONDecoder().decode(ClientHelloMessage.self, from: helloData)
-        #expect(!hello.payload.supportedPairMethods.contains { $0.method == PairMethod.staticPairingCode })
+        #expect(hello.payload.supportedPairMethods[PairMethod.staticPairingCode] == nil)
         await client.disconnect()
     }
 
@@ -78,8 +80,8 @@ struct SendspinClientTests {
 
         let enabled = await pairing.runtime.snapshot()
         #expect(enabled.pairingPskEnabled)
-        #expect(client.buildClientHelloPayload(pairingPskEnabled: enabled.pairingPskEnabled)
-            .supportedPairMethods.map(\.method) == [PairMethod.pairingPsk])
+        #expect(Set(client.buildClientHelloPayload(configuration: enabled).supportedPairMethods.keys) ==
+            [PairMethod.pairingPsk])
 
         let longTermPsk = Psk.generate()
         try await pairing.store.insert(PairingRecord(psk: longTermPsk, serverId: "server"))
@@ -91,7 +93,7 @@ struct SendspinClientTests {
         ))
         let disabled = await pairing.runtime.snapshot()
         #expect(!disabled.pairingPskEnabled)
-        #expect(client.buildClientHelloPayload(pairingPskEnabled: disabled.pairingPskEnabled)
+        #expect(client.buildClientHelloPayload(configuration: disabled)
             .supportedPairMethods.isEmpty)
 
         let candidates = await PairingCandidateBuilder.candidates(configuration: pairing)
@@ -107,7 +109,9 @@ struct SendspinClientTests {
             roles: [.colorV1]
         )
 
-        let payload = client.buildClientHelloPayload(pairingPskEnabled: false)
+        let payload = client.buildClientHelloPayload(configuration: PairingManagementConfiguration(
+            pairingPsk: .sentinel, pairingPskEnabled: false, recordModePskId: "", unpairedAccessEnabled: true
+        ))
 
         #expect(payload.supportedRoles == [.colorV1])
         #expect(payload.visualizerV1Support == nil)
@@ -128,7 +132,9 @@ struct SendspinClientTests {
             deviceInfo: deviceInfo
         )
 
-        let payload = client.buildClientHelloPayload(pairingPskEnabled: false)
+        let payload = client.buildClientHelloPayload(configuration: PairingManagementConfiguration(
+            pairingPsk: .sentinel, pairingPskEnabled: false, recordModePskId: "", unpairedAccessEnabled: true
+        ))
 
         #expect(payload.deviceInfo == deviceInfo)
     }
@@ -305,7 +311,7 @@ struct SendspinClientTests {
             try await client.acceptConnection(MockTransport())
         }
         await #expect(throws: TerminatedError.self) {
-            try await client.requestPlayerFormat(sampleRate: 48_000)
+            try await client.setPlayerFormatPreference(sampleRate: 48_000)
         }
         await #expect(throws: TerminatedError.self) {
             try await client.setAudioSessionActivationState(AudioSessionActivationState.active)
@@ -758,16 +764,13 @@ struct SendspinClientTests {
 
         await provider.publish(output(48_000, "USB A", bitDepth: 16))
         await provider.publish(output(48_000, "USB B", bitDepth: 32))
-        #expect(await waitUntil { await requestFormats(transport).count == 1 })
-        let request = try #require(await requestFormats(transport).first?.payload.player)
-        #expect(request.codec == native.codec)
-        #expect(request.channels == native.channels)
-        #expect(request.sampleRate == native.sampleRate)
-        #expect(request.bitDepth == native.bitDepth)
+        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
+        let request = try #require(await stateSnapshots(transport).first?.payload.player)
+        #expect(request.format == native)
         #expect(client.currentOutputFormatStatus?.state == .requesting(native))
 
         await provider.publish(output(48_000, "USB C", bitDepth: 24))
-        let duplicate = await waitUntil(timeout: .milliseconds(200)) { await requestFormats(transport).count > 1 }
+        let duplicate = await waitUntil(timeout: .milliseconds(200)) { await stateSnapshots(transport).count > 1 }
         #expect(!duplicate)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
@@ -803,16 +806,16 @@ struct SendspinClientTests {
         try await transport.injectText(streamStartJSON(fallback))
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
         await provider.publish(output(48_000, "New route"))
-        #expect(await waitUntil { await requestFormats(transport).count == 1 })
+        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
 
         try await transport.injectText(streamStartJSON(native))
         #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeNative(native) } })
 
         await provider.publish(output(44_100, "Back"))
-        #expect(await waitUntil { await requestFormats(transport).count == 2 })
+        #expect(await waitUntil { await stateSnapshots(transport).count == 2 })
         try await transport.injectText(streamStartJSON(native))
         #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(native) } })
-        let retried = await waitUntil(timeout: .milliseconds(200)) { await requestFormats(transport).count > 2 }
+        let retried = await waitUntil(timeout: .milliseconds(200)) { await stateSnapshots(transport).count > 2 }
         #expect(!retried)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
@@ -834,9 +837,9 @@ struct SendspinClientTests {
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
         await provider.publish(output(48_000, "New route"))
 
-        #expect(await waitUntil { await requestFormats(transport).count == 1 })
+        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
         #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(fallback) } })
-        let retried = await waitUntil(timeout: .milliseconds(200)) { await requestFormats(transport).count > 1 }
+        let retried = await waitUntil(timeout: .milliseconds(200)) { await stateSnapshots(transport).count > 1 }
         #expect(!retried)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
@@ -857,24 +860,24 @@ struct SendspinClientTests {
         try await transport.injectText(streamStartJSON(initial))
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
         await provider.publish(output(48_000, "Route A"))
-        #expect(await waitUntil { await requestFormats(transport).count == 1 })
+        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
 
-        try await client.requestPlayerFormat(application)
-        #expect(await waitUntil { await requestFormats(transport).count == 2 })
+        try await client.setPlayerFormatPreference(application)
+        #expect(await waitUntil { await stateSnapshots(transport).count == 2 })
         #expect(client.currentOutputFormatStatus?.state == .requesting(application))
         await provider.publish(output(44_100, "Route B"))
         await provider.publish(output(48_000, "Route C"))
         #expect(await waitUntil { await client.connection?.settledOutputSampleRate == 48_000 })
         #expect(await client.connection?.automaticRequestsSuppressed == true)
         #expect(await client.connection?.pendingOutputFormatRequest?.origin == .application)
-        #expect(await requestFormats(transport).count == 2)
+        #expect(await stateSnapshots(transport).count == 2)
 
         try await transport.injectText(streamEndJSON())
         try await transport.injectText(streamStartJSON(initial))
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
         #expect(await waitUntil { await client.connection?.automaticRequestsSuppressed == false })
         await provider.publish(output(44_100, "Boundary route"))
-        #expect(await waitUntil { await requestFormats(transport).count == 3 })
+        #expect(await waitUntil { await stateSnapshots(transport).count == 3 })
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
     }
@@ -898,8 +901,8 @@ struct SendspinClientTests {
         #expect(await waitUntil { await client.connection?.outputSnapshot?.sampleRate == 48_000 })
         await transport.setShouldFailOnSend(true)
 
-        await #expect(throws: SendspinClientError.self) {
-            try await client.requestPlayerFormat(application)
+        await #expect(throws: MockTransportError.simulatedFailure) {
+            try await client.setPlayerFormatPreference(application)
         }
         // The failed request rolls back its optimistic negotiation state...
         #expect(await client.connection?.automaticRequestsSuppressed ?? false == false)
@@ -930,7 +933,7 @@ struct SendspinClientTests {
         await provider.publish(output(48_000, "New route"))
 
         #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(streamFormat) } })
-        #expect(await requestFormats(transport).isEmpty)
+        #expect(await stateSnapshots(transport).isEmpty)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
     }
@@ -1062,11 +1065,13 @@ struct SendspinClientTests {
         return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
     }
 
-    private func requestFormats(_ transport: MockTransport) async -> [StreamRequestFormatMessage] {
+    private func stateSnapshots(_ transport: MockTransport) async -> [ClientStateMessage] {
         let messages = await noiseReadbackRegistry.messages(for: transport)
         return messages.compactMap { data in
-            guard SendspinEncoding.messageType(of: data) == StreamRequestFormatMessage.typeString else { return nil }
-            return try? JSONDecoder().decode(StreamRequestFormatMessage.self, from: data)
+            guard SendspinEncoding.messageType(of: data) == ClientStateMessage.typeString,
+                  let state = try? JSONDecoder().decode(ClientStateMessage.self, from: data),
+                  state.payload.player?.format != nil else { return nil }
+            return state
         }
     }
 

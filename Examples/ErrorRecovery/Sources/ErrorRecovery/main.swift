@@ -254,7 +254,7 @@ struct ErrorRecovery: AsyncParsableCommand {
 
                     case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                          .streamFormatChanged, .streamCleared, .groupUpdated, .metadataReceived,
-                         .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
+                         .controllerStateUpdated, .controllerStateCleared, .colorStateUpdated, .colorStateCleared,
                          .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
                         break
                     }

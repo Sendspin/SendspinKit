@@ -48,33 +48,38 @@ public extension SendspinClient {
     }
 }
 
-// MARK: - Player format negotiation
+// MARK: - Dynamic player capabilities and format preference
 
 public extension SendspinClient {
-    /// Request the server to change the audio stream format.
-    ///
-    /// Per spec, the server responds with `stream/start` containing the new format.
-    /// All parameters are optional — omitted fields are filled in by the server
-    /// (typically from the current format or the client's first supported format).
-    ///
-    /// **Important:** The requested combination must exist in the effective
-    /// `supported_formats` list from `client/hello`. Invalid full or partial
-    /// requests throw ``OutputFormatError/noMatchingFormat`` before sending.
-    ///
-    /// Use cases:
-    /// - Switch codec: `try await requestPlayerFormat(codec: .flac)`
-    /// - Match source rate: `try await requestPlayerFormat(sampleRate: 48000)`
-    /// - Full format change: `try await requestPlayerFormat(codec: .flac, sampleRate: 48000, bitDepth: 24)`
-    /// - Downgrade under load: `try await requestPlayerFormat(codec: .opus)`
-    ///
-    /// Valid whether or not a player stream is active. If no stream is active,
-    /// the server must not start one in response, but should remember the request
-    /// and apply it to the next player stream it starts.
-    ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected, or
-    ///   ``OutputFormatError/noMatchingFormat`` when the request matches no effective format.
+    /// Update the commands the player currently accepts from the server.
     @MainActor
-    func requestPlayerFormat(
+    func updatePlayerSupportedCommands(_ commands: Set<PlayerCommand>) async throws {
+        try requireOpen()
+        guard let connection else { throw SendspinClientError.notConnected }
+        try await connection.updateAdvertisedCommands(commands)
+    }
+
+    /// Publish a preferred format in the player client/state object.
+    @MainActor
+    func setPlayerFormatPreference(_ format: AudioFormatSpec?) async throws {
+        try requireOpen()
+        guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
+        guard let connection else { throw SendspinClientError.notConnected }
+        guard await connection.isRehandshakeInProgress == false else { throw SendspinClientError.handshakeIncomplete }
+        try await connection.requireActiveRole(.playerV1)
+        let previousPreference = preferredPlayerFormat
+        do {
+            try await connection.setPreferredPlayerFormat(format)
+            preferredPlayerFormat = await connection.preferredPlayerFormat
+        } catch {
+            preferredPlayerFormat = previousPreference
+            throw error
+        }
+    }
+
+    /// Select a preferred supported format by matching the supplied fields.
+    @MainActor
+    func setPlayerFormatPreference(
         codec: AudioCodec? = nil,
         channels: Int? = nil,
         sampleRate: Int? = nil,
@@ -83,65 +88,28 @@ public extension SendspinClient {
         try requireOpen()
         guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
-        guard await connection.isRehandshakeInProgress == false else {
-            throw SendspinClientError.handshakeIncomplete
-        }
+        guard await connection.isRehandshakeInProgress == false else { throw SendspinClientError.handshakeIncomplete }
         try await connection.requireActiveRole(.playerV1)
-        let request = PlayerFormatRequest(
-            codec: codec,
-            channels: channels,
-            sampleRate: sampleRate,
-            bitDepth: bitDepth
-        )
-        try await connection.requestFormat(player: request)
-    }
-
-    /// Request a specific format from the `supportedFormats` list by exact match.
-    /// This is a convenience that sends all fields, avoiding server-side fill-in ambiguity.
-    ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected, or
-    ///   ``OutputFormatError/noMatchingFormat`` when the format is not in the effective catalog.
-    @MainActor
-    func requestPlayerFormat(_ format: AudioFormatSpec) async throws {
-        try await requestPlayerFormat(
-            codec: format.codec,
-            channels: format.channels,
-            sampleRate: format.sampleRate,
-            bitDepth: format.bitDepth
-        )
+        try await connection.setPlayerFormatPreference(codec: codec, channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
+        preferredPlayerFormat = await connection.preferredPlayerFormat
     }
 }
 
-// MARK: - Artwork commands
+// MARK: - Artwork state preference
 
 public extension SendspinClient {
-    /// Request the server to change artwork format for a specific channel.
-    /// If an artwork stream is active, the server responds with `stream/start`
-    /// containing the updated config. If no artwork stream is active, the server
-    /// must not start one in response, but should remember the request for the
-    /// next artwork stream it starts.
-    ///
-    /// - Throws: ``SendspinClientError/notConnected`` if not connected.
+    /// Publish one artwork channel's current preference in client/state.
     @MainActor
-    func requestArtworkFormat(
+    func setArtworkChannelPreference(
         channel: Int,
-        source: ArtworkSource? = nil,
-        format: ImageFormat? = nil,
-        mediaWidth: Int? = nil,
-        mediaHeight: Int? = nil
+        preference: ArtworkChannelPreference
     ) async throws {
         try requireOpen()
         guard roleSet.contains(.artworkV1) else { throw SendspinClientError.roleNotActive(.artworkV1) }
         guard let connection else { throw SendspinClientError.notConnected }
+        guard await connection.isRehandshakeInProgress == false else { throw SendspinClientError.handshakeIncomplete }
         try await connection.requireActiveRole(.artworkV1)
-        let request = try ArtworkFormatRequest(
-            channel: channel,
-            source: source,
-            format: format,
-            mediaWidth: mediaWidth,
-            mediaHeight: mediaHeight
-        )
-        try await connection.requestFormat(artwork: request)
+        try await connection.setArtworkChannelPreference(channel: channel, preference: preference)
     }
 }
 

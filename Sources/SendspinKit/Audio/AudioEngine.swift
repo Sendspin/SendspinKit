@@ -387,9 +387,11 @@ actor AudioEngine {
     }
 
     /// Enqueue an inbound audio chunk tagged with the current wire generation.
-    nonisolated func enqueueAudioChunk(data: Data, timestamp: Int64) {
+    nonisolated func enqueueAudioChunk(data: Data, timestamp: Int64, sendAhead: UInt32 = 0) {
         let generation = inputGeneration.withLock { $0 }
-        _commandsSink.enqueue(.chunkAtGeneration(data, ts: timestamp, generation: generation))
+        _commandsSink.enqueue(.chunkAtGenerationWithSendAhead(
+            data, ts: timestamp, sendAhead: sendAhead, generation: generation
+        ))
     }
 
     /// Enqueue a format change with an ingress generation barrier.
@@ -647,8 +649,9 @@ actor AudioEngine {
         case let .chunk(data, ts):
             await applyChunk(data: data, ts: ts, generation: nil)
 
-        case let .chunkAtGeneration(data, ts, generation):
+        case let .chunkAtGenerationWithSendAhead(data, ts, _, generation):
             guard generation == inputGeneration.withLock({ $0 }), generation == streamGeneration else { return }
+            // send_ahead measures arrival delay; timestamp alone determines playback.
             await applyChunk(data: data, ts: ts, generation: generation)
 
         case let .formatChange(format, codecHeader):

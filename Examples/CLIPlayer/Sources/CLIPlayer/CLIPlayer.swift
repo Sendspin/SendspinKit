@@ -65,7 +65,7 @@ final class CLIPlayer {
     private static let artworkConfig: ArtworkConfiguration = {
         do {
             return try ArtworkConfiguration(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
+                ArtworkChannel(source: .album, format: .jpeg, width: 800, height: 800)
             ])
         } catch {
             preconditionFailure("CLIPlayer artworkConfig is invalid: \(error)")
@@ -209,6 +209,7 @@ final class CLIPlayer {
              .streamingFailed,
              .groupUpdated,
              .controllerStateUpdated,
+             .controllerStateCleared,
              .colorStateUpdated,
              .colorStateCleared,
              .artworkStreamStarted,
@@ -272,6 +273,9 @@ final class CLIPlayer {
         case let .controllerStateUpdated(state):
             let cmds = state.supportedCommands.map(\.rawValue).joined(separator: ",")
             print("[CONTROLLER] commands=\(cmds) volume=\(state.volume) muted=\(state.muted)")
+
+        case .controllerStateCleared:
+            print("[CONTROLLER] Cleared")
 
         case let .artworkStreamStarted(channels):
             let desc = channels.enumerated()
@@ -424,7 +428,7 @@ final class CLIPlayer {
         let bitsStr = bitDepth.map(String.init) ?? "auto"
         fputs("[FORMAT] Requesting: codec=\(codecStr) rate=\(rateStr) bits=\(bitsStr)\n", stderr)
         await attempt {
-            try await client.requestPlayerFormat(
+            try await client.setPlayerFormatPreference(
                 codec: codec,
                 sampleRate: sampleRate,
                 bitDepth: bitDepth

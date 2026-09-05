@@ -327,6 +327,28 @@ struct AudioEngineTests {
         #expect(chunk.playTimeMicroseconds == serverTimestamp - Int64(delayMs) * 1_000)
     }
 
+    @Test("send_ahead never changes timestamp-based scheduling")
+    func sendAheadDoesNotAffectScheduling() async throws {
+        let clock = StubClock()
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+        await engine.start()
+
+        let timestamp = MonotonicClock.absoluteMicroseconds() + 10_000_000
+        engine.commands.enqueue(.chunkAtGenerationWithSendAhead(
+            Data(repeating: 0, count: 100), ts: timestamp, sendAhead: UInt32.max, generation: 0
+        ))
+        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 1 }
+        let queued = await scheduler.queuedChunks
+        await engine.shutdown()
+
+        #expect(received)
+        let chunk = try #require(queued.first)
+        #expect(chunk.originalTimestamp == timestamp)
+        #expect(chunk.playTimeMicroseconds == timestamp)
+    }
+
     @Test("initial stream scheduling preserves wire timestamps across cadence mismatch")
     func initialStreamPreservesWireCadence() async throws {
         let clock = StubClock()

@@ -4,13 +4,13 @@ import Foundation
 /// Which trust bucket a PSK belongs to. The spec's three categories share one
 /// `psk_id` namespace; on a handshake match, the stored category determines how the
 /// session proceeds (allowed activity sets, trust level).
-public enum PskCategory: Sendable, Equatable {
+public enum PskCategory: String, Codable, Sendable, Equatable {
     /// A long-term Sendspin PSK from a pairing record.
-    case longTerm
+    case longTerm = "lt"
     /// The client's Sendspin Pairing PSK (admits only the `pairing` activity).
-    case pairing
+    case pairing = "pr"
     /// The published Sentinel PSK — no authentication on its own.
-    case sentinel
+    case sentinel = "sn"
 }
 
 /// A 32-byte Noise pre-shared key.
@@ -99,9 +99,12 @@ extension PskCandidate {
     static func select(
         from candidates: [PskCandidate],
         pskId: String,
+        pskCategory: PskCategory,
         serverId: String
     ) -> PskCandidate? {
-        guard let match = candidates.first(where: { $0.psk.pskId == pskId }) else {
+        guard let match = candidates.first(where: {
+            $0.psk.pskId == pskId && $0.category == pskCategory
+        }) else {
             return nil
         }
         if let required = match.requiredServerId, required != serverId {

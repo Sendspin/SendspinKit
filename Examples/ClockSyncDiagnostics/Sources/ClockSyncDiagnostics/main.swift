@@ -203,7 +203,7 @@ struct ClockSyncDiagnostics: AsyncParsableCommand {
                     break eventLoop
                 case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                      .streamStarted, .streamFormatChanged, .streamEnded, .streamCleared,
-                     .groupUpdated, .metadataReceived, .controllerStateUpdated, .colorStateUpdated,
+                     .groupUpdated, .metadataReceived, .controllerStateUpdated, .controllerStateCleared, .colorStateUpdated,
                      .colorStateCleared, .artworkStreamStarted, .outputDelayChanged,
                      .lastPlayedServerChanged:
                     break

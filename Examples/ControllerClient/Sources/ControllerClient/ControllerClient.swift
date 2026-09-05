@@ -180,7 +180,7 @@ struct ControllerClient: AsyncParsableCommand {
 
             case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
                  .streamStarted, .streamFormatChanged, .streamEnded, .streamCleared,
-                 .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
+                 .controllerStateCleared, .colorStateUpdated, .colorStateCleared, .artworkStreamStarted,
                  .outputDelayChanged, .lastPlayedServerChanged:
                 break
             }

@@ -8,22 +8,30 @@ private func audioChunkFrame(index: Int, baseTimestamp: Int64 = 1_000_000) -> Da
     frame.append(BinaryMessageType.audioChunk.rawValue)
     var timestamp = (baseTimestamp + Int64(index) * 25_000).bigEndian
     frame.append(Data(bytes: &timestamp, count: 8))
+    frame.append(contentsOf: [0, 0, 0, 0])
     frame.append(Data(repeating: 0x7F, count: 400)) // 200 samples × 16-bit
     return frame
 }
 
-/// Build a binary `artwork` frame (type byte + big-endian timestamp + image data).
+/// Build a complete one-part artwork transfer from the role's wire shapes.
 private func artworkFrame(
     channel: Int,
     index: Int = 0,
     baseTimestamp: Int64 = 1_000_000,
     imageByteCount: Int = 100
 ) -> Data {
-    var frame = Data()
-    frame.append(BinaryMessageType.artworkChannel0.rawValue + UInt8(channel))
-    var timestamp = (baseTimestamp + Int64(index) * 25_000).bigEndian
-    frame.append(Data(bytes: &timestamp, count: 8))
-    frame.append(Data(repeating: 0xFF, count: imageByteCount)) // Dummy image data; 0 bytes means clear artwork.
+    let timestamp = baseTimestamp + Int64(index) * 25_000
+    var announce = Data([BinaryMessageType.artworkChannel0.rawValue + UInt8(channel), 0b10])
+    var wireTimestamp = timestamp.bigEndian
+    announce.append(Data(bytes: &wireTimestamp, count: 8))
+    var size = UInt32(imageByteCount).bigEndian
+    announce.append(Data(bytes: &size, count: 4))
+    return announce
+}
+
+private func artworkPart(channel: Int, bytes: Data) -> Data {
+    var frame = Data([BinaryMessageType.artworkChannel0.rawValue + UInt8(channel), 0])
+    frame.append(bytes)
     return frame
 }
 
@@ -99,11 +107,16 @@ private actor CollectedValues<Element: Sendable> {
 @MainActor
 struct FrameOrderingTests {
     /// A headless player that surfaces raw audio frames.
-    private func makePlayerClient() throws -> SendspinClient {
-        try SendspinClient(
-            clientId: "test-client",
+    private func makePlayerClient(roles: [VersionedRole] = [.playerV1], visualizerConfig: VisualizerConfiguration? = nil) throws -> SendspinClient {
+        let artworkConfig: ArtworkConfiguration? = if roles.contains(.artworkV1) {
+            try ArtworkConfiguration(channels: [ArtworkChannel(source: .album, format: .jpeg, width: 200, height: 200)])
+        } else {
+            nil
+        }
+        return try SendspinClient(
+            identity: .generate(),
             name: "Test Client",
-            roles: [.playerV1],
+            roles: roles,
             playerConfig: PlayerConfiguration(
                 bufferCapacity: 65_536,
                 supportedFormats: [
@@ -112,6 +125,8 @@ struct FrameOrderingTests {
                 volumeMode: .none, // headless — skip real audio-output setup
                 emitRawAudioEvents: true
             ),
+            artworkConfig: artworkConfig,
+            visualizerConfig: visualizerConfig,
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
     }
@@ -153,8 +168,8 @@ struct FrameOrderingTests {
 
     @Test
     func artworkDataStreamUpdatesCurrentArtwork() async throws {
-        let client = try makePlayerClient()
-        let mock = try await connectClient(client)
+        let client = try makePlayerClient(roles: [.playerV1, .artworkV1])
+        let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
         let received = CollectedValues<ArtworkData>()
         let collectTask = Task {
             for await artwork in client.artwork {
@@ -164,7 +179,9 @@ struct FrameOrderingTests {
         }
 
         try await mock.injectText(streamStartWithArtworkJSON())
+        try await establishClockSync(client, via: mock)
         await mock.injectBinary(artworkFrame(channel: 0))
+        await mock.injectBinary(artworkPart(channel: 0, bytes: Data(repeating: 0xFF, count: 100)))
 
         let sawArtwork = await waitUntil(timeout: .seconds(1)) { await received.isEmpty == false }
         collectTask.cancel()
@@ -172,14 +189,50 @@ struct FrameOrderingTests {
 
         #expect(sawArtwork, "artwork stream should emit artwork bytes after artwork stream/start")
         let artwork = try #require(await received.all.first)
-        #expect(artwork.localDisplayTime == nil, "Pre-sync artwork should emit immediately with no display deadline")
+        #expect(artwork.localDisplayTime != nil, "Synced artwork carries its translated display deadline")
         #expect(client.currentArtwork == artwork)
     }
 
     @Test
+    func artworkTransferShapesReachHandlerAsRawBytes() async throws {
+        let client = try makePlayerClient(roles: [.playerV1, .artworkV1])
+        let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
+        let received = CollectedValues<ArtworkData>()
+        let collectTask = Task {
+            for await artwork in client.artwork {
+                await received.append(artwork)
+                if await received.count == 3 {
+                    break
+                }
+            }
+        }
+
+        try await mock.injectText(streamStartWithArtworkJSON())
+        try await establishClockSync(client, via: mock)
+        let cancel = Data([8, 0b01])
+        var announce = Data([8, 0b10])
+        announce.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 3])
+        let part = artworkPart(channel: 0, bytes: Data([0xCA, 0xFE, 0xBA]))
+        await mock.injectBinary(cancel)
+        await mock.injectBinary(announce)
+        await mock.injectBinary(part)
+
+        #expect(
+            await waitUntil(timeout: .seconds(1)) { await received.count == 1 },
+            "only the completed artwork transfer should reach the public handler"
+        )
+        let values = await received.all
+        collectTask.cancel()
+        await client.disconnect()
+
+        #expect(values.map(\.data) == [Data([0xCA, 0xFE, 0xBA])])
+        #expect(values.allSatisfy { $0.localDisplayTime != nil })
+    }
+
+    @Test
     func emptyArtworkPayloadClearsCurrentArtwork() async throws {
-        let client = try makePlayerClient()
-        let mock = try await connectClient(client)
+        let client = try makePlayerClient(roles: [.playerV1, .artworkV1])
+        let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
         let received = CollectedValues<ArtworkData>()
         let collectTask = Task {
             for await artwork in client.artwork {
@@ -191,7 +244,9 @@ struct FrameOrderingTests {
         }
 
         try await mock.injectText(streamStartWithArtworkJSON())
+        try await establishClockSync(client, via: mock)
         await mock.injectBinary(artworkFrame(channel: 0))
+        await mock.injectBinary(artworkPart(channel: 0, bytes: Data(repeating: 0xFF, count: 100)))
 
         #expect(
             await waitUntil(timeout: .seconds(1)) { await received.count == 1 },
@@ -255,6 +310,7 @@ struct FrameOrderingTests {
         try await waitForStreamFormat(client)
 
         // Post-stream audio: accepted, emits exactly one AudioChunk.
+        try await establishClockSync(client, via: mock)
         await mock.injectBinary(audioChunkFrame(index: 1))
 
         #expect(
@@ -277,8 +333,8 @@ struct FrameOrderingTests {
     func artworkBinaryDiscardedBeforeStreamStart_thenAcceptedAfter() async throws {
         // Pre-stream artwork binary is discarded per spec (artworkStreamActive gate).
         // Subsequent stream/start + artwork is accepted.
-        let client = try makePlayerClient()
-        let mock = try await connectClient(client)
+        let client = try makePlayerClient(roles: [.playerV1, .artworkV1])
+        let mock = try await connectClient(client, activeRoles: [.playerV1, .artworkV1])
 
         // Single event stream that we'll analyze in two phases
         let stream = client.events()
@@ -307,40 +363,34 @@ struct FrameOrderingTests {
         // Wait a brief moment for the frame to be processed
         try await Task.sleep(for: .milliseconds(100))
 
-        // Now send artwork stream/start
-        try await mock.injectText(streamStartWithArtworkJSON())
+        // Finish the rejected transfer; its bytes are tracked but never delivered.
+        await mock.injectBinary(artworkPart(channel: 0, bytes: Data(repeating: 0xFF, count: 100)))
 
-        // Now inject artwork — this SHOULD produce an ArtworkData payload.
+        // Now send artwork stream/start and synchronize so the artwork state gate opens.
+        try await mock.injectText(streamStartWithArtworkJSON())
+        try await establishClockSync(client, via: mock)
+
+        // A fresh transfer after stream/start SHOULD produce an ArtworkData payload.
         await mock.injectBinary(artworkFrame(channel: 0))
+        await mock.injectBinary(artworkPart(channel: 0, bytes: Data(repeating: 0xFF, count: 100)))
 
         #expect(
             await waitUntil(timeout: .seconds(1)) { await artwork.count == 1 },
             "Timed out waiting for the post-stream artwork payload"
         )
         let preSyncArtwork = try #require(await artwork.all.first)
-        #expect(preSyncArtwork.localDisplayTime == nil, "Pre-sync artwork should emit immediately with no display deadline")
+        #expect(preSyncArtwork.localDisplayTime != nil, "Synced artwork carries its translated display deadline")
 
-        try await establishClockSync(client, via: mock)
-        await mock.injectBinary(artworkFrame(channel: 0, index: 1))
-        #expect(
-            await waitUntil(timeout: .seconds(1)) { await artwork.count == 2 },
-            "Timed out waiting for the post-sync artwork payload"
-        )
-        let postSyncArtwork = try #require(await artwork.all.last)
-        #expect(postSyncArtwork.localDisplayTime != nil, "Post-sync artwork should carry a local display deadline")
+        // The first completed transfer is sufficient to pin the stream/state gate.
+        #expect(await artwork.count == 1, "Exactly one accepted artwork payload is observed")
 
         collectTask.cancel()
         artworkTask.cancel()
 
-        // The gate is the invariant, asserted by COUNT — not by cross-class ordering.
         // Binary artwork data takes the role data stream while `artworkStreamStarted`
-        // takes the facade-drain path. What is deterministic: the pre-stream frame is
-        // dropped by the gate and the two post-stream frames are accepted, so exactly
-        // two artwork payloads are observed.
-        #expect(
-            await artwork.count == 2,
-            "Exactly two artwork payloads: the pre-stream frame is discarded, post-stream frames are accepted"
-        )
+        // takes the facade-drain path. The pre-stream transfer is rejected and the
+        // accepted post-stream transfer is the only public payload.
+        #expect(await artwork.count == 1, "Exactly one accepted artwork payload is observed")
 
         let sawArtworkStart = allEvents.contains {
             if case .artworkStreamStarted = $0 {
@@ -359,8 +409,9 @@ struct FrameOrderingTests {
         // Visualizer is time-sensitive like audio: pre-stream frames are discarded
         // by the role gate, and active-stream frames are still discarded until
         // clock sync can translate their server timestamps to local display times.
-        let client = try makePlayerClient()
-        let mock = try await connectClient(client)
+        let visualizerConfig = try VisualizerConfiguration(types: [.loudness], rateMax: 30)
+        let client = try makePlayerClient(roles: [.playerV1, .visualizerV1], visualizerConfig: visualizerConfig)
+        let mock = try await connectClient(client, activeRoles: [.playerV1, .visualizerV1])
 
         let visualizerData = CollectedValues<VisualizerData>()
 
@@ -383,6 +434,8 @@ struct FrameOrderingTests {
 
         // Once synced, visualizer payloads are emitted with translated local display time.
         try await establishClockSync(client, via: mock)
+        // Allow the ordered message loop to apply the final sync report before injecting data.
+        try await Task.sleep(for: .milliseconds(50))
         await mock.injectBinary(visualizerFrame(index: 2))
 
         #expect(
@@ -430,6 +483,8 @@ struct FrameOrderingTests {
                 }
             }
         }
+
+        try await establishClockSync(client, via: mock)
 
         // stream/start, then many audio chunks, then stream/end — exact wire order.
         // Public binary bytes now arrive on the typed data stream; engine-channel
@@ -481,6 +536,8 @@ struct FrameOrderingTests {
             }
         }
 
+        try await establishClockSync(client, via: mock)
+
         // stream/start, then audio chunks, then stream/clear — exact wire order.
         try await mock.injectText(streamStartPCMJSON())
         let chunkCount = 32
@@ -516,6 +573,8 @@ struct FrameOrderingTests {
         try await mock.establishSession(activeRoles: [.playerV1])
         try await accepted
         try await waitForState(client, expected: .connected, timeout: .seconds(3))
+
+        try await establishClockSync(client, via: mock)
 
         // Collect audio chunk server timestamps in arrival order. AudioChunk is
         // emitted for every post-gate chunk regardless of clock sync, so this needs no

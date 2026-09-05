@@ -12,10 +12,8 @@ enum DataPlaneCommand {
     /// Schedule a chunk of PCM audio for playback at the given server timestamp (microseconds).
     case chunk(Data, ts: Int64)
 
-    /// Schedule a chunk tagged with the input generation that was current when the wire frame
-    /// arrived. The tagged form lets format renegotiation invalidate chunks already waiting in
-    /// the command sink before they are decoded.
-    case chunkAtGeneration(Data, ts: Int64, generation: UInt64)
+    /// Generation-tagged audio chunk with measurement-only send-ahead.
+    case chunkAtGenerationWithSendAhead(Data, ts: Int64, sendAhead: UInt32, generation: UInt64)
 
     /// Clear buffered audio for the given roles (nil = all roles).
     case streamClear(roles: [String]?)
@@ -51,7 +49,7 @@ extension DataPlaneCommand {
         switch self {
         case .streamStart:
             .streamStart
-        case .chunk, .chunkAtGeneration:
+        case .chunk, .chunkAtGenerationWithSendAhead:
             .chunk
         case .streamClear:
             .streamClear

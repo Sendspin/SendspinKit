@@ -15,6 +15,8 @@ public final class SendspinClient {
     let deviceInfo: DeviceInfo?
     let playerConfig: PlayerConfiguration?
     let artworkConfig: ArtworkConfiguration?
+    /// Visualizer configuration published in client/state and client/hello.
+    let visualizerConfig: VisualizerConfiguration?
     /// Optional storage hook for the spec's "last played server" bookkeeping.
     /// Saved on every `group/update` that reports playback started; read by the
     /// multi-server arbitration tiebreak. `nil` means no implicit storage: discovery
@@ -63,9 +65,8 @@ public final class SendspinClient {
     /// Current output delay in milliseconds. Initialized from `PlayerConfiguration.initialOutputDelayMs`,
     /// updated when the server sends a `set_output_delay` command.
     public private(set) var outputDelayMs: Int
-    /// Observability mirrors of server-declared stream activity. These do NOT
-    /// gate `stream/request-format`: per spec, those requests are allowed before
-    /// a stream starts and after it ends. The mirrors are render-applied (player:
+    /// Observability mirrors of server-declared stream activity. These do not
+    /// gate client state preferences. The mirrors are render-applied (player:
     /// from the engine's `.started` report; artwork:
     /// from `.artworkStreamStarted`), so they can lag the connection's gates.
     /// `stream/clear` leaves both untouched — the stream continues (per spec).
@@ -74,14 +75,13 @@ public final class SendspinClient {
     /// Cached from `playerConfig?.emitRawAudioEvents` to avoid optional chaining on every audio chunk.
     var shouldEmitRawAudio = false
 
-    /// Accumulated state (merged from server deltas per spec)
-    /// Current track metadata, accumulated from `server/state` deltas.
+    /// Current track metadata, accumulated from server state updates.
     public private(set) var currentMetadata: TrackMetadata?
-    /// Current group info, accumulated from `group/update` deltas.
+    /// Current group info, accumulated from group updates.
     public private(set) var currentGroup: GroupInfo?
     /// Current controller state from the server.
     public private(set) var currentControllerState: ControllerState?
-    /// Current colors derived from the audio, accumulated from `server/state` deltas.
+    /// Current colors derived from the audio, accumulated from server state updates.
     public private(set) var currentColorState: ColorState?
     /// App-facing playback status derived from the current stream, group, and metadata state.
     ///
@@ -148,6 +148,8 @@ public final class SendspinClient {
 
     /// Exact player catalog advertised by the active session. Cleared on reusable disconnect.
     private(set) var effectivePlayerFormats: [AudioFormatSpec]?
+    /// Host-selected player preference retained across reusable reconnects.
+    var preferredPlayerFormat: AudioFormatSpec?
 
     /// Task draining control events from the connection and re-emitting them to the public events stream.
     var drainConnectionEventsTask: Task<Void, Never>?
@@ -197,6 +199,7 @@ public final class SendspinClient {
         deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
+        visualizerConfig: VisualizerConfiguration? = nil,
         unpairedAccessEnabled: Bool = true,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil,
         pairing: PairingConfiguration? = nil
@@ -208,6 +211,7 @@ public final class SendspinClient {
             deviceInfo: deviceInfo,
             playerConfig: playerConfig,
             artworkConfig: artworkConfig,
+            visualizerConfig: visualizerConfig,
             unpairedAccessEnabled: unpairedAccessEnabled,
             persistenceProvider: persistenceProvider,
             pairing: pairing,
@@ -222,6 +226,7 @@ public final class SendspinClient {
         deviceInfo: DeviceInfo? = .current,
         playerConfig: PlayerConfiguration? = nil,
         artworkConfig: ArtworkConfiguration? = nil,
+        visualizerConfig: VisualizerConfiguration? = nil,
         unpairedAccessEnabled: Bool = true,
         persistenceProvider: (any SendspinPersistenceProvider)? = nil,
         pairing: PairingConfiguration? = nil,
@@ -251,6 +256,9 @@ public final class SendspinClient {
         if roleSet.contains(.artworkV1), artworkConfig == nil {
             throw .artworkRoleRequiresConfiguration
         }
+        if roleSet.contains(.visualizerV1), visualizerConfig == nil {
+            throw .visualizerRoleRequiresConfiguration
+        }
 
         self.identity = identity
         self.name = name
@@ -260,6 +268,7 @@ public final class SendspinClient {
         self.deviceInfo = deviceInfo
         self.playerConfig = playerConfig
         self.artworkConfig = artworkConfig
+        self.visualizerConfig = visualizerConfig
         self.persistenceProvider = persistenceProvider
         pairingConfiguration = pairing
         self.audioOutputCapabilityProvider = audioOutputCapabilityProvider
@@ -454,10 +463,7 @@ public final class SendspinClient {
             let runtimeConfiguration = await pairingRuntimeConfiguration()
             let hello = buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
-                pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
-                dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
-                unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+                configuration: runtimeConfiguration
             )
             let outcome = try await HandshakeDriver.establish(
                 on: transport,
@@ -507,10 +513,7 @@ public final class SendspinClient {
                 let runtimeConfiguration = await pairingRuntimeConfiguration()
                 let hello = buildClientHelloPayload(
                     effectivePlayerFormats: negotiation.effectivePlayerFormats,
-                    pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
-                    dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                    staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
-                    unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+                    configuration: runtimeConfiguration
                 )
                 let outcome = try await HandshakeDriver.establish(
                     on: transport,
@@ -580,7 +583,7 @@ public final class SendspinClient {
         }
         // A new connection is a new session: drop any server-reported state carried
         // over from a prior connection (notably one lost without an explicit
-        // disconnect) before the first server/state can merge a delta onto it.
+        // disconnect) before the first server/state update is applied.
         // Placed here, not in handleServerHello — that also fires on a same-connection
         // re-hello, where the accumulated state is still valid.
         resetServerSessionState()
@@ -655,10 +658,7 @@ public final class SendspinClient {
             },
             clientHelloPayload: buildClientHelloPayload(
                 effectivePlayerFormats: negotiation.effectivePlayerFormats,
-                pairingPskEnabled: runtimeConfiguration.pairingPskEnabled,
-                dynamicPairingCodeEnabled: runtimeConfiguration.dynamicPairingCodeEnabled,
-                staticPairingCodeEnabled: runtimeConfiguration.staticPairingCodeIsAdvertised,
-                unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled
+                configuration: runtimeConfiguration
             ),
             unpairedAccessEnabled: runtimeConfiguration.unpairedAccessEnabled,
             effectivePlayerFormats: negotiation.effectivePlayerFormats,
@@ -690,8 +690,24 @@ public final class SendspinClient {
             // Live facade state, not playerConfig defaults: a multi-server switch
             // (and any runtime setOutputDelay) must carry into the new session.
             initialOutputDelayMs: outputDelayMs,
+            initialPreferredPlayerFormat: preferredPlayerFormat,
             initialVolume: currentVolume,
             initialMuted: currentMuted,
+            initialArtworkState: artworkConfig.map { config in
+                do {
+                    return try ArtworkStateObject(channels: config.channels.map { channel in
+                        try ArtworkStateChannel(
+                            source: channel.source,
+                            format: channel.source == .none ? nil : channel.format,
+                            width: channel.source == .none ? nil : channel.width,
+                            height: channel.source == .none ? nil : channel.height
+                        )
+                    })
+                } catch {
+                    preconditionFailure("Validated artwork configuration cannot produce state: \(error)")
+                }
+            },
+            initialVisualizerState: visualizerConfig?.stateObject,
             requiredLeadTimeMs: playerConfig?.requiredLeadTimeMs ?? defaultRequiredLeadTimeMs,
             minBufferMs: playerConfig?.minBufferMs ?? defaultMinBufferMs,
             clock: clockSync,
@@ -946,9 +962,16 @@ public final class SendspinClient {
             updateMetadata(metadata)
             emitEvent(.metadataReceived(metadata))
 
+        case .metadataCleared:
+            updateMetadata(nil)
+
         case let .controllerStateUpdated(state):
             updateControllerState(state)
             emitEvent(.controllerStateUpdated(state))
+
+        case .controllerStateCleared:
+            updateControllerState(nil)
+            emitEvent(.controllerStateCleared)
 
         case let .colorStateUpdated(state):
             updateColorState(state)
@@ -1026,7 +1049,7 @@ public final class SendspinClient {
         case let .streamError(error):
             // A stream-start error (unsupported codec / invalid format / audio-start
             // failure) still opened the player stream gate: the client recovers by
-            // requesting a supported format, so requestPlayerFormat must be allowed.
+            // publishing a supported format preference.
             playerStreamActive = true
             // Project connection stream errors to observable connectionState errors.
             updateConnectionState(.error(error))
@@ -1058,7 +1081,7 @@ public final class SendspinClient {
         guard connection != nil || connectionState != .disconnected else { return }
         // Terminal event: retire the connection and apply reconnect logic.
         // Volume/mute/outputDelay deliberately survive (device-user state,
-        // like the spec's static-delay persistence): the next session is
+        // like the spec's output-delay persistence): the next session is
         // seeded from facade state and re-applies them to its fresh engine.
         updateConnectionState(.disconnected)
         resetStreamState()
@@ -1099,9 +1122,8 @@ public final class SendspinClient {
     }
 
     /// Clear server-reported state that is scoped to a single connection. A
-    /// `server/state` delta merges onto the *previous* value (absent field = keep
-    /// previous), so without this a reconnected server's first partial delta would
-    /// inherit the dead connection's metadata/controller. `currentServerId` and
+    /// reconnected server must not inherit metadata or controller state from the
+    /// dead connection. `currentServerId` and
     /// Server identity and activities are excluded because they are replaced with each
     /// admitted session. Group id/name survive per spec, but playback state is
     /// session-scoped and is cleared to avoid reporting stale playback status.

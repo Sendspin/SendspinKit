@@ -10,8 +10,8 @@ struct ArtworkModelTests {
         let channel = try ArtworkChannel(
             source: .album,
             format: .jpeg,
-            mediaWidth: 800,
-            mediaHeight: 800
+            width: 800,
+            height: 800
         )
 
         let encoder = JSONEncoder()
@@ -20,15 +20,15 @@ struct ArtworkModelTests {
 
         #expect(json["source"] as? String == "album")
         #expect(json["format"] as? String == "jpeg")
-        #expect(json["media_width"] as? Int == 800)
-        #expect(json["media_height"] as? Int == 800)
+        #expect(json["width"] as? Int == 800)
+        #expect(json["height"] as? Int == 800)
 
         let decoder = JSONDecoder()
         let decoded = try decoder.decode(ArtworkChannel.self, from: data)
         #expect(decoded.source == .album)
         #expect(decoded.format == .jpeg)
-        #expect(decoded.mediaWidth == 800)
-        #expect(decoded.mediaHeight == 800)
+        #expect(decoded.width == 800)
+        #expect(decoded.height == 800)
     }
 
     @Test
@@ -39,13 +39,13 @@ struct ArtworkModelTests {
         let data = try encoder.encode(channel)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
         #expect(json["source"] as? String == "none")
-        #expect(json["media_width"] as? Int == 0)
-        #expect(json["media_height"] as? Int == 0)
+        #expect(json["width"] as? Int == 0)
+        #expect(json["height"] as? Int == 0)
     }
 
     @Test
     func artworkChannel_supportsAllImageFormats() throws {
-        let formats: [ImageFormat] = [.jpeg, .png, .bmp]
+        let formats: [ImageFormat] = [.jpeg, .png]
         let encoder = JSONEncoder()
         let decoder = JSONDecoder()
 
@@ -53,8 +53,8 @@ struct ArtworkModelTests {
             let channel = try ArtworkChannel(
                 source: .album,
                 format: format,
-                mediaWidth: 300,
-                mediaHeight: 300
+                width: 300,
+                height: 300
             )
             let data = try encoder.encode(channel)
             let decoded = try decoder.decode(ArtworkChannel.self, from: data)
@@ -71,8 +71,8 @@ struct ArtworkModelTests {
             let channel = try ArtworkChannel(
                 source: source,
                 format: .jpeg,
-                mediaWidth: 300,
-                mediaHeight: 300
+                width: 300,
+                height: 300
             )
             let data = try encoder.encode(channel)
             let decoded = try decoder.decode(ArtworkChannel.self, from: data)
@@ -85,11 +85,28 @@ struct ArtworkModelTests {
         let decoded = try decoder.decode(ArtworkChannel.self, from: data)
         #expect(decoded.source == .none)
         #expect(decoded.format == .jpeg)
-        #expect(decoded.mediaWidth == 0)
-        #expect(decoded.mediaHeight == 0)
+        #expect(decoded.width == 0)
+        #expect(decoded.height == 0)
     }
 
     // MARK: - ArtworkChannel decode validation
+
+    @Test(arguments: [
+        ("ArtworkChannel", "{\"source\":\"album\",\"format\":\"bmp\",\"width\":300,\"height\":300}"),
+        ("StreamArtworkChannelConfig", "{\"source\":\"album\",\"format\":\"bmp\",\"width\":300,\"height\":300}"),
+        ("ArtworkStateChannel", "{\"source\":\"album\",\"format\":\"bmp\",\"width\":300,\"height\":300}")
+    ])
+    func artworkDecodersRejectBMP(type: String, json: String) {
+        let data = Data(json.utf8)
+        switch type {
+        case "ArtworkChannel":
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(ArtworkChannel.self, from: data) }
+        case "StreamArtworkChannelConfig":
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(StreamArtworkChannelConfig.self, from: data) }
+        default:
+            #expect(throws: DecodingError.self) { try JSONDecoder().decode(ArtworkStateChannel.self, from: data) }
+        }
+    }
 
     @Test
     func artworkChannel_rejectsNegativeWidthForActiveChannelViaDecode() {
@@ -172,13 +189,13 @@ struct ArtworkModelTests {
     @Test
     func artworkChannel_acceptsZeroDimensionsForNoneChannelViaDecode() throws {
         let json = Data("""
-        {"source": "none", "format": "jpeg", "media_width": 0, "media_height": 0}
+        {"source": "none", "format": "jpeg", "width": 0, "height": 0}
         """.utf8)
 
         let channel = try JSONDecoder().decode(ArtworkChannel.self, from: json)
         #expect(channel.source == .none)
-        #expect(channel.mediaWidth == 0)
-        #expect(channel.mediaHeight == 0)
+        #expect(channel.width == 0)
+        #expect(channel.height == 0)
     }
 
     // MARK: - ArtworkChannel init validation (ConfigurationError)
@@ -186,100 +203,48 @@ struct ArtworkModelTests {
     @Test
     func artworkChannel_initRejectsNegativeWidthForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
-            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: -1, mediaHeight: 300)
+            try ArtworkChannel(source: .album, format: .jpeg, width: -1, height: 300)
         }
     }
 
     @Test
     func artworkChannel_initRejectsZeroWidthForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
-            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 0, mediaHeight: 300)
+            try ArtworkChannel(source: .album, format: .jpeg, width: 0, height: 300)
         }
     }
 
     @Test
     func artworkChannel_initRejectsZeroHeightForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
-            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 0)
+            try ArtworkChannel(source: .album, format: .jpeg, width: 300, height: 0)
         }
     }
 
     @Test
     func artworkChannel_initRejectsNegativeHeightForActiveChannel() {
         #expect(throws: ConfigurationError.self) {
-            try ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: -1)
+            try ArtworkChannel(source: .album, format: .jpeg, width: 300, height: -1)
         }
     }
 
-    // MARK: - ArtworkSupport in client/hello
+    // MARK: - Artwork state in client/state
 
     @Test
-    func artworkSupport_encodesChannelsArrayForClientHello() throws {
-        let support = try ArtworkSupport(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800),
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 400, mediaHeight: 400)
-        ])
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(support)
+    func clientStateArtworkEncodesWidthAndHeight() throws {
+        let channel = try ArtworkStateChannel(source: .album, format: .jpeg, width: 800, height: 800)
+        let state = try ArtworkStateObject(channels: [channel])
+        let data = try JSONEncoder().encode(ClientStateMessage(payload: ClientStatePayload(available: true, artwork: state)))
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-
-        let channels = try #require(json["channels"] as? [[String: Any]])
-        #expect(channels.count == 2)
-        #expect(channels[0]["source"] as? String == "album")
-        #expect(channels[0]["format"] as? String == "jpeg")
-        #expect(channels[0]["media_width"] as? Int == 800)
-        #expect(channels[1]["source"] as? String == "artist")
-        #expect(channels[1]["format"] as? String == "png")
-        #expect(channels[1]["media_width"] as? Int == 400)
-    }
-
-    @Test
-    func artworkSupport_decodesFromServerLikeJSON() throws {
-        let json = Data("""
-        {
-            "channels": [
-                {"source": "album", "format": "jpeg", "media_width": 300, "media_height": 300}
-            ]
-        }
-        """.utf8)
-
-        let decoder = JSONDecoder()
-        let support = try decoder.decode(ArtworkSupport.self, from: json)
-        #expect(support.channels.count == 1)
-        #expect(support.channels[0].source == .album)
-        #expect(support.channels[0].mediaWidth == 300)
-    }
-
-    // MARK: - ArtworkSupport in full client/hello
-
-    @Test
-    func clientHello_withArtworkV1SupportEncodesCorrectly() throws {
-        let payload = try ClientHelloPayload(
-            name: "Test Display",
-            deviceInfo: nil,
-            trustLevel: .none,
-            supportedPairMethods: [],
-            unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
-            supportedRoles: [.artworkV1],
-            playerV1Support: nil,
-            artworkV1Support: ArtworkSupport(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 800, mediaHeight: 800)
-            ]),
-            visualizerV1Support: nil
-        )
-        let message = ClientHelloMessage(payload: payload)
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(message)
-        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let payloadJson = try #require(json["payload"] as? [String: Any])
-
-        // Check artwork@v1_support key is present with correct wire format
-        let artworkSupport = try #require(payloadJson["artwork@v1_support"] as? [String: Any])
-        let channels = try #require(artworkSupport["channels"] as? [[String: Any]])
-        #expect(channels.count == 1)
-        #expect(channels[0]["source"] as? String == "album")
+        let payloadJSON = try #require(json["payload"] as? [String: Any])
+        let artworkJSON = try #require(payloadJSON["artwork"] as? [String: Any])
+        let channelJSON = try #require((artworkJSON["channels"] as? [[String: Any]])?.first)
+        #expect(channelJSON["source"] as? String == "album")
+        #expect(channelJSON["format"] as? String == "jpeg")
+        #expect(channelJSON["width"] as? Int == 800)
+        #expect(channelJSON["height"] as? Int == 800)
+        #expect(channelJSON["media_width"] == nil)
+        #expect(channelJSON["media_height"] == nil)
     }
 
     // MARK: - StreamStartArtwork
@@ -360,56 +325,17 @@ struct ArtworkModelTests {
         #expect(decoded.height == -1)
     }
 
-    // MARK: - StreamRequestFormat (artwork)
+    // MARK: - Artwork state validation
 
     @Test
-    func streamRequestFormat_withArtworkEncodesCorrectly() throws {
-        let request = try ArtworkFormatRequest(
-            channel: 0,
-            source: .album,
-            format: .jpeg,
-            mediaWidth: 800,
-            mediaHeight: 800
-        )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(artwork: request)
-        )
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(message)
+    func artworkStateNoneOmitsFormatAndDimensions() throws {
+        let state = try ArtworkStateChannel(source: .none)
+        let data = try JSONEncoder().encode(state)
         let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-
-        #expect(json["type"] as? String == "stream/request-format")
-        let payloadJson = try #require(json["payload"] as? [String: Any])
-        let artworkJson = try #require(payloadJson["artwork"] as? [String: Any])
-        #expect(artworkJson["channel"] as? Int == 0)
-        #expect(artworkJson["source"] as? String == "album")
-        #expect(artworkJson["format"] as? String == "jpeg")
-        #expect(artworkJson["media_width"] as? Int == 800)
-        #expect(artworkJson["media_height"] as? Int == 800)
-    }
-
-    @Test
-    func streamRequestFormat_withPartialArtworkUpdate() throws {
-        // Per spec: only include fields that are changing
-        let request = try ArtworkFormatRequest(
-            channel: 1,
-            format: .png
-        )
-        let message = StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(artwork: request)
-        )
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(message)
-        let json = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-        let payloadJson = try #require(json["payload"] as? [String: Any])
-        let artworkJson = try #require(payloadJson["artwork"] as? [String: Any])
-
-        #expect(artworkJson["channel"] as? Int == 1)
-        #expect(artworkJson["format"] as? String == "png")
-        // Optional fields should still be present (as null) since we encode all fields
-        // The important thing is channel + format are correct
+        #expect(json["source"] as? String == "none")
+        #expect(json["format"] == nil)
+        #expect(json["width"] == nil)
+        #expect(json["height"] == nil)
     }
 
     // MARK: - StreamEndMessage with roles
@@ -444,15 +370,15 @@ struct ArtworkModelTests {
     func artworkConfiguration_validatesChannelCount() throws {
         // Valid: 1-4 channels
         let config = try ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
+            ArtworkChannel(source: .album, format: .jpeg, width: 300, height: 300)
         ])
         #expect(config.channels.count == 1)
 
         let config4 = try ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200),
+            ArtworkChannel(source: .album, format: .jpeg, width: 300, height: 300),
+            ArtworkChannel(source: .artist, format: .png, width: 200, height: 200),
             .disabled,
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 400, mediaHeight: 400)
+            ArtworkChannel(source: .album, format: .jpeg, width: 400, height: 400)
         ])
         #expect(config4.channels.count == 4)
     }
@@ -460,13 +386,13 @@ struct ArtworkModelTests {
     @Test
     func artworkConfiguration_equalityAndHashing() throws {
         let channels = try [
-            ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300),
+            ArtworkChannel(source: .album, format: .jpeg, width: 300, height: 300),
             .disabled
         ]
         let a = try ArtworkConfiguration(channels: channels)
         let b = try ArtworkConfiguration(channels: channels)
         let c = try ArtworkConfiguration(channels: [
-            ArtworkChannel(source: .artist, format: .png, mediaWidth: 200, mediaHeight: 200)
+            ArtworkChannel(source: .artist, format: .png, width: 200, height: 200)
         ])
 
         #expect(a == b)
@@ -487,8 +413,8 @@ struct ArtworkModelTests {
         {
             "source": "album",
             "format": "jpeg",
-            "media_width": 300,
-            "media_height": 300
+            "width": 300,
+            "height": 300
         }
         """.utf8)
 
@@ -496,18 +422,18 @@ struct ArtworkModelTests {
         let channel = try decoder.decode(ArtworkChannel.self, from: rustJson)
         #expect(channel.source == .album)
         #expect(channel.format == .jpeg)
-        #expect(channel.mediaWidth == 300)
-        #expect(channel.mediaHeight == 300)
+        #expect(channel.width == 300)
+        #expect(channel.height == 300)
 
         // Re-encode and verify keys match wire format
         let encoder = JSONEncoder()
         let reencoded = try encoder.encode(channel)
         let json = try #require(JSONSerialization.jsonObject(with: reencoded) as? [String: Any])
-        #expect(json.keys.contains("media_width"))
-        #expect(json.keys.contains("media_height"))
+        #expect(json.keys.contains("width"))
+        #expect(json.keys.contains("height"))
         // Verify no camelCase keys leaked
-        #expect(!json.keys.contains("mediaWidth"))
-        #expect(!json.keys.contains("mediaHeight"))
+        #expect(json.keys.contains("width"))
+        #expect(json.keys.contains("height"))
     }
 
     @Test

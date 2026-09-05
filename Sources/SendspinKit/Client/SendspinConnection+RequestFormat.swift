@@ -12,53 +12,75 @@ struct PendingOutputFormatRequest: Sendable, Equatable {
 }
 
 extension SendspinConnection {
-    /// Send an application-initiated `stream/request-format` for the player role.
-    /// Explicit application intent supersedes automatic route negotiation and
-    /// suppresses more automatic requests until the next player stream boundary.
-    func requestFormat(player request: PlayerFormatRequest) async throws {
-        let target = try matchingEffectiveFormat(for: request)
-        let previousPendingRequest = pendingOutputFormatRequest
-        let previousAutomaticRequestsSuppressed = automaticRequestsSuppressed
+    /// Publish an application-selected player format in the full client/state snapshot.
+    /// The server re-evaluates an active stream or remembers the preference for the next one.
+    func setPlayerFormatPreference(codec: AudioCodec?, channels: Int?, sampleRate: Int?, bitDepth: Int?) async throws {
+        let target = try matchingEffectiveFormat(codec: codec, channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
+        try await applyPlayerFormatPreference(target)
+    }
 
-        outputNegotiationGeneration &+= 1
-        outputSettleTask?.cancel()
-        outputSettleTask = nil
-        outputRequestDeadlineTask?.cancel()
-        outputRequestDeadlineTask = nil
-        automaticRequestsSuppressed = true
-        let requestGeneration = outputNegotiationGeneration
-        pendingOutputFormatRequest = PendingOutputFormatRequest(
-            target: target,
-            origin: .application,
-            generation: requestGeneration
-        )
-        publishOutputFormatStatus(.requesting(target))
-
+    func applyPlayerFormatPreference(_ target: AudioFormatSpec?) async throws {
+        let previousPreference = preferredPlayerFormat
+        let previousPending = pendingOutputFormatRequest
+        let previousSuppression = automaticRequestsSuppressed
+        let previousDeadline = outputRequestDeadlineTask
+        if let target {
+            outputNegotiationGeneration &+= 1
+            pendingOutputFormatRequest = PendingOutputFormatRequest(
+                target: target,
+                origin: .application,
+                generation: outputNegotiationGeneration
+            )
+            automaticRequestsSuppressed = true
+            outputRequestDeadlineTask?.cancel()
+            outputRequestDeadlineTask = nil
+        } else {
+            pendingOutputFormatRequest = nil
+            automaticRequestsSuppressed = false
+        }
+        preferredPlayerFormat = target
         do {
-            try await sendPlayerFormatRequest(request)
-            armOutputRequestDeadline(generation: requestGeneration)
+            try await publishClientState()
         } catch {
-            if pendingOutputFormatRequest?.generation == requestGeneration {
-                automaticRequestsSuppressed = previousAutomaticRequestsSuppressed
-                pendingOutputFormatRequest = previousPendingRequest
-                if let outputSnapshot {
-                    receiveAudioOutputSnapshot(outputSnapshot, sequence: latestOutputSnapshotSequence)
-                }
-                if let previousPendingRequest {
-                    armOutputRequestDeadline(generation: previousPendingRequest.generation)
-                }
-                publishTruthfulOutputFormatStatus()
+            preferredPlayerFormat = previousPreference
+            pendingOutputFormatRequest = previousPending
+            automaticRequestsSuppressed = previousSuppression
+            if let previousPending {
+                armOutputRequestDeadline(generation: previousPending.generation)
+            } else {
+                outputRequestDeadlineTask = nil
+                previousDeadline?.cancel()
             }
+            publishTruthfulOutputFormatStatus()
             throw error
+        }
+        if let target {
+            publishOutputFormatStatus(.requesting(target))
+            armOutputRequestDeadline(generation: outputNegotiationGeneration)
+        } else {
+            publishTruthfulOutputFormatStatus()
         }
     }
 
-    /// Send a `stream/request-format` for the artwork role. See
-    /// ``requestFormat(player:)`` for the no-active-stream contract.
-    func requestFormat(artwork request: ArtworkFormatRequest) async throws {
-        try await send(clientMessage: StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(artwork: request)
-        ))
+    /// Publish one artwork channel preference in the full client/state snapshot.
+    func setArtworkChannelPreference(channel: Int, preference: ArtworkChannelPreference) async throws {
+        guard var channels = artworkState?.channels else {
+            throw ConfigurationError.artworkStateUnavailable
+        }
+        guard channels.indices.contains(channel) else {
+            throw ConfigurationError.artworkChannelOutOfRange(channel)
+        }
+        switch preference {
+        case .disable:
+            channels[channel] = try ArtworkStateChannel(source: .none)
+        case let .set(source, format, width, height):
+            guard source != .none else {
+                throw ConfigurationError.invalidArtworkStateChannel
+            }
+            channels[channel] = try ArtworkStateChannel(source: source, format: format, width: width, height: height)
+        }
+        artworkState = try ArtworkStateObject(channels: channels)
+        try await publishClientState()
     }
 
     /// Seed status once the session handshake is complete. The pre-hello snapshot
@@ -192,15 +214,13 @@ extension SendspinConnection {
         )
         publishOutputFormatStatus(.requesting(target))
 
+        let previousPreference = preferredPlayerFormat
         do {
-            try await sendPlayerFormatRequest(PlayerFormatRequest(
-                codec: target.codec,
-                channels: target.channels,
-                sampleRate: target.sampleRate,
-                bitDepth: target.bitDepth
-            ))
+            preferredPlayerFormat = target
+            try await publishClientState()
             armOutputRequestDeadline(generation: requestGeneration)
         } catch {
+            preferredPlayerFormat = previousPreference
             pendingOutputFormatRequest = nil
             publishTruthfulOutputFormatStatus()
         }
@@ -231,7 +251,7 @@ extension SendspinConnection {
         clientOperationalState = .error
         controlSink.enqueue(.streamError(.outputFormat(error)))
         controlSink.enqueue(.operationalState(.error))
-        try? await sendClientStateIfChanged()
+        try? await publishClientState()
         disconnectReason = .outputFormatRejected(error)
         shuttingDown = true
         await transport.disconnect()
@@ -259,25 +279,19 @@ extension SendspinConnection {
         publishTruthfulOutputFormatStatus()
     }
 
-    private func matchingEffectiveFormat(for request: PlayerFormatRequest) throws -> AudioFormatSpec {
-        guard request.codec != nil || request.channels != nil || request.sampleRate != nil || request.bitDepth != nil else {
+    private func matchingEffectiveFormat(codec: AudioCodec?, channels: Int?, sampleRate: Int?, bitDepth: Int?) throws -> AudioFormatSpec {
+        guard codec != nil || channels != nil || sampleRate != nil || bitDepth != nil else {
             throw OutputFormatError.noMatchingFormat
         }
         guard let format = effectivePlayerFormats?.first(where: { format in
-            (request.codec == nil || request.codec == format.codec)
-                && (request.channels == nil || request.channels == format.channels)
-                && (request.sampleRate == nil || request.sampleRate == format.sampleRate)
-                && (request.bitDepth == nil || request.bitDepth == format.bitDepth)
+            (codec == nil || codec == format.codec)
+                && (channels == nil || channels == format.channels)
+                && (sampleRate == nil || sampleRate == format.sampleRate)
+                && (bitDepth == nil || bitDepth == format.bitDepth)
         }) else {
             throw OutputFormatError.noMatchingFormat
         }
         return format
-    }
-
-    private func sendPlayerFormatRequest(_ request: PlayerFormatRequest) async throws {
-        try await send(clientMessage: StreamRequestFormatMessage(
-            payload: StreamRequestFormatPayload(player: request)
-        ))
     }
 
     private func publishTruthfulOutputFormatStatus(activeFormat: AudioFormatSpec? = nil) {

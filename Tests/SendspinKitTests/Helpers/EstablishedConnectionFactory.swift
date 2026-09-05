@@ -38,6 +38,15 @@ func makeEstablishedConnection(
     roles: Set<VersionedRole> = [.playerV1],
     initialVolume: Int = 100,
     initialMuted: Bool = false,
+    initialArtworkState: ArtworkStateObject? = nil,
+    initialVisualizerState: VisualizerStateObject? = nil,
+    scheduleNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
+    scheduleSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
+        try await Task.sleep(for: duration)
+    },
+    requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
+    minBufferMs: Int = defaultMinBufferMs,
+    artworkObserver: (@Sendable (ArtworkData) -> Void)? = nil,
     startConnection: Bool = true
 ) async throws -> EstablishedConnectionFixture {
     let transport = suppliedTransport ?? MockTransport()
@@ -94,24 +103,29 @@ func makeEstablishedConnection(
         clientHelloPayload: ClientHelloPayload(
             name: "Test Client",
             deviceInfo: nil,
-            trustLevel: pskCategory == .longTerm ? .user : .none,
-            supportedPairMethods: [],
+            supportedPairMethods: [:],
             unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled),
             supportedRoles: Array(roles),
             playerV1Support: nil,
-            artworkV1Support: nil,
             visualizerV1Support: nil
         ),
         unpairedAccessEnabled: unpairedAccessEnabled,
+        scheduleNow: scheduleNow,
+        scheduleSleep: scheduleSleep,
         audioSink: audioSink,
         artworkSink: artworkSink,
         visualizerSink: visualizerSink,
         emitRawAudio: emitRawAudio,
+        artworkObserver: artworkObserver,
         validity: validity,
         advertisedCommands: advertisedCommands,
         roles: roles,
         initialVolume: initialVolume,
         initialMuted: initialMuted,
+        initialArtworkState: initialArtworkState,
+        initialVisualizerState: initialVisualizerState,
+        requiredLeadTimeMs: requiredLeadTimeMs,
+        minBufferMs: minBufferMs,
         clock: clock,
         engine: directEngine
     )

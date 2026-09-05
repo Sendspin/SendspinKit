@@ -5,9 +5,17 @@ import Testing
 struct BinaryMessageTests {
     /// Helper to build a binary message frame from components.
     private static func makeFrame(type: UInt8, timestamp: Int64, payload: Data = Data()) -> Data {
-        var data = Data()
-        data.append(type)
-        withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
+        var data = Data([type])
+        if type == BinaryMessageType.audioChunk.rawValue {
+            withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
+            data.append(contentsOf: [0, 0, 0, 0])
+        } else if type == BinaryMessageType.visualizerData.rawValue {
+            withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
+        } else if type >= BinaryMessageType.artworkChannel0.rawValue,
+                  type <= BinaryMessageType.artworkChannel3.rawValue {
+            data.append(payload)
+            return data
+        }
         data.append(payload)
         return data
     }
@@ -27,6 +35,7 @@ struct BinaryMessageTests {
 
         #expect(message.type == .audioChunk)
         #expect(message.timestamp == 1_234_567_890)
+        #expect(message.sendAhead == 0)
         #expect(message.data == audioData)
     }
 
@@ -42,7 +51,7 @@ struct BinaryMessageTests {
         let message = try #require(BinaryMessage(data: frame))
 
         #expect(message.type == .artworkChannel0)
-        #expect(message.timestamp == 9_876_543_210)
+        #expect(message.timestamp == 0)
         #expect(message.data == imageData)
     }
 
@@ -61,6 +70,8 @@ struct BinaryMessageTests {
 
         let message = try #require(BinaryMessage(data: frame))
         #expect(message.type == type)
+        #expect(message.timestamp == 0)
+        #expect(message.data == Data([0x00]))
         #expect(message.type.artworkChannel == expectedChannel)
     }
 
@@ -89,6 +100,7 @@ struct BinaryMessageTests {
         )
 
         let message = try #require(BinaryMessage(data: frame))
+        #expect(message.timestamp == 0)
         #expect(message.data.isEmpty)
     }
 
@@ -156,12 +168,34 @@ struct BinaryMessageTests {
         #expect(BinaryMessage(data: frame) == nil)
     }
 
-    @Test(arguments: UInt8(0) ... UInt8(3))
-    func rejectReservedTypeID(reservedType: UInt8) {
-        // Types 0-3 are reserved per spec — 0 is intentionally reserved,
-        // not a default/unset sentinel.
-        let frame = Self.makeFrame(type: reservedType, timestamp: 1_000)
-        #expect(BinaryMessage(data: frame) == nil)
+    @Test
+    func rejectReservedTypeID() {
+        for reservedType in [UInt8(0), UInt8(1), UInt8(3)] {
+            let frame = Self.makeFrame(type: reservedType, timestamp: 1_000)
+            #expect(BinaryMessage(data: frame) == nil)
+        }
+    }
+
+    @Test
+    func decodeDigitAudioClip() throws {
+        let frame = Data([BinaryMessageType.digitAudioClip.rawValue, 7, 0xF0, 0x0D])
+        let message = try #require(BinaryMessage(data: frame))
+        #expect(message.type == .digitAudioClip)
+        #expect(message.digit == 7)
+        #expect(message.timestamp == 0)
+        #expect(message.data == Data([0xF0, 0x0D]))
+    }
+
+    @Test(arguments: [UInt32(0), UInt32.max])
+    func decodeSendAheadSaturation(sendAhead: UInt32) throws {
+        var frame = Data([BinaryMessageType.audioChunk.rawValue])
+        frame.append(contentsOf: [0, 0, 0, 0, 0, 0, 0, 1])
+        withUnsafeBytes(of: sendAhead.bigEndian) { frame.append(contentsOf: $0) }
+        frame.append(contentsOf: [0xAA, 0xBB])
+        let message = try #require(BinaryMessage(data: frame))
+        #expect(message.timestamp == 1)
+        #expect(message.sendAhead == sendAhead)
+        #expect(message.data == Data([0xAA, 0xBB]))
     }
 
     @Test
@@ -187,7 +221,7 @@ struct BinaryMessageTests {
             type: BinaryMessageType.audioChunk.rawValue,
             timestamp: 1_000_000
         )
-        #expect(frame.count == BinaryMessage.headerSize)
+        #expect(frame.count == BinaryMessage.audioChunkHeaderSize)
         let message = try #require(BinaryMessage(data: frame))
         #expect(message.data.isEmpty)
     }
@@ -205,12 +239,44 @@ struct BinaryMessageTests {
     /// must pin the literals, as `headerSize` is pinned above.
     @Test
     func binaryTypeBytesMatchSpecValues() {
+        #expect(NoiseFrameType.fragment == 1)
+        #expect(NoiseFragmentFlags.first == 0b10)
+        #expect(NoiseFragmentFlags.last == 0b01)
+        #expect(NoiseFragmentFlags.reservedMask == 0b1111_1100)
+        #expect(BinaryMessageType.digitAudioClip.rawValue == 2)
         #expect(BinaryMessageType.audioChunk.rawValue == 4)
         #expect(BinaryMessageType.artworkChannel0.rawValue == 8)
         #expect(BinaryMessageType.artworkChannel1.rawValue == 9)
         #expect(BinaryMessageType.artworkChannel2.rawValue == 10)
         #expect(BinaryMessageType.artworkChannel3.rawValue == 11)
         #expect(BinaryMessageType.visualizerData.rawValue == 16)
+    }
+
+    @Test
+    func handDerivedAudioChunkFixtureDecodesAllFields() throws {
+        // Type 4 layout: type, eight-byte big-endian timestamp, four-byte send_ahead, payload.
+        let frame = Data([
+            4,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x0F, 0x42, 0x40,
+            0x00, 0x00, 0x03, 0xE8,
+            0xDE, 0xAD, 0xBE, 0xEF
+        ])
+        let message = try #require(BinaryMessage(data: frame))
+        #expect(message.timestamp == 1_000_000)
+        #expect(message.sendAhead == 1_000)
+        #expect(message.data == Data([0xDE, 0xAD, 0xBE, 0xEF]))
+        #expect(frame[13] == message.data[0])
+    }
+
+    @Test(arguments: [
+        Data([8, 0b01]),
+        Data([9, 0b10, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x03]),
+        Data([10, 0x00, 0xCA, 0xFE])
+    ])
+    func artworkTransferShapesRemainOpaque(frame: Data) throws {
+        let message = try #require(BinaryMessage(data: frame))
+        #expect(message.data == Data(frame.dropFirst()))
+        #expect(message.timestamp == 0)
     }
 
     /// The routing code maps a channel index onto these, so they must stay contiguous.

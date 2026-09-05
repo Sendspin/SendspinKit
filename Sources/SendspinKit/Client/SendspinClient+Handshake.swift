@@ -54,23 +54,12 @@ extension SendspinClient {
         )
     }
 
-    /// Prepare pairing storage and restore persisted management settings once per client lifetime.
+    /// Prepare pairing storage once per client lifetime.
     func preparePairingConfiguration() async {
         guard !pairingSetupComplete, let configuration = pairingConfiguration else { return }
         pairingSetupComplete = true
         await configuration.store.ensurePreProvisionedSharedRecord(configuration.preProvisionedSharedRecord)
-        let current = await configuration.runtime.snapshot()
-        let initial = PairingManagementConfiguration(
-            pairingPsk: current.pairingPsk,
-            pairingPskEnabled: current.pairingPskEnabled,
-            recordModePskId: current.recordModePskId,
-            unpairedAccessEnabled: unpairedAccessEnabled,
-            dynamicPairingCodeEnabled: current.dynamicPairingCodeEnabled,
-            staticPairingCodeEnabled: current.staticPairingCodeEnabled,
-            staticPairingCode: current.staticPairingCode
-        )
-        let loaded = await configuration.store.loadManagementConfiguration(default: initial)
-        await configuration.runtime.update(loaded)
+        // Pairing configuration is host-owned and supplied at construction time.
     }
 
     func pairingRuntimeConfiguration() async -> PairingManagementConfiguration {
@@ -82,7 +71,8 @@ extension SendspinClient {
                 unpairedAccessEnabled: unpairedAccessEnabled,
                 dynamicPairingCodeEnabled: false,
                 staticPairingCodeEnabled: false,
-                staticPairingCode: nil
+                staticPairingCode: nil,
+                digitAudio: nil
             )
         }
         return await runtime.snapshot()
@@ -91,10 +81,7 @@ extension SendspinClient {
     /// Build the client/hello payload from the catalog fixed for this session.
     func buildClientHelloPayload(
         effectivePlayerFormats: [AudioFormatSpec]? = nil,
-        pairingPskEnabled: Bool,
-        dynamicPairingCodeEnabled: Bool = false,
-        staticPairingCodeEnabled: Bool = false,
-        unpairedAccessEnabled: Bool? = nil
+        configuration: PairingManagementConfiguration
     ) -> ClientHelloPayload {
         var playerV1Support: PlayerSupport?
         if roleSet.contains(.playerV1), let playerConfig {
@@ -102,45 +89,35 @@ extension SendspinClient {
             precondition(!formats.isEmpty, "A player hello must advertise at least one supported format")
             playerV1Support = PlayerSupport(
                 supportedFormats: formats,
-                bufferCapacity: playerConfig.bufferCapacity,
-                supportedCommands: volumeCapabilities.playerCommands
+                bufferCapacity: playerConfig.bufferCapacity
             )
-        }
-
-        var artworkV1Support: ArtworkSupport?
-        if roleSet.contains(.artworkV1), let artworkConfig {
-            artworkV1Support = ArtworkSupport(channels: artworkConfig.channels)
         }
 
         return ClientHelloPayload(
             name: name,
             deviceInfo: deviceInfo,
-            trustLevel: .none,
             supportedPairMethods: {
-                var methods: [PairMethodDescriptor] = []
-                if pairingPskEnabled {
-                    methods.append(PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"]))
+                var methods: [String: PairMethodDescriptor] = [:]
+                if configuration.pairingPskEnabled {
+                    methods[PairMethod.pairingPsk] = PairMethodDescriptor(locations: ["operator"])
                 }
-                if dynamicPairingCodeEnabled {
-                    methods.append(PairMethodDescriptor(
-                        method: PairMethod.dynamicPairingCode,
-                        outChannels: ["display"],
-                        formats: ["digits", "qr_code"]
-                    ))
+                if configuration.dynamicPairingCodeEnabled {
+                    let speaker = configuration.digitAudio != nil
+                    methods[PairMethod.dynamicPairingCode] = PairMethodDescriptor(
+                        outChannels: speaker ? ["display", "speaker"] : ["display"],
+                        formats: ["digits", "qr_code"],
+                        digitAudio: configuration.digitAudio
+                    )
                 }
-                if staticPairingCodeEnabled {
-                    methods.append(PairMethodDescriptor(
-                        method: PairMethod.staticPairingCode,
-                        locations: ["operator"]
-                    ))
+                if configuration.staticPairingCodeIsAdvertised {
+                    methods[PairMethod.staticPairingCode] = PairMethodDescriptor(locations: ["operator"])
                 }
                 return methods
             }(),
-            unpairedAccess: UnpairedAccessAdvertisement(enabled: unpairedAccessEnabled ?? self.unpairedAccessEnabled),
+            unpairedAccess: UnpairedAccessAdvertisement(enabled: configuration.unpairedAccessEnabled),
             supportedRoles: roles,
             playerV1Support: playerV1Support,
-            artworkV1Support: artworkV1Support,
-            visualizerV1Support: nil
+            visualizerV1Support: roleSet.contains(.visualizerV1) ? VisualizerSupport(bufferCapacity: visualizerConfig?.bufferCapacity ?? 0) : nil
         )
     }
 }

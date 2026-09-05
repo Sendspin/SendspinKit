@@ -132,9 +132,25 @@ enum NoiseSessionEstablisher {
             throw HandshakeError.malformed
         }
 
-        guard let candidate = PskCandidate.select(
-            from: candidates, pskId: inner.pskId, serverId: serverId
-        ) else { throw HandshakeError.pskLookupMiss }
+        let candidate: PskCandidate
+        if let matched = PskCandidate.select(
+            from: candidates,
+            pskId: inner.pskId,
+            pskCategory: inner.pskCategory,
+            serverId: serverId
+        ) {
+            candidate = matched
+        } else if candidates.contains(where: {
+            $0.psk.pskId == inner.pskId && $0.category == inner.pskCategory
+        }) {
+            // A matching stored-pubkey record that names another server is a
+            // misbinding, not a lookup miss, and remains terminal.
+            throw HandshakeError.pskLookupMiss
+        } else {
+            // Sentinel fallback applies only to this initial establishment. The
+            // in-band re-handshake path selects candidates without this branch.
+            candidate = PskCandidate(psk: .sentinel, category: .sentinel)
+        }
 
         // Noise message 2, PSK mixed at the psk2 position; payload is the literal `{}`.
         let noiseMessage2: Data

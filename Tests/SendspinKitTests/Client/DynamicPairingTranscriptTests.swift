@@ -428,6 +428,20 @@ struct DynamicPairingTranscriptTests {
 
 @Suite("Dynamic pairing failure counter", .timeLimit(.minutes(1)))
 struct DynamicPairingFailureCounterTests {
+    @Test("one failure below the escalation threshold starts immediately")
+    func oneBelowEscalationThresholdStartsImmediately() async throws {
+        let store = InMemoryPairingRecordStore()
+        for _ in 0 ..< dynamicPairingFailureEscalationThreshold - 1 {
+            _ = await store.incrementDynamicPairingFailureCount()
+        }
+        let session = try await makeDynamicTestSession(store: store)
+        try await activateDynamic(session.server)
+        _ = try await waitForClientMessage(session.server, type: ClientPairInitMessage.typeString)
+        #expect(await session.server.clientJSONMessages(ofType: ClientPairPendingMessage.typeString).isEmpty)
+        try await session.client.cancelPairingAttempt()
+        await session.client.disconnect()
+    }
+
     @Test("counter increments only for server confirmation failures and resets after success")
     func counterSemantics() async throws {
         let store = InMemoryPairingRecordStore()
@@ -446,7 +460,7 @@ struct DynamicPairingFailureCounterTests {
         await success.client.disconnect()
 
         let escalatedStore = InMemoryPairingRecordStore()
-        for _ in 0 ..< 5 {
+        for _ in 0 ..< dynamicPairingFailureEscalationThreshold {
             _ = await escalatedStore.incrementDynamicPairingFailureCount()
         }
         let escalated = try await makeDynamicTestSession(store: escalatedStore)
@@ -465,7 +479,7 @@ struct PairingWindowTests {
     @Test("escalated dynamic attempt waits for one open window and does not time out while pending")
     func dynamicEscalation() async throws {
         let store = InMemoryPairingRecordStore()
-        for _ in 0 ..< 5 {
+        for _ in 0 ..< dynamicPairingFailureEscalationThreshold {
             _ = await store.incrementDynamicPairingFailureCount()
         }
         let session = try await makeDynamicTestSession(store: store, attemptTimeout: .milliseconds(100))

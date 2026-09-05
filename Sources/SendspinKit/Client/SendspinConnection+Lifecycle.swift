@@ -45,8 +45,16 @@ extension SendspinConnection {
             do {
                 guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
                 guard let type = plaintext.first else { throw NoiseError.malformedMessage }
+                let applicationArrival = MonotonicClock.absoluteMicroseconds()
                 if type == NoiseFrameType.json {
                     await route(text: String(bytes: plaintext.dropFirst(), encoding: .utf8) ?? "", clientReceived: clientReceived)
+                } else if type == BinaryMessageType.audioChunk.rawValue {
+                    guard let message = BinaryMessage(data: plaintext) else {
+                        disconnectReason = .incompatibleServer
+                        await transport.disconnect()
+                        return
+                    }
+                    await handleAudioChunk(message, arrival: applicationArrival)
                 } else {
                     await route(binary: plaintext)
                 }
@@ -104,7 +112,7 @@ extension SendspinConnection {
                 clientOperationalState = state
                 controlSink.enqueue(.operationalState(state))
                 // Send client/state on every operational state change
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
 
             case let .started(format):
                 controlSink.enqueue(.streamStarted(format))
@@ -112,7 +120,7 @@ extension SendspinConnection {
                     // Successful start: restore to synchronized after an earlier error.
                     clientOperationalState = .synchronized
                     controlSink.enqueue(.operationalState(.synchronized))
-                    try? await sendClientStateIfChanged()
+                    try? await publishClientState()
                 }
 
             case let .formatApplied(format):
@@ -124,7 +132,7 @@ extension SendspinConnection {
                 clientOperationalState = .error
                 controlSink.enqueue(.streamError(error))
                 controlSink.enqueue(.operationalState(.error))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
             }
         }
     }

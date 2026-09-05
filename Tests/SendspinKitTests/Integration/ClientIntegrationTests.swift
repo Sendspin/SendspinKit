@@ -364,6 +364,26 @@ private func metadataStateJSON(title: String) throws -> String {
 
 @MainActor
 struct ClientIntegrationTests {
+    @Test
+    func serverStateNullControllerClearsFacadeStateAndEmitsEvent() async throws {
+        let client = try makeTestClient()
+        let mock = try await connectClient(client)
+        try await mock.injectText(serverStateControllerJSON(ServerControllerState(
+            supportedCommands: [.volume], volume: 42, muted: false
+        )))
+        #expect(await waitUntil { await MainActor.run { client.currentControllerState?.volume == 42 } })
+        let eventTask = Task { await collectEvent(from: client) { event in
+            if case .controllerStateCleared = event {
+                return true
+            }
+            return false
+        } }
+        await mock.injectText(#"{"type":"server/state","payload":{"controller":null}}"#)
+        #expect(await waitUntil { await MainActor.run { client.currentControllerState == nil } })
+        #expect(await (eventTask.value) != nil, "controller null must emit controllerStateCleared")
+        await client.disconnect()
+    }
+
     // MARK: Rollback on external source failure
 
     @Test
@@ -1079,13 +1099,13 @@ struct ClientIntegrationTests {
         // Once activation is queued, application frames immediately behind it
         // must remain buffered until the promoted connection owns the inbox.
         try await mockB.sendActivation(activities: [.playback], activeRoles: [.playerV1])
+        try await accepted
+        try await establishClockSync(client, via: mockB)
         try await mockB.injectText(promotionStreamStartJSON())
         let chunkCount = 3
         for index in 0 ..< chunkCount {
             await mockB.injectBinary(promotionAudioChunkFrame(index: index))
         }
-        try await accepted
-
         let engine = try #require(client.connection?.audioEngineForTesting)
         #expect(
             await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) },
@@ -1355,14 +1375,14 @@ struct ClientIntegrationTests {
         }
         #expect(sawValues, "Controller repeat/shuffle must surface on the public state")
 
-        // A later delta that omits repeat/shuffle must preserve the prior values.
+        // A present controller object is a full snapshot; omitted fields clear.
         try await mock.injectText(serverStateControllerJSON(ServerControllerState(volume: 60)))
 
-        let preserved = await waitUntil {
+        let replaced = await waitUntil {
             let state = await MainActor.run { client.currentControllerState }
-            return state?.volume == 60 && state?.repeatMode == .all && state?.shuffle == true
+            return state?.volume == 60 && state?.repeatMode == nil && state?.shuffle == nil
         }
-        #expect(preserved, "Absent repeat/shuffle in a delta must keep previous values")
+        #expect(replaced, "A present controller object replaces omitted fields")
 
         await client.disconnect()
     }
@@ -1543,8 +1563,8 @@ struct ClientIntegrationTests {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
 
-        // Spec range is 0–5000; setOutputDelay clamps rather than trusting the server.
-        let maxDelayMs = 5_000
+        // Server-provided output delay clamps to the public configuration range.
+        let maxDelayMs = maxOutputDelayMs
         let eventTask = Task {
             await collectEvent(from: client) { event in
                 if case .outputDelayChanged = event {
@@ -1601,13 +1621,13 @@ struct ClientIntegrationTests {
             "seekMaxMs must be set on initial server/state"
         )
 
-        // Delta update: different seek range, volume absent (must be preserved).
+        // Present objects replace all fields; only seek_max_ms is optional.
         try await mock.injectText(serverStateControllerJSON(ServerControllerState(
             supportedCommands: [.seek],
-            volume: nil, // absent — delta only changes seek
-            muted: nil,
-            repeat: nil,
-            shuffle: nil,
+            volume: 60,
+            muted: false,
+            repeat: .off,
+            shuffle: false,
             seekMaxMs: 300_000
         )))
 
@@ -1616,8 +1636,8 @@ struct ClientIntegrationTests {
             "seekMaxMs must merge to the new value from the delta"
         )
         #expect(
-            await waitUntil { await MainActor.run { client.currentControllerState?.volume == 50 } },
-            "previously set fields must be preserved on a seekMaxMs-only delta"
+            await waitUntil { await MainActor.run { client.currentControllerState?.volume == 60 } },
+            "the complete controller snapshot must replace the prior volume"
         )
 
         await client.disconnect()
@@ -1641,10 +1661,9 @@ struct ClientIntegrationTests {
         // availability is availability-of-output, not engine health.
         #expect(client.clientOperationalState == .error)
         try await Task.sleep(for: .milliseconds(50))
-        #expect(
-            await clientStates(from: mock, after: countBefore).isEmpty,
-            "An engine error must not send client/state or change wire availability"
-        )
+        let errorState = await lastClientState(from: mock, after: countBefore)
+        #expect(errorState?.available == true, "An engine error must preserve wire availability")
+        #expect(errorState?.player != nil, "An engine error publication must remain a full player snapshot")
     }
 
     @Test
@@ -1663,10 +1682,9 @@ struct ClientIntegrationTests {
 
         #expect(client.clientOperationalState == .synchronized)
         try await Task.sleep(for: .milliseconds(50))
-        #expect(
-            await clientStates(from: mock, after: countBefore).isEmpty,
-            "Recovery changes the local operational state without touching wire availability"
-        )
+        let recoveredState = await lastClientState(from: mock, after: countBefore)
+        #expect(recoveredState?.available == true, "Recovery publication must preserve wire availability")
+        #expect(recoveredState?.player != nil, "Recovery publication must remain a full player snapshot")
     }
 
     @Test("client hello precedes application state until activation")
@@ -1684,6 +1702,31 @@ struct ClientIntegrationTests {
         try await mock.sendJSON(#"{"type":"server/activate","payload":{"activities":[],"active_roles":[]}}"#)
         try await accepted
         #expect(await waitUntil { await MainActor.run { client.connectionState == .connected } })
+        await client.disconnect()
+    }
+
+    @Test("credential mismatch admits Sentinel rules through activation")
+    func credentialMismatchUsesSentinelAdmissionContext() async throws {
+        let client = try makeTestClient(unpairedAccessEnabled: false)
+        let transport = MockTransport()
+        let unknownPsk = Psk.generate()
+        let mock = MockNoiseServer(transport: transport, psk: unknownPsk)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await mock.respondToHandshake(pskIdOverride: unknownPsk.pskId)
+        try await mock.sendJSON(#"{"type":"server/hello","payload":{"name":"Mismatch Server"}}"#)
+        _ = try await mock.nextClientJSON()
+        try await mock.sendJSON(#"{"type":"server/activate","payload":{"activities":["playback"],"active_roles":["player@v1"]}}"#)
+
+        do {
+            try await accepted
+            Issue.record("Sentinel playback without unpaired access must reject activation")
+        } catch is HandshakeDriverError {
+            // Sentinel admission rejects playback with pairing_required.
+        }
+        #expect(await waitUntil { await mock.disconnectCalled })
+        await mock.startReadback()
+        #expect(await waitUntil { await sentGoodbyeReasons(from: mock) == [.pairingRequired] })
+        #expect(await waitUntil { await MainActor.run { client.connectionState == .disconnected } })
         await client.disconnect()
     }
 

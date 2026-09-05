@@ -60,13 +60,15 @@ struct NextFrameTests {
             frame.append(BinaryMessageType.audioChunk.rawValue)
             var timestamp = Int64(1_000_000 + Int64(seq) * 25_000).bigEndian
             frame.append(Data(bytes: &timestamp, count: 8))
+            var sendAhead = UInt32(25_000).bigEndian
+            frame.append(Data(bytes: &sendAhead, count: 4))
             frame.append(seq)
             frame.append(Data(repeating: 0x7F, count: 399))
             return frame
         }
 
         let client = try await Task { @MainActor () -> SendspinClient in
-            return try SendspinClient(
+            try SendspinClient(
                 clientId: "test-client",
                 name: "Test Client",
                 roles: [.playerV1],
@@ -92,6 +94,7 @@ struct NextFrameTests {
             await Task { @MainActor in client.connectionState == .connected }.value
         }
         #expect(reachedConnected, "Client failed to reach .connected state")
+        try await establishClockSync(client, via: mock)
 
         let streamStartMessage = StreamStartMessage(
             payload: StreamStartPayload(
@@ -105,9 +108,11 @@ struct NextFrameTests {
         await mock.injectText(streamStartJSON)
 
         let collected = AtomicList<UInt8>()
+        let sendAheads = AtomicList<UInt32>()
         let audioChunks = await Task { @MainActor in client.audioChunks }.value
         let collector = Task {
             for await chunk in audioChunks {
+                sendAheads.append(chunk.sendAhead)
                 if let seq = chunk.data.first {
                     collected.append(seq)
                 }
@@ -141,6 +146,7 @@ struct NextFrameTests {
             outcome.sequences == chunkSequence,
             "Expected sequence \(String(describing: chunkSequence)), got \(String(describing: outcome.sequences))"
         )
+        #expect(sendAheads.all == Array(repeating: UInt32(25_000), count: chunkSequence.count))
     }
 
     // MARK: - Single-consumer contract
