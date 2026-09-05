@@ -2,8 +2,8 @@ import Foundation
 
 // MARK: - Server State
 
-/// Color state within server/state. Each color field distinguishes an absent
-/// key (preserve the previous value) from an explicit null (clear the value).
+/// Color state within server/state. Optional color fields distinguish an omitted
+/// key from an explicit null while decoding the complete role object.
 struct ServerColorState: Sendable, Equatable {
     let timestamp: Int64
     let backgroundDark: Nullable<SendspinColor>
@@ -96,20 +96,32 @@ struct ServerStateMessage: SendspinMessage, Equatable {
 }
 
 struct ServerStatePayload: Equatable {
-    /// Metadata state from server
+    /// Metadata state from server. Nil means the role object was omitted.
     let metadata: ServerMetadataState?
+    /// Distinguishes an omitted metadata role object from an explicit null clear.
+    let metadataRole: Nullable<ServerMetadataState>
     /// Controller state from server (group volume, mute, supported commands)
     let controller: ServerControllerState?
+    /// Distinguishes an omitted controller role object from an explicit null clear.
+    let controllerRole: Nullable<ServerControllerState>
     /// Color state delta from server. `.null` means the whole role state is cleared.
     let color: Nullable<ServerColorState>
 
     init(
         metadata: ServerMetadataState? = nil,
+        metadataDelta: Nullable<ServerMetadataState>? = nil,
         controller: ServerControllerState? = nil,
         color: ServerColorState? = nil,
         colorDelta: Nullable<ServerColorState>? = nil
     ) {
-        self.metadata = metadata
+        let role = metadataDelta ?? metadata.map(Nullable.value) ?? .absent
+        metadataRole = role
+        self.metadata = if case let .value(value) = role {
+            value
+        } else {
+            nil
+        }
+        controllerRole = controller.map(Nullable.value) ?? .absent
         self.controller = controller
         self.color = colorDelta ?? color.map(Nullable.value) ?? .absent
     }
@@ -118,8 +130,22 @@ struct ServerStatePayload: Equatable {
 extension ServerStatePayload: Decodable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        metadata = try container.decodeIfPresent(ServerMetadataState.self, forKey: .metadata)
-        controller = try container.decodeIfPresent(ServerControllerState.self, forKey: .controller)
+        metadataRole = container.contains(.metadata)
+            ? try container.decode(Nullable<ServerMetadataState>.self, forKey: .metadata)
+            : .absent
+        metadata = if case let .value(value) = metadataRole {
+            value
+        } else {
+            nil
+        }
+        controllerRole = container.contains(.controller)
+            ? try container.decode(Nullable<ServerControllerState>.self, forKey: .controller)
+            : .absent
+        controller = if case let .value(value) = controllerRole {
+            value
+        } else {
+            nil
+        }
         color = container.contains(.color)
             ? try container.decode(Nullable<ServerColorState>.self, forKey: .color)
             : .absent
@@ -129,8 +155,12 @@ extension ServerStatePayload: Decodable {
 extension ServerStatePayload: Encodable {
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(metadata, forKey: .metadata)
-        try container.encodeIfPresent(controller, forKey: .controller)
+        if !metadataRole.isAbsent {
+            try container.encode(metadataRole, forKey: .metadata)
+        }
+        if !controllerRole.isAbsent {
+            try container.encode(controllerRole, forKey: .controller)
+        }
         if !color.isAbsent {
             try container.encode(color, forKey: .color)
         }
@@ -158,8 +188,8 @@ struct ServerControllerState: Equatable {
     let `repeat`: RepeatMode?
     /// Group shuffle state
     let shuffle: Bool?
-    /// Delta value for the maximum absolute seek target in milliseconds.
-    /// Absent means preserve prior controller state; null means clear a prior bounded range.
+    /// Optional maximum absolute seek target in milliseconds. Omission or null means
+    /// the seekable range is unknown.
     let seekMaxMsDelta: Nullable<Int>
     /// Maximum absolute seek target in milliseconds when this delta carries a concrete value.
     var seekMaxMs: Int? {
@@ -227,7 +257,7 @@ extension ServerControllerState: Encodable {
     }
 }
 
-/// Distinguishes "field absent" from "field explicitly null" in JSON delta merges.
+/// Distinguishes "field absent" from "field explicitly null" while decoding JSON.
 ///
 /// Per spec: absent means "no change", null means "clear the value".
 ///

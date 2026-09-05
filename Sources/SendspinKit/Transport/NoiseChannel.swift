@@ -5,16 +5,21 @@ import Foundation
 enum NoiseFrameType {
     /// A JSON message body (UTF-8) — the encrypted form of every control message.
     static let json: UInt8 = 0
-    /// A fragment with more to follow. The first fragment of a message additionally
-    /// carries the original type byte after this one.
-    static let fragmentMore: UInt8 = 2
-    /// The final fragment of a fragmented message.
-    static let fragmentEnd: UInt8 = 3
+    /// A fragmentation envelope. Its flags and optional original type follow this byte.
+    static let fragment: UInt8 = 1
+}
+
+/// Flags carried in the type-1 fragmentation envelope.
+enum NoiseFragmentFlags {
+    static let none: UInt8 = 0
+    static let last: UInt8 = 1 << 0
+    static let first: UInt8 = 1 << 1
+    static let reservedMask: UInt8 = 0b1111_1100
 }
 
 /// The encrypted framing layer between the WebSocket and the message loop: every
 /// frame is a Noise ciphertext whose plaintext is `[type byte][payload]`, with
-/// fragment frames (types 2/3) splitting and reassembling anything over the
+/// type-1 envelopes splitting and reassembling anything over the
 /// single-message budget.
 ///
 /// Noncopyable because the cipher states carry AEAD nonce counters: two live copies
@@ -27,7 +32,7 @@ struct NoiseChannel: ~Copyable {
     /// This budget covers the type byte plus payload.
     static let maxPlaintext = maxNoiseMessage - NoiseCipherSuite.tagLength
     /// Max payload bytes after the type byte in a non-fragmented frame — the spec's
-    /// 65518. A first fragment spends one more byte on `orig_type`.
+    /// 65518. A first fragment spends one byte each on flags and `orig_type`.
     static let maxSinglePayload = maxPlaintext - 1
     /// Reassembly cap: an implementation-defined DoS guard (not spec), sized far
     /// above the largest legitimate message (full-resolution artwork).
@@ -61,7 +66,7 @@ struct NoiseChannel: ~Copyable {
     /// frame (spec Fragmentation). A partial send is terminal for the connection.
     mutating func encryptMessage(_ message: Data) throws -> [Data] {
         guard let firstByte = message.first else { throw NoiseError.malformedMessage }
-        guard firstByte != NoiseFrameType.fragmentMore, firstByte != NoiseFrameType.fragmentEnd else {
+        guard firstByte != NoiseFrameType.fragment else {
             // A fragment type can never be an orig_type; refusing at the sender
             // keeps a local bug from becoming a peer-visible protocol error.
             throw NoiseError.fragmentationViolation
@@ -74,24 +79,25 @@ struct NoiseChannel: ~Copyable {
         var frames: [Data] = []
         var remaining = message.dropFirst()
 
-        // Opening fragment-more frame: [2][orig_type][data].
-        let firstChunk = remaining.prefix(Self.maxPlaintext - 2)
-        var opening = Data([NoiseFrameType.fragmentMore, firstByte])
+        // First fragment: [1][first flag][orig_type][data].
+        let firstChunk = remaining.prefix(Self.maxPlaintext - 3)
+        var opening = Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, firstByte])
         opening.append(contentsOf: firstChunk)
         try frames.append(transport.send.encrypt(associatedData: Data(), plaintext: opening))
         remaining = remaining.dropFirst(firstChunk.count)
 
-        // Continuation fragment-more frames: [2][data].
-        while remaining.count > Self.maxSinglePayload {
-            let chunk = remaining.prefix(Self.maxSinglePayload)
-            var frame = Data([NoiseFrameType.fragmentMore])
+        // Continuation fragments: [1][flags][data]. Keep the final fragment
+        // separate so it carries the last flag.
+        while remaining.count > Self.maxPlaintext - 2 {
+            let chunk = remaining.prefix(Self.maxPlaintext - 2)
+            var frame = Data([NoiseFrameType.fragment, NoiseFragmentFlags.none])
             frame.append(contentsOf: chunk)
             try frames.append(transport.send.encrypt(associatedData: Data(), plaintext: frame))
             remaining = remaining.dropFirst(chunk.count)
         }
 
-        // Closing fragment-end frame: [3][data].
-        var closing = Data([NoiseFrameType.fragmentEnd])
+        // Final fragment: [1][last flag][data].
+        var closing = Data([NoiseFrameType.fragment, NoiseFragmentFlags.last])
         closing.append(contentsOf: remaining)
         try frames.append(transport.send.encrypt(associatedData: Data(), plaintext: closing))
         return frames
@@ -105,33 +111,43 @@ struct NoiseChannel: ~Copyable {
         guard let frameType = plaintext.first else { throw NoiseError.malformedMessage }
         let body = plaintext.dropFirst()
 
-        switch frameType {
-        case NoiseFrameType.fragmentMore:
-            if reassembly == nil {
-                // Opening frame carries orig_type before the data.
-                guard let origType = body.first else { throw NoiseError.malformedMessage }
-                guard origType != NoiseFrameType.fragmentMore,
-                      origType != NoiseFrameType.fragmentEnd
-                else { throw NoiseError.fragmentationViolation }
-                reassembly = (origType, Data(body.dropFirst()))
-            } else {
-                try appendToReassembly(body)
-            }
-            return nil
-
-        case NoiseFrameType.fragmentEnd:
-            guard reassembly != nil else { throw NoiseError.fragmentationViolation }
-            try appendToReassembly(body)
-            let completed = reassembly!
-            reassembly = nil
-            var message = Data([completed.origType])
-            message.append(completed.buffer)
-            return message
-
-        default:
+        guard frameType == NoiseFrameType.fragment else {
             guard reassembly == nil else { throw NoiseError.fragmentationViolation }
             return plaintext
         }
+
+        guard let flags = body.first, flags & NoiseFragmentFlags.reservedMask == 0 else {
+            throw NoiseError.fragmentationViolation
+        }
+        let isFirst = flags & NoiseFragmentFlags.first != 0
+        let isLast = flags & NoiseFragmentFlags.last != 0
+
+        if isFirst {
+            guard reassembly == nil else { throw NoiseError.fragmentationViolation }
+            guard let origType = body.dropFirst().first,
+                  origType != NoiseFrameType.fragment
+            else { throw NoiseError.fragmentationViolation }
+
+            reassembly = (origType, Data(body.dropFirst(2)))
+            if isLast {
+                let completed = reassembly!
+                reassembly = nil
+                var message = Data([completed.origType])
+                message.append(completed.buffer)
+                return message
+            }
+            return nil
+        }
+
+        guard reassembly != nil else { throw NoiseError.fragmentationViolation }
+        try appendToReassembly(body.dropFirst())
+        guard isLast else { return nil }
+
+        let completed = reassembly!
+        reassembly = nil
+        var message = Data([completed.origType])
+        message.append(completed.buffer)
+        return message
     }
 
     private mutating func appendToReassembly(_ data: Data.SubSequence) throws {

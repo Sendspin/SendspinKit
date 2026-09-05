@@ -17,23 +17,19 @@ struct ClientHelloMessage: SendspinMessage, Equatable {
 struct ClientHelloPayload: Codable, Equatable {
     let name: String
     let deviceInfo: DeviceInfo?
-    var trustLevel: TrustLevel
-    let supportedPairMethods: [PairMethodDescriptor]
+    let supportedPairMethods: [String: PairMethodDescriptor]
     let unpairedAccess: UnpairedAccessAdvertisement
     let supportedRoles: [VersionedRole]
     let playerV1Support: PlayerSupport?
-    let artworkV1Support: ArtworkSupport?
     let visualizerV1Support: VisualizerSupport?
 
     enum CodingKeys: String, CodingKey {
         case name
         case deviceInfo = "device_info"
-        case trustLevel = "trust_level"
         case supportedPairMethods = "supported_pair_methods"
         case unpairedAccess = "unpaired_access"
         case supportedRoles = "supported_roles"
         case playerV1Support = "player@v1_support"
-        case artworkV1Support = "artwork@v1_support"
         case visualizerV1Support = "visualizer@v1_support"
     }
 }
@@ -91,46 +87,32 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
 ///
 /// Used in `player@v1_support.supported_commands`, `client/state` player object's
 /// `supported_commands`, and `server/command` player object's `command` field.
-enum PlayerCommand: String, Codable, Hashable {
+public enum PlayerCommand: String, Codable, Hashable, Sendable {
     /// Set player volume (0-100)
     case volume
     /// Set player mute state
     case mute
     /// Set output delay in milliseconds (0-5000)
-    case setOutputDelay = "set_static_delay"
+    case setOutputDelay = "set_output_delay"
 }
 
 struct PlayerSupport: Codable, Equatable {
     let supportedFormats: [AudioFormatSpec]
     let bufferCapacity: Int
-    let supportedCommands: [PlayerCommand]
 
     enum CodingKeys: String, CodingKey {
         case supportedFormats = "supported_formats"
         case bufferCapacity = "buffer_capacity"
-        case supportedCommands = "supported_commands"
     }
 }
 
 // NOTE: The metadata role has no support object in the spec.
 // It's activated by listing "metadata@v1" in supported_roles.
 
-/// Artwork@v1 support object in client/hello per spec.
-/// Declares artwork channels the client can display.
-struct ArtworkSupport: Codable, Equatable {
-    /// Supported artwork channels (1-4), array index is the channel number
-    let channels: [ArtworkChannel]
-}
-
-/// Empty `supported.visualizer` block. The visualizer role is not yet
-/// implemented; this exists so a server payload advertising visualizer support
-/// decodes (and re-encodes) without error rather than failing the whole message.
+/// Visualizer role support advertised by client/hello.
 struct VisualizerSupport: Codable, Equatable {
-    init() {}
-
-    // Explicit Codable implementation for empty struct
-    init(from _: Decoder) throws {}
-    func encode(to _: Encoder) throws {}
+    let bufferCapacity: Int
+    enum CodingKeys: String, CodingKey { case bufferCapacity = "buffer_capacity" }
 }
 
 // MARK: - Server Messages

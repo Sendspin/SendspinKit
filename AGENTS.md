@@ -18,12 +18,12 @@ them and drift ships green; CI enforces this in the `Examples` job. Some example
 exhaustively over `ClientEvent` on purpose — add the missing case, not a `default:`.
 
 ## Project Structure
-- `Sources/SendspinKit/Client/` — facade, connection actor, message handling. See its AGENTS.md.
+- `Sources/SendspinKit/Client/` — MainActor facade, connection actor, handshake, message handling, and state-preference APIs. See its AGENTS.md.
 - `Sources/CElligator/` — vendored libsodium field operations and RFC 9380 Elligator2 composition used by CPace. Keep this target verbatim to its recorded upstream provenance; it contains no authored field arithmetic.
-- `Sources/SendspinKit/Audio/` — `AudioEngine` actor, data-plane channel, scheduler, decoders.
-- `Sources/SendspinKit/Transport/` — `SendspinTransport` pull interface (`nextFrame`, `sendRawText`, `sendBinary`, `disconnect`) + `NWWebSocketTransport`.
-- `Sources/SendspinKit/Synchronization/` — Kalman clock sync (`ClockSyncProtocol`).
-- `Sources/SendspinKit/{Models,Discovery}/` — wire types; mDNS/Bonjour discovery.
+- `Sources/SendspinKit/Audio/` — `AudioEngine` actor, data-plane channel, scheduler, decoders, and measured buffer-depth reporting.
+- `Sources/SendspinKit/Transport/` — `SendspinTransport` pull interface (`nextFrame`, `sendRawText`, `sendBinary`, `disconnect`) + `NWWebSocketTransport`; Noise framing lives here.
+- `Sources/SendspinKit/Synchronization/` — Kalman clock sync (`ClockSyncProtocol`) and scheduled-update time estimates.
+- `Sources/SendspinKit/{Models,Discovery}/` — wire types, role state models, pairing descriptors, and mDNS/Bonjour discovery.
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.
 
 ## Conventions

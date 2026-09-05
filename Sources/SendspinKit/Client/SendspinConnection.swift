@@ -64,6 +64,8 @@ actor SendspinConnection {
     let outputSettleInterval: Duration
     let outputRequestTimeout: Duration
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
+    let scheduleNow: @Sendable () -> Int64
+    let scheduleSleep: @Sendable (Duration) async throws -> Void
 
     /// Clock-sync sender task. Starts when the message loop begins after handoff
     /// and is cancelled on teardown.
@@ -76,6 +78,15 @@ actor SendspinConnection {
     var playerStreamActive = false
     var artworkStreamActive = false
     var visualizerStreamActive = false
+    var artworkStateSent = false
+    var artworkStreamChannels: [StreamArtworkChannelConfig] = []
+    var artworkTransfer: ArtworkTransfer?
+    var artworkPending: [Int: ScheduledArtwork] = [:]
+    var artworkScheduleTasks: [Int: Task<Void, Never>] = [:]
+    var metadataPending: ScheduledMetadata?
+    var metadataScheduleTask: Task<Void, Never>?
+    var colorPending: ScheduledColor?
+    var colorScheduleTask: Task<Void, Never>?
     var isClockSynced = false
     var announcedPlayerStream: (format: AudioFormatSpec, codecHeader: Data?)?
     /// Written from several places (this method, the engine report drain, stream-start
@@ -87,8 +98,7 @@ actor SendspinConnection {
 
     private(set) var operationalStateEpoch = 0
 
-    /// Client state tracking for delta computation
-    var lastSentClientState: SentClientState?
+    /// State publication is serialized by the actor; every publication is a full snapshot.
     var clientStateSendInFlight = false
     var clientStateDirty = false
 
@@ -128,7 +138,10 @@ actor SendspinConnection {
         let sid: Data
         let nonceB: Data
         let commitB: Data
+        let digitAudioDescriptor: DigitAudioDescriptor?
+        var digitAudioValidator: DigitAudioPackValidator?
         var nonceA: Data?
+        var pairInitSent: Bool
         var serverShare: Data?
         var cpace: CPace?
         var secrets: CPaceSecrets?
@@ -152,28 +165,35 @@ actor SendspinConnection {
     var pairingWindowTask: Task<Void, Never>?
     let pairingWindowLifetime: Duration
 
-    /// Last metadata state, retained so partial server/state deltas merge
-    /// rather than clobber absent fields (e.g. a title-only delta keeps album/artist).
+    /// Last metadata state applied from the current complete server/state role object.
     var currentMetadata: TrackMetadata?
 
-    /// Last controller state, retained so partial server/state deltas merge
-    /// rather than clobber absent fields (e.g. a volume-only delta keeps repeat/shuffle).
+    /// Last controller state applied from the current complete server/state role object.
     var currentControllerState: ControllerState?
 
-    /// Last color state, retained so partial server/state color deltas merge
-    /// rather than clobber absent fields.
+    /// Last color state applied from the current complete server/state role object.
     var currentColorState: ColorState?
 
-    /// Last group state, retained so partial group/update deltas merge rather
-    /// than clobber absent fields (e.g. a playback-only delta keeps group id/name).
+    /// Last group state, retained so partial group/update messages merge rather
+    /// than clobber absent fields (e.g. a playback-only update keeps group id/name).
     var currentGroup: GroupInfo?
 
     // Player state for reporting
     var currentVolume: Int = 100
     var currentMuted: Bool = false
     var currentOutputDelayMs: Int = 0
+    var preferredPlayerFormat: AudioFormatSpec?
+    var artworkState: ArtworkStateObject?
+    var visualizerState: VisualizerStateObject?
+    var playerStateSent = false
+    var visualizerStateSent = false
     let requiredLeadTimeMs: Int
     let minBufferMs: Int
+    var derivedMinBufferMs: Int
+    var arrivalDelaySamples: [Int64] = []
+    var lastPublishedMinBufferMs: Int
+    /// Consecutive observations required before publishing a changed estimate.
+    var minBufferPersistenceCount = 0
 
     // Config info needed for client state assembly
     let playerRoleActive: Bool
@@ -182,7 +202,7 @@ actor SendspinConnection {
     // MARK: - Initialization
 
     /// Advertised player commands (gate in handleServerCommand)
-    let advertisedCommands: Set<PlayerCommand>
+    var advertisedCommands: Set<PlayerCommand>
 
     /// Create a connection with the given transport and engine.
     ///
@@ -228,6 +248,10 @@ actor SendspinConnection {
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
+        scheduleNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
+        scheduleSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
+            try await Task.sleep(for: duration)
+        },
         audioSink: AsyncStream<AudioChunk>.Continuation = AsyncStream<AudioChunk>.makeStream().1,
         artworkSink: AsyncStream<ArtworkData>.Continuation = AsyncStream<ArtworkData>.makeStream().1,
         visualizerSink: AsyncStream<VisualizerData>.Continuation = AsyncStream<VisualizerData>.makeStream().1,
@@ -237,8 +261,11 @@ actor SendspinConnection {
         advertisedCommands: Set<PlayerCommand> = [.setOutputDelay],
         roles: Set<VersionedRole> = [],
         initialOutputDelayMs: Int = 0,
+        initialPreferredPlayerFormat: AudioFormatSpec? = nil,
         initialVolume: Int = 100,
         initialMuted: Bool = false,
+        initialArtworkState: ArtworkStateObject? = nil,
+        initialVisualizerState: VisualizerStateObject? = nil,
         requiredLeadTimeMs: Int = defaultRequiredLeadTimeMs,
         minBufferMs: Int = defaultMinBufferMs,
         clock: any ClockSyncProtocol = ClockSynchronizer(),
@@ -285,6 +312,8 @@ actor SendspinConnection {
         self.outputSettleInterval = outputSettleInterval
         self.outputRequestTimeout = outputRequestTimeout
         self.outputNegotiationSleep = outputNegotiationSleep
+        self.scheduleNow = scheduleNow
+        self.scheduleSleep = scheduleSleep
         self.audioSink = audioSink
         self.artworkSink = artworkSink
         self.visualizerSink = visualizerSink
@@ -292,6 +321,9 @@ actor SendspinConnection {
         self.artworkObserver = artworkObserver
         self.validity = validity
         self.advertisedCommands = advertisedCommands
+        preferredPlayerFormat = initialPreferredPlayerFormat
+        artworkState = initialArtworkState
+        visualizerState = initialVisualizerState
         playerRoleActive = roles.contains(.playerV1)
         self.roles = roles
         currentOutputDelayMs = initialOutputDelayMs
@@ -299,6 +331,8 @@ actor SendspinConnection {
         currentMuted = initialMuted
         self.requiredLeadTimeMs = requiredLeadTimeMs
         self.minBufferMs = minBufferMs
+        derivedMinBufferMs = minBufferMs
+        lastPublishedMinBufferMs = minBufferMs
         self.clock = clock
         audioEngine = engine
     }
@@ -318,7 +352,21 @@ actor SendspinConnection {
 
     /// Send client state to the server (internal, called by facade).
     func sendClientState() async throws {
-        try await sendClientStateIfChanged()
+        try await publishClientState()
+    }
+
+    /// Update the live player command capability set and publish a complete state snapshot.
+    func updateAdvertisedCommands(_ commands: Set<PlayerCommand>) async throws {
+        advertisedCommands = commands
+        try await publishClientState()
+    }
+
+    /// Update the preferred player format and publish it in client/state.
+    func setPreferredPlayerFormat(_ format: AudioFormatSpec?) async throws {
+        if let format, effectivePlayerFormats?.contains(format) != true {
+            throw OutputFormatError.noMatchingFormat
+        }
+        try await applyPlayerFormatPreference(format)
     }
 
     func requireActiveRole(_ role: VersionedRole) throws {
@@ -333,21 +381,21 @@ actor SendspinConnection {
     func setVolume(_ volume: Int) async throws {
         currentVolume = volume
         await audioEngine.setGain(Float(volume) / 100.0)
-        try await sendClientStateIfChanged()
+        try await publishClientState()
     }
 
     /// Apply an optimistic local mute change to the engine, then report it to the server.
     func setMuted(_ muted: Bool) async throws {
         currentMuted = muted
         await audioEngine.setMuted(muted)
-        try await sendClientStateIfChanged()
+        try await publishClientState()
     }
 
-    /// Enqueue an optimistic static-delay change in engine order, then report it to the server.
+    /// Enqueue an optimistic output-delay change in engine order, then report it to the server.
     func setOutputDelay(_ delayMs: Int) async throws {
         currentOutputDelayMs = delayMs
         audioEngine.commands.enqueue(.setOutputDelay(delayMs))
-        try await sendClientStateIfChanged()
+        try await publishClientState()
     }
 
     /// Tell the engine whether playback is suppressed by an external source.
@@ -383,10 +431,10 @@ actor SendspinConnection {
         clientOperationalState = newState
         // No forced resend: only wire-visible changes flow. An engine error has no
         // wire representation; an external-source flip reaches the server because
-        // `available` changes in the delta.
+        // `available` changes in the full state snapshot.
         let stamp = operationalStateEpoch
         do {
-            try await sendClientStateIfChanged()
+            try await publishClientState()
         } catch {
             // Roll back only if no other writer touched the state during the send. A value
             // comparison is not enough: the engine drain can independently set the same
@@ -406,11 +454,6 @@ actor SendspinConnection {
         if case .longTerm = pskCategory, let pairingStore {
             let pskId = matchedPskId
             Task { await pairingStore.markUsed(pskId: pskId) }
-        }
-        if lastSentClientState == nil, !playerRoleActive {
-            Task { [weak self] in
-                try? await self?.sendClientStateIfChanged()
-            }
         }
         supervisorSpawnCount += 1
 

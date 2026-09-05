@@ -50,50 +50,71 @@ extension SendspinConnection {
         }
     }
 
-    func sendClientStateIfChanged(bypassRehandshakeGate: Bool = false) async throws {
+    func publishClientState(bypassRehandshakeGate: Bool = false) async throws {
         guard lifecycle == .running, bypassRehandshakeGate || !rehandshakeInProgress else {
             throw SendspinClientError.handshakeIncomplete
         }
         clientStateDirty = true
-        // A caller that arrives while another state send is in flight must wait
-        // for that cycle to finish; returning here would report success without
-        // sending the caller's changed state.
         while clientStateSendInFlight {
             try await Task.sleep(for: .milliseconds(1))
         }
-
         clientStateSendInFlight = true
         defer { clientStateSendInFlight = false }
-
         while clientStateDirty {
             clientStateDirty = false
-            let current = currentClientStateSnapshot()
-            guard let payload = try Self.clientStateDelta(from: lastSentClientState, to: current) else {
-                lastSentClientState = current
-                continue
-            }
-
+            let payload = currentClientStatePayload()
             try await sendWrapped(ClientStateMessage(payload: payload))
-            lastSentClientState = current
+            if payload.player != nil {
+                playerStateSent = true
+            }
+            if payload.visualizer != nil {
+                visualizerStateSent = true
+            }
+            if payload.artwork != nil {
+                artworkStateSent = true
+            }
         }
     }
 
-    func currentClientStateSnapshot() -> SentClientState {
-        let player = activeRoles.contains(.playerV1)
-            ? SentPlayerState(
-                volume: currentVolume,
-                muted: currentMuted,
-                outputDelayMs: currentOutputDelayMs,
-                supportedCommands: advertisedCommands
-                    .intersection(PlayerStateObject.validStateCommands)
-                    .sorted(by: { $0.rawValue < $1.rawValue }),
-                requiredLeadTimeMs: requiredLeadTimeMs,
-                minBufferMs: minBufferMs
-            )
-            : nil
-        return SentClientState(
+    func currentClientStatePayload() -> ClientStatePayload {
+        let commands = advertisedCommands
+            .intersection(PlayerStateObject.validStateCommands)
+            .sorted { $0.rawValue < $1.rawValue }
+        var player: PlayerStateObject?
+        if activeRoles.contains(.playerV1) {
+            do {
+                player = try PlayerStateObject(
+                    volume: currentVolume,
+                    muted: currentMuted,
+                    outputDelayMs: currentOutputDelayMs,
+                    supportedCommands: commands,
+                    requiredLeadTimeMs: requiredLeadTimeMs,
+                    minBufferMs: max(minBufferMs, derivedMinBufferMs),
+                    format: preferredPlayerFormat
+                )
+            } catch {
+                preconditionFailure("Validated player state cannot be published: \(error)")
+            }
+        }
+        var artwork: ArtworkStateObject?
+        if activeRoles.contains(.artworkV1) {
+            guard let artworkState else {
+                preconditionFailure("An active artwork role must have configured state")
+            }
+            artwork = artworkState
+        }
+        var visualizer: VisualizerStateObject?
+        if activeRoles.contains(.visualizerV1) {
+            guard let visualizerState else {
+                preconditionFailure("An active visualizer role must have configured state")
+            }
+            visualizer = visualizerState
+        }
+        return ClientStatePayload(
             available: isClockSynced && clientOperationalState != .externalSource,
-            player: player
+            player: player,
+            artwork: artwork,
+            visualizer: visualizer
         )
     }
 }

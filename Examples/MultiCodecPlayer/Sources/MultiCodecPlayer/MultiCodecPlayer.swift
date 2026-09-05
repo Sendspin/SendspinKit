@@ -147,7 +147,7 @@ struct MultiCodecPlayer: AsyncParsableCommand {
                 printFormatInfo(label: "stream started", format: format, preferred: formats)
 
             case let .streamFormatChanged(format):
-                // Mid-stream format switch — e.g. after requestPlayerFormat()
+                // Mid-stream format switch — e.g. after setPlayerFormatPreference()
                 printFormatInfo(label: "format changed", format: format, preferred: formats)
 
             case let .streamEnded(roles):
@@ -167,7 +167,7 @@ struct MultiCodecPlayer: AsyncParsableCommand {
                 return
 
             case .paired, .pairingCodeChanged, .pairingAttemptEnded, .audioOutputChanged, .outputFormatStatusChanged, .streamingFailed,
-                 .streamCleared, .controllerStateUpdated, .colorStateUpdated, .colorStateCleared,
+                 .streamCleared, .controllerStateUpdated, .controllerStateCleared, .colorStateUpdated, .colorStateCleared,
                  .artworkStreamStarted, .outputDelayChanged, .lastPlayedServerChanged:
                 break
             }

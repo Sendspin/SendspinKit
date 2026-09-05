@@ -39,16 +39,21 @@ public enum ConfigurationError: SendspinError, Hashable {
     case artworkDimensionNotPositive(field: String, value: Int)
     /// Disabled artwork channels (source == `.none`) require non-negative dimensions.
     case artworkDimensionNegative(field: String, value: Int)
-    /// Artwork channel index must be 0–3.
+    /// Artwork channel index must refer to a configured channel.
     case artworkChannelOutOfRange(Int)
+    /// Artwork role state is unavailable for a configured active role.
+    case artworkStateUnavailable
 
     // MARK: - PlayerStateObject
 
     /// Volume must be between 0 and 100.
     case volumeOutOfRange(Int)
-    /// `client/state` supported_commands may only contain `set_output_delay`.
-    /// Carries the offending wire command strings.
-    case invalidStateCommands([String])
+    /// A required field is missing from a full role state object.
+    case missingRequiredStateField(String)
+    /// Artwork state channel fields are inconsistent with its source.
+    case invalidArtworkStateChannel
+    /// Spectrum configuration is required when spectrum is requested.
+    case missingSpectrumConfiguration
 
     // MARK: - ClientAdvertiser
 
@@ -61,6 +66,8 @@ public enum ConfigurationError: SendspinError, Hashable {
     case playerRoleRequiresConfiguration
     /// Artwork role was requested but no ``ArtworkConfiguration`` was provided.
     case artworkRoleRequiresConfiguration
+    /// Visualizer role was requested but no ``VisualizerStateObject`` was provided.
+    case visualizerRoleRequiresConfiguration
 }
 
 extension ConfigurationError: LocalizedError {
@@ -92,16 +99,24 @@ extension ConfigurationError: LocalizedError {
             "\(field) must be non-negative, got \(value)"
         case let .artworkChannelOutOfRange(v):
             "Artwork channel must be 0–3, got \(v)"
+        case .artworkStateUnavailable:
+            "Artwork state is unavailable for the active role"
         case let .volumeOutOfRange(v):
             "Volume must be 0–100, got \(v)"
-        case let .invalidStateCommands(v):
-            "client/state supported_commands may only contain set_output_delay, got \(v)"
+        case let .missingRequiredStateField(v):
+            "Missing required client/state field: \(v)"
+        case .invalidArtworkStateChannel:
+            "Artwork state channel fields do not match its source"
+        case .missingSpectrumConfiguration:
+            "Visualizer spectrum configuration is required when spectrum is requested"
         case let .invalidWebSocketPath(v):
             "WebSocket path must be absolute (begin with \"/\"), got \"\(v)\""
         case .playerRoleRequiresConfiguration:
             "Player role requires a PlayerConfiguration"
         case .artworkRoleRequiresConfiguration:
             "Artwork role requires an ArtworkConfiguration"
+        case .visualizerRoleRequiresConfiguration:
+            "Visualizer role requires a VisualizerStateObject"
         }
     }
 }

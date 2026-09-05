@@ -67,10 +67,15 @@ struct RehandshakeTests {
     private func rehandshake(
         _ server: MockNoiseServer,
         to psk: Psk,
+        pskCategory: PskCategory? = nil,
         mintStaleFrame: Bool = false
     ) async throws {
         let helloCountBefore = await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
-        try await server.beginRehandshake(to: psk, mintStaleFrame: mintStaleFrame)
+        try await server.beginRehandshake(
+            to: psk,
+            pskCategoryOverride: pskCategory,
+            mintStaleFrame: mintStaleFrame
+        )
         #expect(await waitUntil { await server.rehandshakeComplete })
         try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
         #expect(await waitUntil {
@@ -81,14 +86,8 @@ struct RehandshakeTests {
     private func supportedPairMethods(inHello hello: Data) throws -> [String] {
         let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
         let payload = try #require(object["payload"] as? [String: Any])
-        let methods = try #require(payload["supported_pair_methods"] as? [[String: Any]])
-        return try methods.map { try #require($0["method"] as? String) }
-    }
-
-    private func trustLevel(inHello hello: Data) throws -> String {
-        let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
-        let payload = try #require(object["payload"] as? [String: Any])
-        return try #require(payload["trust_level"] as? String)
+        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
+        return methods.keys.sorted()
     }
 
     @Test("Re-handshake omits a pairing method disabled at runtime")
@@ -159,10 +158,8 @@ struct RehandshakeTests {
         let record = try #require(await session.store.listRecords().first { $0.serverId == serverId })
         #expect(record.psk == longTermPsk)
 
-        // Promotion to the delivered long-term PSK; the fresh hello asserts user trust.
-        try await rehandshake(server, to: longTermPsk)
-        let hellos = await server.clientJSONMessages(ofType: ClientHelloMessage.typeString)
-        #expect(try trustLevel(inHello: #require(hellos.last)) == TrustLevel.user.rawValue)
+        // Promotion to the delivered long-term PSK marks the record as used.
+        try await rehandshake(server, to: longTermPsk, pskCategory: .longTerm)
         #expect(await session.store.listRecords().first { $0.serverId == serverId }?.used == true)
 
         let timeCountBeforeActivate = await server.clientJSONMessages(ofType: ClientTimeMessage.typeString).count
@@ -195,6 +192,24 @@ struct RehandshakeTests {
         #expect(
             await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } },
             "a frame under retired keys must fail AEAD and end the session"
+        )
+    }
+
+    @Test("A wrong-category PSK reference on re-handshake closes silently")
+    func wrongCategoryLookupMissClosesSilently() async throws {
+        let session = try await makePairableSession()
+        let server = session.server
+        let goodbyesBefore = await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).count
+
+        try await server.beginRehandshake(
+            to: session.pairingPsk,
+            pskCategoryOverride: .longTerm
+        )
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await !server.rehandshakeComplete)
+        #expect(
+            await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).count == goodbyesBefore,
+            "handshake-phase failures close without an application-level message"
         )
     }
 
@@ -267,10 +282,10 @@ struct RehandshakeTests {
         let server = session.server
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
 
-        try await rehandshake(server, to: longTermPsk)
+        try await rehandshake(server, to: longTermPsk, pskCategory: .longTerm)
         // Between the swap and the post-swap activate, application sends are rejected.
         await #expect(throws: SendspinClientError.self) {
-            try await session.client.requestPlayerFormat(format)
+            try await session.client.setPlayerFormatPreference(format)
         }
 
         let timeCountBeforeActivate = await server.clientJSONMessages(ofType: ClientTimeMessage.typeString).count
@@ -278,9 +293,11 @@ struct RehandshakeTests {
         #expect(await waitUntil {
             await server.clientJSONMessages(ofType: ClientTimeMessage.typeString).count > timeCountBeforeActivate
         })
-        try await session.client.requestPlayerFormat(format)
+        try await session.client.setPlayerFormatPreference(format)
         #expect(await waitUntil {
-            await server.clientJSONMessages(ofType: StreamRequestFormatMessage.typeString).count == 1
+            await server.clientJSONMessages(ofType: ClientStateMessage.typeString).contains { data in
+                (try? JSONDecoder().decode(ClientStateMessage.self, from: data))?.payload.player?.format == format
+            }
         })
         await session.client.disconnect()
     }
@@ -291,7 +308,7 @@ struct RehandshakeTests {
         let session = try await makePairableSession(seededLongTermPsk: longTermPsk)
         let server = session.server
 
-        try await rehandshake(server, to: longTermPsk)
+        try await rehandshake(server, to: longTermPsk, pskCategory: .longTerm)
         // Give any stray sender time to violate the gate before asserting silence.
         try await Task.sleep(for: .milliseconds(60))
 

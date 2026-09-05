@@ -604,7 +604,10 @@ struct AudioFormatSpecTests {
             initialSnapshot: initial,
             platformMonitor: monitor,
             queueSettleInterval: .milliseconds(30),
-            queueMaximumSuppression: .milliseconds(120)
+            // Generous bound: suppression expiry under suite load would publish the
+            // transient snapshot this test asserts away. The expiry behavior itself is
+            // pinned by audioQueueSuppressionIsBoundedWhenStartNeverCompletes.
+            queueMaximumSuppression: .seconds(5)
         )
         let stream = await service.startMonitoring()
         await monitor.waitForStartCount(1)

@@ -35,24 +35,6 @@ extension SendspinConnection {
             case "server/unpair":
                 try await handleServerUnpair(decoder.decode(ServerUnpairMessage.self, from: data))
 
-            case ManagementListRecordsMessage.typeString:
-                try await handleManagementListRecords(decoder.decode(ManagementListRecordsMessage.self, from: data))
-
-            case ManagementAddRecordMessage.typeString:
-                try await handleManagementAddRecord(decoder.decode(ManagementAddRecordMessage.self, from: data))
-
-            case ManagementRemoveRecordMessage.typeString:
-                try await handleManagementRemoveRecord(decoder.decode(ManagementRemoveRecordMessage.self, from: data))
-
-            case ManagementGetPairingConfigMessage.typeString:
-                try await handleManagementGetPairingConfig(decoder.decode(ManagementGetPairingConfigMessage.self, from: data))
-
-            case ManagementSetPairingConfigMessage.typeString:
-                try await handleManagementSetPairingConfig(decoder.decode(ManagementSetPairingConfigMessage.self, from: data))
-
-            case ManagementOpenPairingWindowMessage.typeString:
-                try await handleManagementOpenPairingWindow(decoder.decode(ManagementOpenPairingWindowMessage.self, from: data))
-
             case "server/pair-init":
                 try await handleServerPairInit(decoder.decode(ServerPairInitMessage.self, from: data))
 
@@ -97,11 +79,7 @@ extension SendspinConnection {
                 try await handleGroupUpdate(decoder.decode(GroupUpdateMessage.self, from: data))
 
             default:
-                if msgType.hasPrefix("management/") {
-                    await handleMalformedManagementRequest()
-                } else {
-                    Log.client.warning("Unknown message type: \(msgType)")
-                }
+                Log.client.warning("Unknown message type: \(msgType)")
             }
         } catch {
             Log.client.error("Failed to decode '\(msgType)': \(error.localizedDescription)")
@@ -119,28 +97,48 @@ extension SendspinConnection {
                 || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
-            } else if msgType.hasPrefix("management/") {
-                // A malformed management request still owes the server its single
-                // ordered reply: permission_denied outside a management session,
-                // otherwise invalid.
-                await handleMalformedManagementRequest()
             }
         }
     }
 
     /// Route a binary frame to the matching role data stream if its stream gate is open.
     func route(binary data: Data) async {
-        guard let message = BinaryMessage(data: data) else { return }
+        if let type = data.first,
+           type >= BinaryMessageType.artworkChannel0.rawValue,
+           type <= BinaryMessageType.artworkChannel3.rawValue {
+            do {
+                try await handleArtworkBinary(data)
+            } catch {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+            }
+            return
+        }
+        guard let message = BinaryMessage(data: data) else {
+            if data.first == BinaryMessageType.digitAudioClip.rawValue {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+            }
+            return
+        }
 
         switch message.type {
         case .audioChunk:
             await handleAudioChunk(message)
 
-        case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
-            await handleArtworkBinary(message)
+        case .digitAudioClip:
+            do {
+                try handleDigitAudioClip(message)
+            } catch {
+                disconnectReason = .incompatibleServer
+                await transport.disconnect()
+            }
 
         case .visualizerData:
             await handleVisualizerBinary(message)
+
+        default:
+            preconditionFailure("Artwork messages are routed by the range pre-check")
         }
     }
 
@@ -164,6 +162,7 @@ extension SendspinConnection {
             guard let candidate = PskCandidate.select(
                 from: candidates,
                 pskId: inner.pskId,
+                pskCategory: inner.pskCategory,
                 serverId: currentServerId ?? ""
             ) else { throw HandshakeError.pskLookupMiss }
             let message2 = try handshake.writeMessage2(psk: candidate.psk, payload: noiseMessage2Payload)
@@ -186,7 +185,8 @@ extension SendspinConnection {
                 offeredPairMethods: advertisement.offeredPairMethods
             )
             activeRoles = []
-            lastSentClientState = nil
+            playerStateSent = false
+            visualizerStateSent = false
             clearPairingAttempt()
             pairingActivateCounter = 0
             awaitingRehandshakeActivation = true
@@ -205,7 +205,7 @@ extension SendspinConnection {
     }
 
     func livePairingAdvertisement() async -> (
-        supportedPairMethods: [PairMethodDescriptor],
+        supportedPairMethods: [String: PairMethodDescriptor],
         unpairedAccessEnabled: Bool,
         offeredPairMethods: Set<String>
     ) {
@@ -213,28 +213,26 @@ extension SendspinConnection {
             return (
                 clientHelloPayload.supportedPairMethods,
                 clientHelloPayload.unpairedAccess.enabled,
-                Set(clientHelloPayload.supportedPairMethods.map(\.method))
+                Set(clientHelloPayload.supportedPairMethods.keys)
             )
         }
         let configuration = await runtime.snapshot()
-        var methods: [PairMethodDescriptor] = []
+        var methods: [String: PairMethodDescriptor] = [:]
         if configuration.pairingPskEnabled {
-            methods.append(PairMethodDescriptor(method: PairMethod.pairingPsk, locations: ["operator"]))
+            methods[PairMethod.pairingPsk] = PairMethodDescriptor(locations: ["operator"])
         }
         if configuration.dynamicPairingCodeEnabled {
-            methods.append(PairMethodDescriptor(
-                method: PairMethod.dynamicPairingCode,
-                outChannels: ["display"],
-                formats: ["digits", "qr_code"]
-            ))
+            let speaker = configuration.digitAudio != nil
+            methods[PairMethod.dynamicPairingCode] = PairMethodDescriptor(
+                outChannels: speaker ? ["display", "speaker"] : ["display"],
+                formats: ["digits", "qr_code"],
+                digitAudio: configuration.digitAudio
+            )
         }
         if configuration.staticPairingCodeIsAdvertised {
-            methods.append(PairMethodDescriptor(
-                method: PairMethod.staticPairingCode,
-                locations: ["operator"]
-            ))
+            methods[PairMethod.staticPairingCode] = PairMethodDescriptor(locations: ["operator"])
         }
-        return (methods, configuration.unpairedAccessEnabled, Set(methods.map(\.method)))
+        return (methods, configuration.unpairedAccessEnabled, Set(methods.keys))
     }
 
     func handleServerHello(_ message: ServerHelloMessage) async {
@@ -244,12 +242,10 @@ extension SendspinConnection {
         let hello = ClientHelloPayload(
             name: clientHelloPayload.name,
             deviceInfo: clientHelloPayload.deviceInfo,
-            trustLevel: pskCategory == .longTerm ? .user : .none,
             supportedPairMethods: advertisement.supportedPairMethods,
             unpairedAccess: UnpairedAccessAdvertisement(enabled: advertisement.unpairedAccessEnabled),
             supportedRoles: clientHelloPayload.supportedRoles,
             playerV1Support: clientHelloPayload.playerV1Support,
-            artworkV1Support: clientHelloPayload.artworkV1Support,
             visualizerV1Support: clientHelloPayload.visualizerV1Support
         )
         do {
@@ -264,7 +260,8 @@ extension SendspinConnection {
         sessionContext = ActivationAdmissibility.SessionContext(
             category: sessionContext.category,
             unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
-            offeredPairMethods: advertisement.offeredPairMethods
+            offeredPairMethods: advertisement.offeredPairMethods,
+            offeredDynamicFormats: Set(advertisement.supportedPairMethods[PairMethod.dynamicPairingCode]?.formats ?? [])
         )
         let nextActivities = Set(message.payload.activities)
         if nextActivities == [.pairing] {
@@ -292,16 +289,18 @@ extension SendspinConnection {
             let completedRehandshake = awaitingRehandshakeActivation
             if completedRehandshake {
                 awaitingRehandshakeActivation = false
-                lastSentClientState = nil
             }
             // Full state goes out when a role becomes active (spec client/state);
             // an activate that changes nothing sends nothing.
             let rolesChanged = nextRoles != activeRoles
             activeRoles = nextRoles
-            if rolesChanged {
-                lastSentClientState = nil
+            if rolesChanged || completedRehandshake {
+                playerStateSent = false
+                visualizerStateSent = false
+                artworkStateSent = false
+                artworkTransfer = nil
             }
-            try? await sendClientStateIfChanged(bypassRehandshakeGate: completedRehandshake)
+            try? await publishClientState(bypassRehandshakeGate: completedRehandshake)
             if completedRehandshake {
                 rehandshakeInProgress = false
             }
@@ -387,7 +386,7 @@ extension SendspinConnection {
     }
 
     func beginDynamicPairingAttempt(format: String?) async {
-        guard pskCategory != .pairing,
+        guard pskCategory == .sentinel,
               let rawFormat = format,
               let selectedFormat = PairingCodeFormat(rawValue: rawFormat),
               await dynamicPairingCodeIsOffered(format: selectedFormat)
@@ -415,20 +414,28 @@ extension SendspinConnection {
             let pairingHandshakeHash = channel.handshakeHash
         #endif
         let sid = CPaceSessionIdentifier.make(handshakeHash: pairingHandshakeHash, counter: pairingActivateCounter)
+        let advertisement = await livePairingAdvertisement()
+        let dynamicDescriptor = advertisement.supportedPairMethods[PairMethod.dynamicPairingCode]
+        let digitAudioDescriptor = selectedFormat == .digits && dynamicDescriptor?.outChannels?.contains("speaker") == true
+            ? dynamicDescriptor?.digitAudio
+            : nil
         dynamicPairingAttempt = DynamicPairingAttempt(
             format: selectedFormat,
             pairingIndex: pairingActivateCounter,
             sid: sid,
             nonceB: nonceB,
             commitB: commitB,
+            digitAudioDescriptor: digitAudioDescriptor,
+            digitAudioValidator: digitAudioDescriptor.map { DigitAudioPackValidator(descriptor: $0) },
             nonceA: nil,
+            pairInitSent: false,
             serverShare: nil,
             cpace: nil,
             secrets: nil,
             clientConfirmationSent: false
         )
         let count = await pairingStore?.dynamicPairingFailureCount() ?? 0
-        let escalated = count >= 5
+        let escalated = count >= dynamicPairingFailureEscalationThreshold
         if escalated, !pairingWindowOpen {
             try? await sendWrapped(ClientPairPendingMessage(
                 payload: ClientPairPendingPayload(pairingIndex: pairingActivateCounter)
@@ -440,13 +447,11 @@ extension SendspinConnection {
 
     func dynamicPairingCodeIsOffered(format: PairingCodeFormat) async -> Bool {
         let advertisement = await livePairingAdvertisement()
-        return advertisement.supportedPairMethods.contains {
-            $0.method == PairMethod.dynamicPairingCode && ($0.formats ?? []).contains(format.rawValue)
-        }
+        return advertisement.supportedPairMethods[PairMethod.dynamicPairingCode]?.formats?.contains(format.rawValue) == true
     }
 
     func beginStaticPairingAttempt(format: String?) async {
-        guard pskCategory != .pairing, format == nil,
+        guard pskCategory == .sentinel, format == nil,
               let runtime = pairingConfigurationRuntime
         else {
             clearPairingAttempt(reason: .methodNotSupported)
@@ -504,10 +509,16 @@ extension SendspinConnection {
         }
         attempt.nonceA = nil
         dynamicPairingAttempt = attempt
-        try? await sendWrapped(ClientPairInitMessage(payload: ClientPairInitPayload(
-            pairingIndex: attempt.pairingIndex,
-            commitB: Base64URL.encode(attempt.commitB)
-        )))
+        do {
+            try await sendWrapped(ClientPairInitMessage(payload: ClientPairInitPayload(
+                pairingIndex: attempt.pairingIndex,
+                commitB: Base64URL.encode(attempt.commitB)
+            )))
+            attempt.pairInitSent = true
+            dynamicPairingAttempt = attempt
+        } catch {
+            clearPairingAttempt()
+        }
     }
 
     func openPairingWindow() async {
@@ -568,10 +579,31 @@ extension SendspinConnection {
         try? await sendWrapped(PairAbortMessage(payload: PairAbortPayload(reason: .userCancelled)))
     }
 
+    func handleDigitAudioClip(_ message: BinaryMessage) throws {
+        // Pairing traffic that arrives after a local abort has no effect.
+        guard var attempt = dynamicPairingAttempt else { return }
+        guard attempt.format == .digits,
+              attempt.pairInitSent,
+              attempt.nonceA == nil,
+              var validator = attempt.digitAudioValidator,
+              let digit = message.digit
+        else { throw PairingProtocolError.invalidSequence }
+        try validator.append(digit: digit, data: message.data)
+        attempt.digitAudioValidator = validator
+        dynamicPairingAttempt = attempt
+    }
+
     func handleServerPairInit(_ message: ServerPairInitMessage) async throws {
-        guard var attempt = dynamicPairingAttempt, attempt.nonceA == nil,
+        // A server message left over after an ended attempt is discarded silently.
+        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
+        guard var attempt = dynamicPairingAttempt, attempt.pairInitSent, attempt.nonceA == nil,
               let nonceA = Base64URL.decode(message.payload.nonceA, count: 32)
         else { throw PairingProtocolError.invalidSequence }
+        let digitAudioPack: DigitAudioPack? = if let validator = attempt.digitAudioValidator {
+            try validator.finish()
+        } else {
+            nil
+        }
         attempt.nonceA = nonceA
         var input = Data("sendspin-pairing-code-derive-v1".utf8)
         #if DEBUG
@@ -590,7 +622,11 @@ extension SendspinConnection {
                 value = (value * 256 + UInt64(byte)) % 1_000_000
             }
             prs = Data(String(format: "%06llu", value).utf8)
-            emission = PairingCodeEmission(format: .digits, payload: String(data: prs, encoding: .utf8)!)
+            emission = PairingCodeEmission(
+                format: .digits,
+                payload: String(data: prs, encoding: .utf8)!,
+                digitAudioPack: digitAudioPack
+            )
         case .qrCode:
             prs = digest.prefix(24)
             emission = PairingCodeEmission(format: .qrCode, payload: PairingToken.dynamicCodeToken(Data(prs)))
@@ -606,6 +642,7 @@ extension SendspinConnection {
     }
 
     func handleServerPairAuth(_ message: ServerPairAuthMessage) async throws {
+        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
         if var attempt = dynamicPairingAttempt, attempt.serverShare == nil,
            let cpace = attempt.cpace,
            let share = Base64URL.decode(message.payload.pakeMsg1, count: 32) {
@@ -626,6 +663,7 @@ extension SendspinConnection {
     }
 
     func handleServerPairConfirm(_ message: ServerPairConfirmMessage) async throws {
+        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
         if dynamicPairingAttempt != nil {
             try await handleDynamicServerPairConfirm(message)
         } else {
@@ -799,7 +837,7 @@ extension SendspinConnection {
         if !isClockSynced, await clock.hasSynced {
             isClockSynced = true
             controlSink.enqueue(.clockSyncEstablished)
-            try? await sendClientStateIfChanged()
+            try? await publishClientState()
         }
 
         // Push updated snapshot for sync correction (per-frame cross-boundary).
@@ -809,11 +847,16 @@ extension SendspinConnection {
     }
 
     func handleServerState(_ message: ServerStateMessage) async {
-        // Emit metadata if present. Merge with the prior state so a partial
-        // delta (e.g. title only) preserves absent fields like album/artist,
-        // while explicit null clears the field per spec.
+        // Metadata and color have no stream boundary: pending updates remain until
+        // their translated timestamp, an immediate update, or an explicit role null.
+        if case .null = message.payload.metadataRole {
+            metadataPending = nil
+            metadataScheduleTask?.cancel()
+            metadataScheduleTask = nil
+            currentMetadata = nil
+            controlSink.enqueue(.metadataCleared)
+        }
         if let metadata = message.payload.metadata {
-            let prev = currentMetadata
             let progress: PlaybackProgress? = switch metadata.progress {
             case let .value(prog):
                 PlaybackProgress(
@@ -822,72 +865,131 @@ extension SendspinConnection {
                     playbackSpeedX1000: prog.playbackSpeed,
                     timestamp: metadata.timestamp ?? MonotonicClock.nowMicroseconds()
                 )
-            case .null:
+            case .null, .absent:
                 nil
-            case .absent:
-                prev?.progress
             }
 
+            // A present role object is a complete snapshot; omitted fields clear
+            // their prior values. Only omission of the role object preserves state.
             let trackMetadata = TrackMetadata(
-                title: metadata.title.merge(previous: prev?.title),
-                artist: metadata.artist.merge(previous: prev?.artist),
-                album: metadata.album.merge(previous: prev?.album),
-                albumArtist: metadata.albumArtist.merge(previous: prev?.albumArtist),
-                track: metadata.track.merge(previous: prev?.track),
-                year: metadata.year.merge(previous: prev?.year),
-                artworkURL: metadata.artworkUrl.merge(previous: prev?.artworkURL),
+                title: metadata.title.merge(previous: nil),
+                artist: metadata.artist.merge(previous: nil),
+                album: metadata.album.merge(previous: nil),
+                albumArtist: metadata.albumArtist.merge(previous: nil),
+                track: metadata.track.merge(previous: nil),
+                year: metadata.year.merge(previous: nil),
+                artworkURL: metadata.artworkUrl.merge(previous: nil),
                 progress: progress
             )
-            currentMetadata = trackMetadata
-            controlSink.enqueue(.metadataReceived(trackMetadata))
+            let timestamp = metadata.timestamp ?? 0
+            let localTime = await clock.serverTimeToLocal(timestamp)
+            if localTime > scheduleNow() {
+                metadataPending = ScheduledMetadata(metadata: trackMetadata, localDisplayTime: localTime)
+                metadataScheduleTask?.cancel()
+                let sleep = scheduleSleep
+                let now = scheduleNow
+                metadataScheduleTask = Task { [weak self] in
+                    try? await sleep(.microseconds(max(0, localTime - now())))
+                    await self?.applyPendingMetadata()
+                }
+            } else {
+                metadataPending = nil
+                metadataScheduleTask?.cancel()
+                metadataScheduleTask = nil
+                currentMetadata = trackMetadata
+                controlSink.enqueue(.metadataReceived(trackMetadata))
+            }
         }
 
-        // Emit controller state if present. Merge with the prior state so a partial
-        // delta (e.g. volume only) preserves absent fields like repeat/shuffle.
+        // A present controller object is a complete snapshot. `seek_max_ms` is
+        // the only optional field and is therefore nil when absent or null.
+        if case .null = message.payload.controllerRole {
+            currentControllerState = nil
+            controlSink.enqueue(.controllerStateCleared)
+        }
         if let controller = message.payload.controller {
-            let prev = currentControllerState
             let controllerState = ControllerState(
-                supportedCommands: controller.supportedCommands.map(Set.init) ?? prev?.supportedCommands ?? [],
-                volume: controller.volume ?? prev?.volume ?? 0,
-                muted: controller.muted ?? prev?.muted ?? false,
-                repeatMode: controller.repeat ?? prev?.repeatMode,
-                shuffle: controller.shuffle ?? prev?.shuffle,
-                seekMaxMs: controller.seekMaxMsDelta.merge(previous: prev?.seekMaxMs)
+                supportedCommands: controller.supportedCommands.map(Set.init) ?? [],
+                volume: controller.volume ?? 0,
+                muted: controller.muted ?? false,
+                repeatMode: controller.repeat,
+                shuffle: controller.shuffle,
+                seekMaxMs: controller.seekMaxMsDelta.merge(previous: nil)
             )
             currentControllerState = controllerState
             controlSink.enqueue(.controllerStateUpdated(controllerState))
         }
 
-        // Emit color state if present. Merge with the prior state so a partial
-        // delta preserves absent colors while explicit null clears them.
-        switch message.payload.color {
+        await handleColorState(message.payload.color)
+    }
+
+    private func handleColorState(_ value: Nullable<ServerColorState>) async {
+        // A present color object is a complete snapshot; omitted color fields are nil.
+        switch value {
         case .absent:
             break
         case .null:
             currentColorState = nil
+            colorPending = nil
+            colorScheduleTask?.cancel()
+            colorScheduleTask = nil
             controlSink.enqueue(.colorStateCleared)
         case let .value(color):
-            let prev = currentColorState
-            let localDisplayTime = isClockSynced ? await clock.serverTimeToLocal(color.timestamp) : nil
+            let localDisplayTime = await clock.serverTimeToLocal(color.timestamp)
             let colorState = ColorState(
                 serverTimestamp: color.timestamp,
                 localDisplayTime: localDisplayTime,
-                backgroundDark: color.backgroundDark.merge(previous: prev?.backgroundDark),
-                backgroundLight: color.backgroundLight.merge(previous: prev?.backgroundLight),
-                primary: color.primary.merge(previous: prev?.primary),
-                accent: color.accent.merge(previous: prev?.accent),
-                onDark: color.onDark.merge(previous: prev?.onDark),
-                onLight: color.onLight.merge(previous: prev?.onLight)
+                backgroundDark: color.backgroundDark.merge(previous: nil),
+                backgroundLight: color.backgroundLight.merge(previous: nil),
+                primary: color.primary.merge(previous: nil),
+                accent: color.accent.merge(previous: nil),
+                onDark: color.onDark.merge(previous: nil),
+                onLight: color.onLight.merge(previous: nil)
             )
-            currentColorState = colorState
-            controlSink.enqueue(.colorStateUpdated(colorState))
+            if localDisplayTime > scheduleNow() {
+                colorPending = ScheduledColor(color: colorState, localDisplayTime: localDisplayTime)
+                colorScheduleTask?.cancel()
+                let sleep = scheduleSleep
+                let now = scheduleNow
+                colorScheduleTask = Task { [weak self] in
+                    try? await sleep(.microseconds(max(0, localDisplayTime - now())))
+                    await self?.applyPendingColor()
+                }
+            } else {
+                colorPending = nil
+                colorScheduleTask?.cancel()
+                colorScheduleTask = nil
+                currentColorState = colorState
+                controlSink.enqueue(.colorStateUpdated(colorState))
+            }
         }
+    }
+
+    private func applyPendingColor() {
+        guard let pending = colorPending, pending.localDisplayTime <= scheduleNow() else { return }
+        colorPending = nil
+        colorScheduleTask = nil
+        currentColorState = pending.color
+        controlSink.enqueue(.colorStateUpdated(pending.color))
     }
 
     func handleStreamStart(_ message: StreamStartMessage) async {
         // Handle artwork stream
         if let artworkInfo = message.payload.artwork {
+            let previous = artworkStreamChannels
+            artworkStreamChannels = artworkInfo.channels
             artworkStreamActive = true
+            for channel in 0 ..< max(previous.count, artworkInfo.channels.count) {
+                let oldConfig = previous.indices.contains(channel) ? previous[channel] : nil
+                let newConfig = artworkInfo.channels.indices.contains(channel) ? artworkInfo.channels[channel] : nil
+                if oldConfig?.source != newConfig?.source || oldConfig?.format != newConfig?.format
+                    || oldConfig?.width != newConfig?.width || oldConfig?.height != newConfig?.height {
+                    clearPendingArtwork(channel: channel)
+                    if artworkTransfer?.channel == channel {
+                        artworkTransfer = nil
+                    }
+                }
+            }
             controlSink.enqueue(.artworkStreamStarted(artworkInfo.channels))
         }
 
@@ -912,7 +1014,7 @@ extension SendspinConnection {
             clientOperationalState = .error
             controlSink.enqueue(.streamError(.unsupportedCodec(playerInfo.codec)))
             controlSink.enqueue(.operationalState(.error))
-            try? await sendClientStateIfChanged()
+            try? await publishClientState()
             return
         }
 
@@ -929,7 +1031,7 @@ extension SendspinConnection {
             clientOperationalState = .error
             controlSink.enqueue(.streamError(.invalidFormat(error.errorDescription ?? "\(error)")))
             controlSink.enqueue(.operationalState(.error))
-            try? await sendClientStateIfChanged()
+            try? await publishClientState()
             return
         }
 
@@ -947,7 +1049,7 @@ extension SendspinConnection {
                 clientOperationalState = .error
                 controlSink.enqueue(.streamError(.invalidFormat("codec_header is not valid base64")))
                 controlSink.enqueue(.operationalState(.error))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
                 return
             }
             codecHeader = decoded
@@ -970,7 +1072,7 @@ extension SendspinConnection {
             if clientOperationalState == .error {
                 clientOperationalState = .synchronized
                 controlSink.enqueue(.operationalState(.synchronized))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
             }
             controlSink.enqueue(.streamAccepted(format))
             audioEngine.commands.enqueue(.streamStart(format, codecHeader: codecHeader))
@@ -999,6 +1101,8 @@ extension SendspinConnection {
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
             artworkStreamActive = false
+            artworkTransfer = nil
+            clearPendingArtwork()
         }
 
         if endedRoles == nil || endedRoles?.contains("visualizer") == true {
@@ -1033,7 +1137,7 @@ extension SendspinConnection {
                 currentVolume = clamped
                 await audioEngine.setGain(Float(clamped) / 100.0)
                 controlSink.enqueue(.playerVolumeChanged(clamped))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
             }
 
         case .mute:
@@ -1041,7 +1145,7 @@ extension SendspinConnection {
                 currentMuted = mute
                 await audioEngine.setMuted(mute)
                 controlSink.enqueue(.playerMutedChanged(mute))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
             }
 
         case .setOutputDelay:
@@ -1051,7 +1155,7 @@ extension SendspinConnection {
                 currentOutputDelayMs = clamped
                 audioEngine.commands.enqueue(.setOutputDelay(clamped))
                 controlSink.enqueue(.outputDelayChanged(milliseconds: clamped))
-                try? await sendClientStateIfChanged()
+                try? await publishClientState()
             }
         }
     }
@@ -1074,41 +1178,173 @@ extension SendspinConnection {
 
     // MARK: - Binary message handlers
 
-    func handleAudioChunk(_ message: BinaryMessage) async {
-        guard playerStreamActive else {
-            Log.client.warning("Discarding audio chunk: no active player stream")
+    func handleAudioChunk(_ message: BinaryMessage, arrival: Int64 = MonotonicClock.absoluteMicroseconds()) async {
+        guard playerStateSent, playerStreamActive else {
+            Log.client.warning("Discarding audio chunk: player state or stream is not active")
             return
         }
 
+        await recordArrivalDelay(message: message, arrival: arrival)
+
         if emitRawAudio {
-            let chunk = AudioChunk(data: message.data, serverTimestamp: message.timestamp)
+            let chunk = AudioChunk(
+                data: message.data,
+                serverTimestamp: message.timestamp,
+                sendAhead: message.sendAhead
+            )
             validity.yieldIfValid(chunk, to: audioSink)
         }
 
         // Only enqueue to engine if clock is synced. Tag the frame at ingress so a format
         // announcement invalidates chunks already waiting in the FIFO before they are decoded.
         if isClockSynced {
-            audioEngine.enqueueAudioChunk(data: message.data, timestamp: message.timestamp)
+            audioEngine.enqueueAudioChunk(
+                data: message.data,
+                timestamp: message.timestamp,
+                sendAhead: message.sendAhead
+            )
         }
     }
 
-    func handleArtworkBinary(_ message: BinaryMessage) async {
-        guard artworkStreamActive else {
-            Log.client.warning("Discarding artwork binary: no active artwork stream")
+    func handleArtworkBinary(_ raw: Data) async throws {
+        let message = try ArtworkWireMessage(data: raw)
+        if message.isAnnounce {
+            guard artworkTransfer == nil else { throw ArtworkTransferError.announceWhileInFlight }
+            guard let timestamp = message.timestamp, let totalSize = message.totalSize else { throw ArtworkTransferError.tooShort }
+            // A new announce replaces the channel's pending image immediately, even
+            // when this transfer is gated and its completed bytes will be discarded.
+            clearPendingArtwork(channel: message.channel)
+            let deliver = artworkStreamActive && artworkStateSent && channelIsEnabled(message.channel)
+            artworkTransfer = ArtworkTransfer(channel: message.channel, timestamp: timestamp, totalSize: totalSize, deliver: deliver)
+            if totalSize == 0 {
+                let result = try completeArtworkTransfer()
+                if result.deliver {
+                    await receiveCompletedArtwork(result)
+                }
+            }
+        } else if message.isCancel {
+            // Cancel discards the in-flight transfer as well as any pending image;
+            // the current image remains untouched until a completed image is applied.
+            if artworkTransfer?.channel == message.channel {
+                artworkTransfer = nil
+            }
+            clearPendingArtwork(channel: message.channel)
+        } else {
+            guard var transfer = artworkTransfer else { throw ArtworkTransferError.partWithoutTransfer }
+            guard transfer.channel == message.channel else { throw ArtworkTransferError.partWrongChannel }
+            if let result = try transfer.append(message.data) {
+                artworkTransfer = nil
+                if result.deliver {
+                    await receiveCompletedArtwork(result)
+                }
+            } else {
+                artworkTransfer = transfer
+            }
+        }
+    }
+
+    private func completeArtworkTransfer() throws -> ArtworkTransferResult {
+        guard let transfer = artworkTransfer else { throw ArtworkTransferError.partWithoutTransfer }
+        guard transfer.received == transfer.totalSize else { throw ArtworkTransferError.partPastTotalSize }
+        artworkTransfer = nil
+        return ArtworkTransferResult(channel: transfer.channel, timestamp: transfer.timestamp, data: transfer.data, deliver: transfer.deliver)
+    }
+
+    private func channelIsEnabled(_ channel: Int) -> Bool {
+        guard artworkStateSent else { return false }
+        guard artworkStreamChannels.indices.contains(channel) else { return false }
+        return artworkStreamChannels[channel].source != .none
+    }
+
+    private func receiveCompletedArtwork(_ result: ArtworkTransferResult) async {
+        let localTime = await clock.serverTimeToLocal(result.timestamp)
+        let artwork = ArtworkData(channel: result.channel, data: result.data, localDisplayTime: localTime)
+        let now = scheduleNow()
+        if localTime <= now {
+            artworkPending[result.channel] = nil
+            artworkScheduleTasks[result.channel]?.cancel()
+            artworkScheduleTasks[result.channel] = nil
+            artworkObserver?(artwork)
+            validity.yieldIfValid(artwork, to: artworkSink)
+        } else {
+            artworkPending[result.channel] = ScheduledArtwork(artwork: artwork, localDisplayTime: localTime)
+            artworkScheduleTasks[result.channel]?.cancel()
+            let sleep = scheduleSleep
+            let now = scheduleNow
+            artworkScheduleTasks[result.channel] = Task { [weak self] in
+                let delay = Duration.microseconds(localTime - now())
+                try? await sleep(delay)
+                await self?.applyPendingArtwork(channel: result.channel)
+            }
+        }
+    }
+
+    private func applyPendingArtwork(channel: Int) {
+        guard let pending = artworkPending[channel], pending.localDisplayTime <= scheduleNow() else { return }
+        artworkPending[channel] = nil
+        artworkScheduleTasks[channel] = nil
+        artworkObserver?(pending.artwork)
+        validity.yieldIfValid(pending.artwork, to: artworkSink)
+    }
+
+    private func recordArrivalDelay(message: BinaryMessage, arrival: Int64) async {
+        // Samples are meaningful only after the clock filter converges.
+        guard message.sendAhead != 0, message.sendAhead != UInt32.max,
+              await clock.hasSynced else {
             return
         }
+        let (transmitTimestamp, overflow) = message.timestamp.subtractingReportingOverflow(Int64(message.sendAhead))
+        guard !overflow else { return }
+        let expectedArrival = await clock.serverTimeToLocal(transmitTimestamp)
+        let delay = arrival - expectedArrival
+        // Negative delay means the message arrived before its advertised transmit time.
+        guard delay >= 0 else { return }
+        arrivalDelaySamples.append(delay)
+        if arrivalDelaySamples.count > 128 {
+            arrivalDelaySamples.removeFirst()
+        }
+        guard arrivalDelaySamples.count >= 16 else {
+            return
+        }
+        let sorted = arrivalDelaySamples.sorted()
+        let index = min(sorted.count - 1, (sorted.count * 95) / 100)
+        let estimateMs = max(0, Int((sorted[index] + 999) / 1_000))
+        let target = max(minBufferMs, estimateMs)
+        if target == lastPublishedMinBufferMs {
+            minBufferPersistenceCount = 0
+            return
+        }
+        minBufferPersistenceCount += 1
+        guard minBufferPersistenceCount >= 4 else { return }
+        minBufferPersistenceCount = 0
+        derivedMinBufferMs = target
+        lastPublishedMinBufferMs = target
+        try? await publishClientState()
+    }
 
-        guard let channel = message.type.artworkChannel else { return }
+    private func applyPendingMetadata() {
+        guard let pending = metadataPending, pending.localDisplayTime <= scheduleNow() else { return }
+        metadataPending = nil
+        metadataScheduleTask = nil
+        currentMetadata = pending.metadata
+        controlSink.enqueue(.metadataReceived(pending.metadata))
+    }
 
-        let localDisplayTime = isClockSynced ? await clock.serverTimeToLocal(message.timestamp) : nil
-        let artwork = ArtworkData(channel: channel, data: message.data, localDisplayTime: localDisplayTime)
-        artworkObserver?(artwork)
-        validity.yieldIfValid(artwork, to: artworkSink)
+    private func clearPendingArtwork(channel: Int) {
+        artworkPending[channel] = nil
+        artworkScheduleTasks[channel]?.cancel()
+        artworkScheduleTasks[channel] = nil
+    }
+
+    private func clearPendingArtwork() {
+        for channel in artworkPending.keys {
+            clearPendingArtwork(channel: channel)
+        }
     }
 
     func handleVisualizerBinary(_ message: BinaryMessage) async {
-        guard visualizerStreamActive else {
-            Log.client.warning("Discarding visualizer binary: no active visualizer stream")
+        guard visualizerStateSent, visualizerStreamActive else {
+            Log.client.warning("Discarding visualizer binary: visualizer state or stream is not active")
             return
         }
 

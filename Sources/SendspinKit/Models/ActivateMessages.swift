@@ -5,13 +5,11 @@ import Foundation
 public enum Activity: String, Codable, Sendable, Hashable, CaseIterable {
     case playback
     case pairing
-    case management
 
-    /// Rank for multi-server admission: management > playback > pairing; a
-    /// connection with empty activities ranks below all three.
+    /// Rank for multi-server admission: playback > pairing; a connection with
+    /// empty activities ranks below both.
     var rank: Int {
         switch self {
-        case .management: 3
         case .playback: 2
         case .pairing: 1
         }

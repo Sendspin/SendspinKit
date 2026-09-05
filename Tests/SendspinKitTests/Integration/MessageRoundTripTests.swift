@@ -6,27 +6,27 @@ struct MessageRoundTripTests {
     @Test
     func clientHello_roundTripMaintainsAllData() throws {
         // Create complete ClientHello with all fields populated.
-        let originalPayload = try ClientHelloPayload(
+        let opus = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let flac = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24)
+        let pcm = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let originalPayload = ClientHelloPayload(
             name: "Test Speaker",
             deviceInfo: DeviceInfo(
                 productName: "HomePod",
                 manufacturer: "Apple",
                 softwareVersion: "17.0"
             ),
-            trustLevel: .none,
-            supportedPairMethods: [],
+            supportedPairMethods: [:],
             unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
             supportedRoles: [.playerV1, .controllerV1, .metadataV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
-                    AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16),
-                    AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 24),
-                    AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+                    opus,
+                    flac,
+                    pcm
                 ],
-                bufferCapacity: 1_048_576,
-                supportedCommands: [.volume, .mute]
+                bufferCapacity: 1_048_576
             ),
-            artworkV1Support: nil,
             visualizerV1Support: nil
         )
 
@@ -43,7 +43,7 @@ struct MessageRoundTripTests {
         let payloadJSON = try #require(json["payload"] as? [String: Any])
         #expect(payloadJSON["client_id"] == nil, "client identity is carried by Noise, not client/hello")
         #expect(payloadJSON["name"] as? String == "Test Speaker")
-        #expect(payloadJSON["trust_level"] as? String == TrustLevel.none.rawValue)
+        #expect(payloadJSON["trust_level"] == nil)
         #expect(payloadJSON["version"] == nil, "client/hello no longer carries a protocol version")
         #expect(payloadJSON["supported_roles"] as? [String] == ["player@v1", "controller@v1", "metadata@v1"])
         #expect(payloadJSON["client_id"] == nil, "identity is carried by Noise, not client/hello")
@@ -51,7 +51,7 @@ struct MessageRoundTripTests {
 
         let playerJSON = try #require(payloadJSON["player@v1_support"] as? [String: Any])
         #expect(playerJSON["buffer_capacity"] as? Int == 1_048_576)
-        #expect(playerJSON["supported_commands"] as? [String] == ["volume", "mute"])
+        #expect(playerJSON["supported_commands"] == nil, "hello support must not carry mutable commands")
         let firstFormatJSON = try #require((playerJSON["supported_formats"] as? [[String: Any]])?.first)
         #expect(firstFormatJSON["codec"] as? String == "opus")
         #expect(firstFormatJSON["sample_rate"] as? Int == 48_000)
@@ -68,7 +68,6 @@ struct MessageRoundTripTests {
         // Verify all fields match
         #expect(decodedMessage.type == "client/hello")
         #expect(decodedMessage.payload.name == "Test Speaker")
-        #expect(decodedMessage.payload.trustLevel == .none)
         #expect(decodedMessage.payload.unpairedAccess.enabled)
         #expect(decodedMessage.payload.supportedRoles == [.playerV1, .controllerV1, .metadataV1])
 
@@ -81,7 +80,7 @@ struct MessageRoundTripTests {
         // Verify player support
         let playerSupport = try #require(decodedMessage.payload.playerV1Support)
         #expect(playerSupport.bufferCapacity == 1_048_576)
-        #expect(playerSupport.supportedCommands == [.volume, .mute])
+        // Mutable player commands are advertised later in the client/state snapshot.
         #expect(playerSupport.supportedFormats.count == 3)
 
         // Verify first format

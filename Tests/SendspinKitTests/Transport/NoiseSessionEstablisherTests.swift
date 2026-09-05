@@ -17,12 +17,14 @@ struct NoiseSessionEstablisherTests {
         suite: NoiseCipherSuite = .chaChaPoly,
         phaseTimeout: Duration = .seconds(5),
         serverInitVersion: Int = sendspinCoreVersion,
-        pskIdOverride: String? = nil
+        pskIdOverride: String? = nil,
+        pskCategoryOverride: PskCategory? = nil
     ) async throws -> NoiseSessionOutcome {
         let psk = server.psk
         async let serverSide: Void = server.respondToHandshake(
             serverInitVersion: serverInitVersion,
-            pskIdOverride: pskIdOverride
+            pskIdOverride: pskIdOverride,
+            pskCategoryOverride: pskCategoryOverride
         )
         let outcome = try await NoiseSessionEstablisher.establish(
             on: transport,
@@ -76,23 +78,37 @@ struct NoiseSessionEstablisherTests {
         #expect(await outcome.serverId == server.serverId)
     }
 
-    @Test("psk_id lookup miss fails the handshake and closes silently")
-    func pskLookupMiss() async throws {
+    @Test("Initial psk_id lookup miss falls back to Sentinel")
+    func initialPskLookupMissFallsBackToSentinel() async throws {
         let transport = MockTransport()
         let server = MockNoiseServer(transport: transport)
-        await #expect(throws: HandshakeError.pskLookupMiss) {
-            _ = try await establish(
-                transport: transport,
-                server: server,
-                candidates: [PskCandidate(psk: .sentinel, category: .sentinel)]
-            )
-        }
-        #expect(await transport.disconnectCalled)
-        // Silent failure: nothing after client/init went out as text.
-        #expect(await transport.sentTextMessages.count == 1)
+        let outcome = try await establish(
+            transport: transport,
+            server: server,
+            candidates: [PskCandidate(psk: .sentinel, category: .sentinel)]
+        )
+        #expect(outcome.matchedCandidate.psk == .sentinel)
+        #expect(outcome.matchedCandidate.category == .sentinel)
+        #expect(await transport.disconnectCalled == false)
+        #expect(await server.message2Payload == noiseMessage2Payload)
     }
 
-    @Test("Stored-pubkey candidate bound to a different server is a lookup miss")
+    @Test("A PSK held under the wrong category falls back to Sentinel")
+    func wrongCategoryFallsBackToSentinel() async throws {
+        let transport = MockTransport()
+        let server = MockNoiseServer(transport: transport)
+        let outcome = try await establish(
+            transport: transport,
+            server: server,
+            candidates: [PskCandidate(psk: server.psk, category: .longTerm)],
+            pskCategoryOverride: .pairing
+        )
+        #expect(outcome.matchedCandidate.category == .sentinel)
+        #expect(outcome.matchedCandidate.psk == .sentinel)
+        #expect(await transport.disconnectCalled == false)
+    }
+
+    @Test("Stored-pubkey candidate bound to a different server is a misbinding")
     func storedPubkeyMismatch() async throws {
         let transport = MockTransport()
         let server = MockNoiseServer(transport: transport)

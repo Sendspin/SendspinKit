@@ -17,7 +17,7 @@ Audio flows through four stages:
    - **Opus** — Low-latency lossy decoding (8-48kHz)
    - **FLAC** — Lossless decoding with hi-res support (up to 192kHz/24-bit)
 
-3. **Scheduling** — Decoded chunks enter a priority queue sorted by playback timestamp. The scheduler converts server timestamps to local time using the clock synchronizer's offset. Chunks more than 50ms late are dropped.
+3. **Scheduling** — Decoded chunks enter a priority queue sorted by playback timestamp. The scheduler converts server timestamps to local time using the clock synchronizer's offset. The `send_ahead` value is propagated as a timing measurement and does not change when a chunk plays. Chunks more than 50ms late are dropped.
 
 4. **Playback** — An `AudioQueue` pulls samples from a ring buffer at the hardware sample rate. A sync correction module applies frame-level drop/insert to compensate for clock drift.
 
@@ -29,7 +29,7 @@ The sync offset is used by the scheduler to convert server-domain timestamps to 
 
 ## Buffer configuration
 
-``PlayerConfiguration/bufferCapacity`` controls the size of the PCM ring buffer in bytes. Larger buffers absorb more network jitter but increase memory usage and latency:
+``PlayerConfiguration/bufferCapacity`` controls the size of the PCM ring buffer in bytes. ``PlayerConfiguration/minBufferMs`` requests an ongoing minimum buffer depth, while ``PlayerConfiguration/requiredLeadTimeMs`` accounts for local startup and codec latency. Larger capacities absorb more network jitter but increase memory usage and latency:
 
 | Buffer Size | Duration (48kHz stereo 16-bit) | Use Case |
 |-------------|-------------------------------|----------|
@@ -39,4 +39,4 @@ The sync offset is used by the scheduler to convert server-domain timestamps to 
 
 ## Custom audio processing
 
-To access raw audio data for visualization or effects, enable ``PlayerConfiguration/emitRawAudioEvents`` and listen for ``ClientEvent/rawAudioChunk(data:serverTimestamp:)`` events. You can also provide a process callback via ``PlayerConfiguration/processCallback`` that runs inline in the audio pipeline before scheduling.
+To access raw audio data for visualization or effects, enable ``PlayerConfiguration/emitRawAudioEvents`` and consume ``SendspinClient/audioChunks``. You can also provide a process callback via ``PlayerConfiguration/processCallback`` that runs inline in the audio pipeline before scheduling. Visualizer-role payloads are delivered separately through ``SendspinClient/visualizerData``.

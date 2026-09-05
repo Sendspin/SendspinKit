@@ -17,11 +17,17 @@ enum ConnectionEvent: Equatable {
     /// The current session's output-format negotiation status changed.
     case outputFormatStatusChanged(OutputFormatStatus)
 
-    /// Track metadata received and accumulated from server deltas
+    /// Track metadata received and accumulated from server updates
     case metadataReceived(TrackMetadata)
+
+    /// The server cleared the complete metadata role state.
+    case metadataCleared
 
     /// Controller state (volume, mute, supported commands, repeat, shuffle)
     case controllerStateUpdated(ControllerState)
+
+    /// The server cleared the complete controller role state.
+    case controllerStateCleared
 
     /// Color state derived from the current audio
     case colorStateUpdated(ColorState)

@@ -8,20 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - Noise spec alignment
 
 ### Breaking
-- Replaced the plaintext session handshake with mandatory Noise encryption; clients now require a stable `SendspinIdentity` and its host-owned secret-key persistence.
-- Replaced the old client identifier and handshake surface with identity-based `SendspinClient` initialization and encrypted transport framing.
-- Added Pairing PSK support with host-provided `PairingConfiguration` and `PairingRecordStore`, `PairingToken` (`SP:0`) setup tokens, trust levels, pairing events, and management-role record/configuration operations.
-- Added the management role responder and updated public event/state names for the new protocol session flow.
-- Host applications must update persistence providers for pairing records and the renamed output-delay APIs.
+- Replaced the plaintext session handshake with mandatory Noise encryption; clients now require a stable `SendspinIdentity` and host-owned secret-key persistence.
+- Replaced the old client identifier and handshake surface with identity-based `SendspinClient` initialization and encrypted transport framing. `client/hello` no longer carries `trust_level`, artwork support, or mutable player commands; support objects now contain only their protocol-defined capabilities.
+- Removed the protocol `management` namespace, responder, persistence hooks, and remote management operations. `PairingManagementConfiguration` remains the host-local pairing settings value; pairing-window opening is a host gesture/API concern.
+- Replaced `requestPlayerFormat`/`requestArtworkFormat` and `stream/request-format` with `setPlayerFormatPreference` and `setArtworkChannelPreference`, which publish state preferences.
+- Changed `client/hello.supported_pair_methods` from an array to a keyed object, with method-specific descriptors. A client advertises Pairing PSK and at most one pairing-code method; code pairing is Sentinel-only, and `psk_category` now binds each handshake candidate to its credential category.
+- Changed Noise fragmentation to the single type-1 framing format with explicit first/last flags and reserved-bit validation. Player audio remains binary type 4 and now includes the `send_ahead` header field.
+- Renamed output-delay wire keys to `output_delay_ms` and `set_output_delay`.
+- Changed `client/state` from deltas to full snapshots, including mutable player commands, artwork channels, and visualizer configuration. Artwork configuration no longer belongs in `client/hello`.
+- Replaced one-message artwork images with announce/part/cancel transfers, and removed BMP support; artwork formats are JPEG and PNG.
 
 ### Added
 - Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
-- Added dynamic pairing failure-counter provider hooks and management set/get pairing-code configuration, including static-code rotation without returning the static secret.
+- Added optional server-supplied digit-audio packs and speaker capability descriptors. Validated packs are attached to digit pairing emissions for the host app to decode and play; Sentinel fallback handles an initial pairing-PSK miss.
+- Added visualizer state configuration for beat, loudness, peak, and spectrum data, including rate and spectrum parameters.
+- Added scheduled metadata, color, and artwork updates using the current best clock estimate.
+- Added `requiredLeadTimeMs` and `minBufferMs` player configuration, with measured buffer-depth publication through full state snapshots.
+- Added dynamic pairing failure-counter provider hooks and host-local pairing configuration updates without returning the static secret.
 - Added the pinned `jedisct1/swift-sodium` 0.9.1 dependency and the `CElligator` target. `CElligator` vendors libsodium 1.0.21 field-operation sources at revision `3e7548c62f68909461a67f396be0494584a7aae4` for the RFC 9380 Elligator2 composition; the linked `Clibsodium.xcframework` provenance and checksum are documented in `Sources/CElligator/README.md`.
 - The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
-
-### Compatibility
-- The wire continues to use `static_delay_ms` and `set_static_delay` deliberately until deployed servers adopt the spec's `output_delay_ms` and `set_output_delay` names.
 
 ## [0.3.0] - 2025-10-26
 

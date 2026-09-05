@@ -621,6 +621,28 @@ struct SendspinConnectionTests {
         #expect(errorEvent != nil, "Should emit streamError for invalid codec")
     }
 
+    @Test("management namespace messages take the unknown-message path")
+    func managementNamespaceMessageIsIgnored() async throws {
+        let fixture = try await makeEstablishedConnection(
+            activities: [.playback],
+            activeRoles: [.playerV1]
+        )
+        let connection = fixture.connection
+        let goodbyeBefore = await fixture.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).count
+        let activitiesBefore = await connection.activities
+        let rolesBefore = await connection.activeRoles
+
+        try await fixture.server.sendJSON(#"{"type":"management/list-records","payload":{}}"#)
+        try await Task.sleep(for: .milliseconds(50))
+
+        #expect(await fixture.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).count == goodbyeBefore)
+        #expect(await fixture.server.clientJSONMessages(ofType: "management/list-records").isEmpty)
+        #expect(await connection.activities == activitiesBefore)
+        #expect(await connection.activeRoles == rolesBefore)
+        #expect(await !fixture.server.disconnectCalled)
+        await connection.shutdown()
+    }
+
     // MARK: - Unlisted command ignored (GAP 1 test)
 
     @Test("unlisted server commands are ignored while listed commands apply")
@@ -957,9 +979,12 @@ struct SendspinConnectionTests {
         #expect(sawAudioStartFailed, "engine .startFailed must surface as streamError(.audioStartFailed)")
         #expect(sawErrorState, "engine .startFailed must surface operationalState(.error)")
 
-        let afterState = await sentJSONMessages(on: transport)
-            .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
-        #expect(afterState == baselineState, "an engine error must not change the client's available state")
+        let stateMessages = await sentJSONMessages(on: transport)
+            .filter { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString }
+        #expect(stateMessages.count > baselineState, "an engine error must publish a fresh full state snapshot")
+        let errorState = try #require(stateMessages.last.flatMap { try? JSONDecoder().decode(ClientStateMessage.self, from: $0) })
+        #expect(errorState.payload.available, "an engine error must not change the client's available state")
+        #expect(errorState.payload.player != nil, "the error snapshot must include the full player object")
 
         await connection.shutdown()
     }
@@ -1517,12 +1542,10 @@ private func testClientHelloPayload() -> ClientHelloPayload {
     ClientHelloPayload(
         name: "Test Client",
         deviceInfo: .current,
-        trustLevel: .none,
-        supportedPairMethods: [],
+        supportedPairMethods: [:],
         unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
         supportedRoles: [.playerV1],
         playerV1Support: nil,
-        artworkV1Support: nil,
         visualizerV1Support: nil
     )
 }

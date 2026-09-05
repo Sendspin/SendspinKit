@@ -23,7 +23,7 @@ enum ActivationAdmissibility {
     ) -> Bool {
         switch category {
         case .longTerm:
-            activities == [.pairing] || activities.isSubset(of: [.playback, .management])
+            activities.isEmpty || activities == [.playback]
         case .pairing:
             activities == [.pairing]
         case .sentinel:
@@ -54,6 +54,19 @@ enum ActivationAdmissibility {
         let category: PskCategory
         let unpairedAccessEnabled: Bool
         let offeredPairMethods: Set<String>
+        let offeredDynamicFormats: Set<String>
+
+        init(
+            category: PskCategory,
+            unpairedAccessEnabled: Bool,
+            offeredPairMethods: Set<String>,
+            offeredDynamicFormats: Set<String> = []
+        ) {
+            self.category = category
+            self.unpairedAccessEnabled = unpairedAccessEnabled
+            self.offeredPairMethods = offeredPairMethods
+            self.offeredDynamicFormats = offeredDynamicFormats
+        }
     }
 
     /// Evaluate one `server/activate` against the session context. `activeRoles`
@@ -68,6 +81,7 @@ enum ActivationAdmissibility {
         let category = session.category
         let unpairedAccessEnabled = session.unpairedAccessEnabled
         let offeredPairMethods = session.offeredPairMethods
+        let offeredDynamicFormats = session.offeredDynamicFormats
         func admissible(unpairedAccess: Bool) -> Bool {
             guard isAllowedSet(activities, category: category, unpairedAccessEnabled: unpairedAccess)
             else { return false }
@@ -90,11 +104,19 @@ enum ActivationAdmissibility {
             let methodAllowedForCategory: Bool = if pairing.method == PairMethod.pairingPsk {
                 category == .pairing
             } else if pairing.method == PairMethod.dynamicPairingCode || pairing.method == PairMethod.staticPairingCode {
-                category != .pairing
+                category == .sentinel
             } else {
                 false
             }
-            return methodAllowedForCategory && offeredPairMethods.contains(pairing.method)
+            guard methodAllowedForCategory,
+                  offeredPairMethods.contains(pairing.method)
+            else { return false }
+            if pairing.method == PairMethod.dynamicPairingCode {
+                guard let format = pairing.format, offeredDynamicFormats.contains(format) else { return false }
+            } else {
+                guard pairing.format == nil else { return false }
+            }
+            return true
         }
 
         if admissible(unpairedAccess: unpairedAccessEnabled) {

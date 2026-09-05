@@ -8,7 +8,7 @@ SendspinKit provides two complementary ways to observe state: an event stream fo
 
 ## Event stream
 
-``SendspinClient/events`` is an `AsyncStream<ClientEvent>` that emits every significant protocol event:
+``SendspinClient/events`` is an `AsyncStream<ClientEvent>` that emits significant control-plane events. Binary role payloads are delivered through ``SendspinClient/audioChunks``, ``SendspinClient/artwork``, and ``SendspinClient/visualizerData``:
 
 | Event | When |
 |-------|------|
@@ -17,14 +17,15 @@ SendspinKit provides two complementary ways to observe state: an event stream fo
 | ``ClientEvent/pairingAttemptEnded(_:)`` | Code-based pairing attempt ends with a ``PairAbortReason`` |
 | ``ClientEvent/streamStarted(_:)`` | Audio stream begins with format info |
 | ``ClientEvent/streamFormatChanged(_:)`` | Codec or sample rate changed mid-stream |
-| ``ClientEvent/streamEnded`` | Server stopped the audio stream |
-| ``ClientEvent/streamCleared`` | Buffers flushed (e.g., seek operation) |
+| ``ClientEvent/streamEnded(roles:)`` | Server stopped one or more audio streams |
+| ``ClientEvent/streamCleared(roles:)`` | Buffers flushed without ending the stream |
 | ``ClientEvent/metadataReceived(_:)`` | Track metadata updated |
 | ``ClientEvent/groupUpdated(_:)`` | Group membership or playback state changed |
 | ``ClientEvent/controllerStateUpdated(_:)`` | Supported commands, group volume/mute changed |
 | ``ClientEvent/colorStateUpdated(_:)`` | Audio-derived colors updated |
 | ``ClientEvent/colorStateCleared`` | Server cleared the color role state |
 | ``ClientEvent/artworkStreamStarted(_:)`` | Artwork stream configuration received; image bytes arrive through ``SendspinClient/artwork`` |
+| ``ClientEvent/outputDelayChanged(milliseconds:)`` | Server changed the player's output delay |
 | ``ClientEvent/disconnected(reason:)`` | Connection ended |
 
 The stream is consumed exactly once. Start iterating before connecting:
@@ -46,7 +47,7 @@ try await client.connect(to: serverURL)
 - ``SendspinClient/currentStreamFormat`` — active audio format, or `nil`
 - ``SendspinClient/currentVolume`` — player volume (0-100)
 - ``SendspinClient/currentMuted`` — mute state
-- ``SendspinClient/staticDelayMs`` — static playback delay in milliseconds
+- ``SendspinClient/outputDelayMs`` — output delay in milliseconds
 - ``SendspinClient/currentColorState`` — latest audio-derived color state, or `nil` when cleared
 
 These properties update on the main actor and trigger SwiftUI view updates automatically. A

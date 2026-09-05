@@ -2,6 +2,14 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+@Suite("Activity")
+struct ActivityTests {
+    @Test("Activity exposes exactly the protocol activity cases")
+    func exactCases() {
+        #expect(Set(Activity.allCases) == [.playback, .pairing])
+    }
+}
+
 struct VersionedRoleTests {
     // MARK: - String literal initialization
 

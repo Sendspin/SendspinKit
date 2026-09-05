@@ -8,6 +8,7 @@ A Swift client library for the [Sendspin Protocol](https://github.com/Sendspin/s
 - **Controller Role** — Play, pause, skip, volume, shuffle, repeat across device groups
 - **Metadata Role** — Track info, artwork URLs, and playback progress
 - **Artwork Role** — Album art delivery with format and resolution negotiation
+- **Visualizer Role** — Configurable beat, loudness, peak, and spectrum data
 - **Color Role** — Synchronized album and audio-derived color themes
 - **Auto-discovery** — mDNS/Bonjour server discovery with continuous or one-shot modes
 - **Multi-codec** — PCM, Opus, and FLAC support with seamless mid-stream format switching
@@ -60,7 +61,9 @@ let client = try SendspinClient(
         supportedFormats: [
             try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16),
             try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 16),
-        ]
+        ],
+        requiredLeadTimeMs: 100,
+        minBufferMs: 500
     ),
     unpairedAccessEnabled: false,
     pairing: pairing
@@ -99,6 +102,12 @@ for await event in client.events() {
 be paired. Enabling unpaired access deliberately permits unauthenticated server access, so an
 on-path attacker can impersonate a server.
 
+Dynamic player, artwork, and visualizer preferences are sent in `client/state`. Use
+`setPlayerFormatPreference(_:)` or `setPlayerFormatPreference(codec:channels:sampleRate:bitDepth:)`
+to select a supported audio format, and `setArtworkChannelPreference(channel:preference:)` with
+`ArtworkChannelPreference.set(source:format:width:height:)` or `.disable` to update an artwork
+channel. These preferences can be changed while connected and apply to the active or next stream.
+
 ## Pairing codes
 
 Pairing-code flows are app-facing setup hooks. Enable a method in `PairingConfiguration`, then
@@ -108,7 +117,9 @@ listen to the existing `SendspinClient.events()` stream for
 - Dynamic pairing emits a `PairingCodeEmission` with `format == .digits` and a contiguous six-digit
   `payload`, or with `format == .qrCode` and a complete version-one `SP:1` `payload`. Display or
   speak the value from the app; presentation grouping and QR image generation remain app
-  responsibilities. A `nil` emission clears any displayed code.
+  responsibilities. When the server advertises the optional speaker capability, a digits emission
+  also carries a validated `digitAudioPack`; the host app is responsible for decoding and playing
+  those ten clips. A `nil` emission clears any displayed code.
 - Call `try await client.openPairingWindow()` from the app's physical-gesture or equivalent
   operator-confirmation hook. The call records or consumes the connection-owned window intent and
   returns without waiting for pairing to finish. Call `try await client.cancelPairingAttempt()` to
@@ -118,9 +129,8 @@ listen to the existing `SendspinClient.events()` stream for
 
 Static pairing uses `PairingConfiguration(staticPairingCode:staticPairingCodeEnabled:)`. The host
 must provision and persist a device-unique eight-digit ASCII decimal code; never ship a fixed
-shared default. A paired management session can rotate the code through the management pairing
-configuration, while `get-pairing-config` never returns the secret. Static codes are not emitted
-as `pairingCodeChanged` events.
+shared default. Hosts rotate the code through their local pairing configuration; the secret is
+never exposed in client events. Static codes are not emitted as `pairingCodeChanged` events.
 
 Dynamic pairing binds the code to the physical device-presence flow, so a relay cannot reuse a code
 across different Noise handshakes. Static pairing authenticates the code but does not provide that
@@ -183,6 +193,25 @@ struct NowPlayingView: View {
 `currentColorState` is observable and contains the latest accumulated theme. Each state includes
 `serverTimestamp` and, once clock synchronization is ready, `localDisplayTime` for consumers that
 schedule color changes alongside audio, artwork, or visualizer updates.
+
+### Visualizer Configuration
+
+Configure the visualizer role when creating the client. The requested types, maximum update rate,
+and optional spectrum parameters are published in `client/state`; visualizer bytes are delivered
+through `client.visualizerData`.
+
+```swift
+let visualizer = try SendspinClient(
+    identity: SendspinIdentity.generate(),
+    name: "Kitchen Display",
+    roles: [.visualizerV1],
+    visualizerConfig: try VisualizerConfiguration(
+        types: [.loudness, .spectrum],
+        rateMax: 30,
+        spectrum: SpectrumConfiguration(nDispBins: 32, scale: .log, fMin: 60, fMax: 16_000)
+    )
+)
+```
 
 ### Continuous Discovery
 

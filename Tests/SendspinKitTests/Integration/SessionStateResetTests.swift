@@ -71,7 +71,7 @@ struct SessionStateResetTests {
     }
 
     @Test
-    func colorStateMergesDeltasAndPublishesStateBeforeEvent() async throws {
+    func colorStateReplacesFieldsAndPublishesStateBeforeEvent() async throws {
         let client = try makeTestClient(roles: [.colorV1])
         let mock = try await connectClient(client, activeRoles: [.colorV1])
         let initial = SendspinColor(red: 10, green: 20, blue: 30)
@@ -93,7 +93,7 @@ struct SessionStateResetTests {
         ))
         await mock.injectText(initialColorJSON)
         #expect(await waitUntil { await MainActor.run { client.currentColorState?.serverTimestamp == 1 } })
-        #expect(client.currentColorState?.localDisplayTime == nil)
+        #expect(client.currentColorState?.localDisplayTime != nil)
 
         let deltaColorJSON = try serverStateColorJSON(ServerColorState(
             timestamp: 2,
@@ -105,7 +105,7 @@ struct SessionStateResetTests {
 
         switch result {
         case let .completed(state):
-            #expect(state?.backgroundDark == initial)
+            #expect(state?.backgroundDark == nil)
             #expect(state?.primary == nil)
             #expect(state?.accent == nil)
         case .timedOut:
@@ -256,7 +256,7 @@ struct SessionStateResetTests {
         await client.disconnect()
     }
 
-    // MARK: Same-connection delta merge
+    // MARK: Same-connection full-state replacement
 
     @Test
     func metadataDeltasMergeWithinConnection() async throws {
@@ -275,20 +275,32 @@ struct SessionStateResetTests {
         #expect(gotInitial)
 
         try await mock.injectText(serverStateMetadataJSON(title: .value("Song B")))
-        let preservedAlbum = await waitUntil {
-            await MainActor.run {
-                client.currentMetadata?.title == "Song B" && client.currentMetadata?.album == "Album A"
-            }
-        }
-        #expect(preservedAlbum, "Absent metadata fields in a delta must keep previous values")
-
-        try await mock.injectText(serverStateMetadataJSON(album: .null))
-        let clearedAlbum = await waitUntil {
+        let replaced = await waitUntil {
             await MainActor.run {
                 client.currentMetadata?.title == "Song B" && client.currentMetadata?.album == nil
             }
         }
-        #expect(clearedAlbum, "Explicit null metadata fields in a delta must clear previous values")
+        #expect(replaced, "A present metadata object replaces omitted fields")
+
+        try await mock.injectText(serverStateMetadataJSON(progress: .value(MetadataProgress(
+            trackProgress: 32_000, trackDuration: 312_000, playbackSpeed: 1_000
+        ))))
+        #expect(await waitUntil { await MainActor.run { client.currentMetadata?.progress != nil } })
+        try await mock.injectText(serverStateMetadataJSON(title: .value("Song C")))
+        let clearedProgress = await waitUntil {
+            await MainActor.run {
+                client.currentMetadata?.title == "Song C" && client.currentMetadata?.progress == nil
+            }
+        }
+        #expect(clearedProgress, "Omitting progress in a present metadata object clears position")
+
+        try await mock.injectText(serverStateMetadataJSON(album: .null))
+        let clearedAlbum = await waitUntil {
+            await MainActor.run {
+                client.currentMetadata?.title == nil && client.currentMetadata?.album == nil
+            }
+        }
+        #expect(clearedAlbum, "Explicit null metadata fields clear the replacement snapshot")
 
         await client.disconnect()
     }

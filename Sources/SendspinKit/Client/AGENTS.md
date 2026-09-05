@@ -25,9 +25,9 @@ for SwiftUI.
   `DataPlaneSink`; the engine emits `EngineReport`s, drained by the connection's `reportDrain()`
   into `ConnectionEvent`s. (Both enums are `internal`; tests use `@testable import`.)
 - **Outbound sends:** the connection is the transport's single writer. Facade APIs
-  (`requestPlayerFormat`, `requestArtworkFormat`, controller commands) route through connection
-  methods (`requestFormat(player:)`/`requestFormat(artwork:)`/`send(clientMessage:)`). The facade
-  stores no transport, channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
+  (player/artwork state-preference setters and controller commands) route through connection
+  methods that publish full `client/state` snapshots or send `client/command`. The facade stores no transport,
+  channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
   through raw init, Noise establishment, encrypted `server/hello`/`client/hello`, pairing setup,
   and the first admitted activation, then transfers the channel to the connection.
 - **Expects:** a `SendspinTransport` (pull interface — `nextFrame()`, `sendRawText`,
@@ -50,16 +50,16 @@ for SwiftUI.
   `.error`/`.synchronized`) — a one-way edge would break the single-writer claim.
 - **Stream-active mirrors are observational.** The facade's
   `playerStreamActive`/`artworkStreamActive` are render-applied observability mirrors that gate
-  nothing. `stream/request-format` is valid even when no stream is active; the server must not start
-  one in response, but should remember the request for the next stream. `stream/clear` clears buffers
+  nothing. State preference publication is valid even when no stream is active; the server applies the
+  preference to the next stream and does not start one in response. `stream/clear` clears buffers
   WITHOUT ending the stream (spec): mirrors and format survive it on both sides.
 - **Pairing configuration has one runtime source of truth.** `PairingConfigurationRuntime` supplies
-  the snapshot shared by handshake candidates and the management responder; updates do not rely on
+  the snapshot shared by handshake candidates and active sessions; updates do not rely on
   stale copies held by individual connections.
 - **Pairing state is connection-owned and serialized.** `SendspinConnection` holds the single active
   code attempt, pairing window primitive, timeout/lifetime tasks, and pairing-activate counter. The
-  app gesture and paired management request use the same window primitive; a re-handshake clears
-  attempt state and resets the activate counter before the next activation.
+  app gesture uses the connection-owned window primitive; a re-handshake clears attempt state and
+  resets the activate counter before the next activation.
 - **The encoder has no key strategy.** Every outbound `Codable` model declares explicit `CodingKeys`,
   including keys whose wire spelling differs from Swift naming; never rely on encoder key-strategy
   configuration for protocol output.
@@ -73,9 +73,10 @@ for SwiftUI.
   scheduler output task hangs forever on `for await`.
 
 ## Key Files
-- `SendspinClient.swift` — facade; `connect`/`disconnect`, `drainConnectionEvents`, state setters.
+- `SendspinClient.swift` — MainActor facade; connection lifecycle, observable state, events, and state-preference APIs.
 - `HandshakeDriver.swift` — candidate Noise establishment, pairing setup, encrypted hello/activate admission, channel handoff.
-- `SendspinConnection.swift` — encrypted message loop, gates, supervisor, management responder, `reportDrain`, binary emission.
+- `SendspinConnection.swift` — encrypted message loop, state snapshots, gates, supervisor, `reportDrain`, binary emission.
+- `SendspinClient+Commands.swift` — player/artwork state preferences and controller commands.
 - `ConnectionEvent.swift` — control-plane event enum + `ConnectionLifecycle`.
 - `SessionValidityToken.swift` — atomic check-and-yield guard for stale binary events.
 - `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` / `minBufferMs` (player role, `client/state` player object).

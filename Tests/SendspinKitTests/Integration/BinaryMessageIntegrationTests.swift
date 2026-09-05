@@ -27,12 +27,11 @@ struct BinaryMessageIntegrationTests {
         }
 
         // Create binary message
-        var messageData = Data()
-        messageData.append(BinaryMessageType.audioChunk.rawValue)
-
+        var messageData = Data([BinaryMessageType.audioChunk.rawValue])
         let timestamp: Int64 = 1_000_000 // 1 second in microseconds
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
-
+        let sendAhead: UInt32 = 25_000
+        withUnsafeBytes(of: sendAhead.bigEndian) { messageData.append(contentsOf: $0) }
         messageData.append(audioData)
 
         // Decode message
@@ -40,8 +39,9 @@ struct BinaryMessageIntegrationTests {
 
         #expect(message.type == .audioChunk)
         #expect(message.timestamp == 1_000_000)
-        // Verify header/payload split: total frame = header + payload
-        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
+        #expect(message.sendAhead == 25_000)
+        // Verify header/payload split: type, timestamp, send_ahead, then payload.
+        #expect(messageData.count == BinaryMessage.audioChunkHeaderSize + message.data.count)
         #expect(message.data.count == dataSize)
     }
 
@@ -57,6 +57,7 @@ struct BinaryMessageIntegrationTests {
 
             let timestamp = Int64(chunkIndex) * chunkDuration
             withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
+            data.append(contentsOf: [0, 0, 0, 0])
 
             // Add some dummy audio data
             let audioData = Data(repeating: UInt8(chunkIndex), count: 2_048)
@@ -110,20 +111,15 @@ struct BinaryMessageIntegrationTests {
         jpegData.append(contentsOf: [0xFF, 0xD9])
 
         // Create artwork message for channel 0
-        var messageData = Data()
-        messageData.append(BinaryMessageType.artworkChannel0.rawValue)
-
-        let timestamp: Int64 = 5_000_000 // 5 seconds
-        withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
-
+        var messageData = Data([BinaryMessageType.artworkChannel0.rawValue])
         messageData.append(jpegData)
 
         // Decode
         let message = try #require(BinaryMessage(data: messageData))
 
         #expect(message.type == .artworkChannel0)
-        #expect(message.timestamp == 5_000_000)
-        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
+        #expect(message.timestamp == 0)
+        #expect(message.data == jpegData)
 
         // Verify JPEG header is intact
         #expect(message.data[0] == 0xFF)
@@ -141,11 +137,7 @@ struct BinaryMessageIntegrationTests {
 
         // Create messages for all 4 artwork channels
         for (channelNum, artworkType) in artworkTypes.enumerated() {
-            var data = Data()
-            data.append(artworkType.rawValue)
-
-            let timestamp: Int64 = 1_000_000
-            withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
+            var data = Data([artworkType.rawValue])
 
             // Different image data for each channel
             let imageData = Data(repeating: UInt8(channelNum * 10), count: 512)
@@ -161,28 +153,24 @@ struct BinaryMessageIntegrationTests {
         #expect(channels[2].type == .artworkChannel2)
         #expect(channels[3].type == .artworkChannel3)
 
-        // All have same timestamp (simultaneous update)
+        // Artwork frames carry raw role bytes; timestamps are part of Phase 5 announces.
         for channel in channels {
-            #expect(channel.timestamp == 1_000_000)
+            #expect(channel.timestamp == 0)
         }
     }
 
     @Test
     func emptyArtworkMessageClearArtworkCommand() throws {
         // Per spec, empty artwork message clears the display
-        var data = Data()
-        data.append(BinaryMessageType.artworkChannel0.rawValue)
+        let data = Data([BinaryMessageType.artworkChannel0.rawValue])
 
-        let timestamp: Int64 = 2_000_000
-        withUnsafeBytes(of: timestamp.bigEndian) { data.append(contentsOf: $0) }
-
-        // No image data - just header
+        // No image data - just the type byte
 
         let message = try #require(BinaryMessage(data: data))
 
         #expect(message.type == .artworkChannel0)
-        #expect(message.timestamp == 2_000_000)
-        #expect(message.data.isEmpty) // Empty payload signals "clear"
+        #expect(message.timestamp == 0)
+        #expect(message.data.isEmpty)
     }
 
     @Test
@@ -225,13 +213,13 @@ struct BinaryMessageIntegrationTests {
 
         let timestamp: Int64 = 10_000_000
         withUnsafeBytes(of: timestamp.bigEndian) { messageData.append(contentsOf: $0) }
-
+        messageData.append(contentsOf: [0, 0, 0, 0])
         messageData.append(audioData)
 
         let message = try #require(BinaryMessage(data: messageData))
 
         #expect(message.type == .audioChunk)
         #expect(message.data.count == chunkSize)
-        #expect(messageData.count == BinaryMessage.headerSize + message.data.count)
+        #expect(messageData.count == BinaryMessage.audioChunkHeaderSize + message.data.count)
     }
 }

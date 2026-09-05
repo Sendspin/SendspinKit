@@ -9,11 +9,10 @@ struct MessageEncodingTests {
         let initJSON = try String(data: encoder.encode(ClientPairInitPayload(pairingIndex: 1, commitB: "commit")), encoding: .utf8)
         let nonceJSON = try String(data: encoder.encode(ServerPairInitPayload(nonceA: "nonce")), encoding: .utf8)
         let wrappedJSON = try String(data: encoder.encode(ClientPairConfirmPayload(clientKc: "tag", wrappedNonceB: "wrapped")), encoding: .utf8)
-        let methodsJSON = try String(data: encoder.encode(PairMethodDescriptor(
-            method: "dynamic_pairing_code",
+        let methodsJSON = try String(data: encoder.encode(["dynamic_pairing_code": PairMethodDescriptor(
             outChannels: ["display"],
             formats: ["digits", "qr_code"]
-        )), encoding: .utf8)
+        )]), encoding: .utf8)
         let finalizeJSON = try String(data: encoder.encode(ClientPairFinalizePayload(wrappedPsk: "wrapped")), encoding: .utf8)
 
         let initData = try #require(initJSON?.data(using: .utf8))
@@ -34,9 +33,10 @@ struct MessageEncodingTests {
         #expect(initObject["commit__b"] == nil)
         #expect(nonceObject["nonce__a"] == nil)
         #expect(wrappedObject["wrapped_nonce__b"] == nil)
-        #expect(methodsObject["out_channels"] as? [String] == ["display"])
-        #expect(methodsObject["formats"] as? [String] == ["digits", "qr_code"])
-        #expect(methodsObject["out__channels"] == nil)
+        let dynamicMethod = try #require(methodsObject["dynamic_pairing_code"] as? [String: Any])
+        #expect(dynamicMethod["out_channels"] as? [String] == ["display"])
+        #expect(dynamicMethod["formats"] as? [String] == ["digits", "qr_code"])
+        #expect(dynamicMethod["out__channels"] == nil)
         #expect(finalizeObject["wrapped_psk"] as? String == "wrapped")
         #expect(finalizeObject["wrapped__psk"] == nil)
 
@@ -51,18 +51,15 @@ struct MessageEncodingTests {
         let payload = try ClientHelloPayload(
             name: "Test Client",
             deviceInfo: nil,
-            trustLevel: .none,
-            supportedPairMethods: [],
+            supportedPairMethods: [:],
             unpairedAccess: UnpairedAccessAdvertisement(enabled: true),
             supportedRoles: [.playerV1],
             playerV1Support: PlayerSupport(
                 supportedFormats: [
                     AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
                 ],
-                bufferCapacity: 1_024,
-                supportedCommands: [.volume, .mute]
+                bufferCapacity: 1_024
             ),
-            artworkV1Support: nil,
             visualizerV1Support: nil
         )
 
@@ -132,7 +129,42 @@ struct MessageEncodingTests {
         #expect(json.contains("\"available\":true"))
         #expect(json.contains("\"volume\":80"))
         #expect(json.contains("\"muted\":false"))
-        #expect(json.contains("\"static_delay_ms\":0"))
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let encodedPayload = try #require(object["payload"] as? [String: Any])
+        let encodedPlayer = try #require(encodedPayload["player"] as? [String: Any])
+        #expect(encodedPlayer["output_delay_ms"] as? Int == 0)
+        #expect(encodedPlayer["static_delay_ms"] == nil)
+    }
+
+    @Test
+    func clientStatePlayerFixtureUsesExactOutputDelayWireKey() throws {
+        let player = try PlayerStateObject(volume: 80, muted: false, outputDelayMs: 250)
+        let message = ClientStateMessage(payload: ClientStatePayload(available: true, player: player))
+        let data = try SendspinEncoding.makeEncoder().encode(message)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let expected: [String: Any] = [
+            "type": "client/state",
+            "payload": [
+                "available": true,
+                "player": [
+                    "volume": 80,
+                    "muted": false,
+                    "output_delay_ms": 250,
+                    "supported_commands": [],
+                    "required_lead_time_ms": defaultRequiredLeadTimeMs,
+                    "min_buffer_ms": defaultMinBufferMs
+                ]
+            ]
+        ]
+        #expect(NSDictionary(dictionary: object).isEqual(to: expected))
+    }
+
+    @Test
+    func serverCommandIgnoresStaleStaticDelayField() throws {
+        let data = Data(#"{"type":"server/command","payload":{"player":{"command":"set_output_delay","static_delay_ms":250}}}"#.utf8)
+        let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
+        #expect(message.payload.player?.command == .setOutputDelay)
+        #expect(message.payload.player?.outputDelayMs == nil)
     }
 
     @Test
@@ -142,14 +174,15 @@ struct MessageEncodingTests {
     }
 
     @Test
-    func playerStateObject_rejectsVolumeMuteInSupportedCommands() {
-        // client/state supported_commands is a subset of {set_output_delay}.
-        #expect(throws: ConfigurationError.invalidStateCommands(["volume"])) {
+    func playerStateObject_requiresVolumeAndMuteForAdvertisedCommands() {
+        #expect(throws: ConfigurationError.missingRequiredStateField("volume")) {
             try PlayerStateObject(supportedCommands: [.volume])
         }
-        #expect(throws: ConfigurationError.invalidStateCommands(["mute", "volume"])) {
-            try PlayerStateObject(supportedCommands: [.volume, .mute])
+        #expect(throws: ConfigurationError.missingRequiredStateField("muted")) {
+            try PlayerStateObject(supportedCommands: [.mute])
         }
+        let state = try? PlayerStateObject(volume: 80, muted: false, supportedCommands: [.volume, .mute, .setOutputDelay])
+        #expect(state?.supportedCommands.count == 3)
     }
 
     // MARK: - client/goodbye
@@ -277,7 +310,7 @@ struct MessageEncodingTests {
     @Test
     func serverCommand_decodesSetOutputDelayCommand() throws {
         let json = """
-        {"type": "server/command", "payload": {"player": {"command": "set_static_delay", "static_delay_ms": 250}}}
+        {"type": "server/command", "payload": {"player": {"command": "set_output_delay", "output_delay_ms": 250}}}
         """
         let data = try #require(json.data(using: .utf8))
         let message = try JSONDecoder().decode(ServerCommandMessage.self, from: data)
@@ -627,23 +660,6 @@ struct MessageEncodingTests {
         let noise = try decoder.decode(NoiseHandshakeMessage.self, from: noiseData)
         #expect(noise.payload.data == "AQ")
 
-        let managementJSON = """
-        {
-            "type": "management/set-pairing-config",
-            "payload": {
-                "pairing_psk": {"enabled": true},
-                "static_pairing_code": null,
-                "dynamic_pairing_code": null,
-                "record_mode": null,
-                "unpaired_access": null,
-                "future_management_field": false
-            }
-        }
-        """
-        let managementData = try #require(managementJSON.data(using: .utf8))
-        let management = try decoder.decode(ManagementSetPairingConfigMessage.self, from: managementData)
-        #expect(management.payload.pairingPsk?.enabled == true)
-
         let serverHelloJSON = """
         {
             "type": "server/hello",
@@ -746,8 +762,8 @@ struct MessageEncodingTests {
             "type": "server/command",
             "payload": {
                 "player": {
-                    "command": "set_static_delay",
-                    "static_delay_ms": 250,
+                    "command": "set_output_delay",
+                    "output_delay_ms": 250,
                     "future_command_field": "ignored"
                 },
                 "future_payload_field": "ignored"

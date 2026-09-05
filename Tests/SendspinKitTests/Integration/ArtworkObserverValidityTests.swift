@@ -10,7 +10,7 @@ struct ArtworkObserverValidityTests {
             name: "Test Client",
             roles: [.artworkV1],
             artworkConfig: ArtworkConfiguration(channels: [
-                ArtworkChannel(source: .album, format: .jpeg, mediaWidth: 300, mediaHeight: 300)
+                ArtworkChannel(source: .album, format: .jpeg, width: 300, height: 300)
             ])
         )
     }
@@ -26,12 +26,9 @@ struct ArtworkObserverValidityTests {
         return try #require(String(data: JSONEncoder().encode(message), encoding: .utf8))
     }
 
-    /// Binary artwork frame (type byte + big-endian timestamp + image bytes).
+    /// Binary artwork frame with raw role bytes; transfer metadata is handled in Phase 5.
     private func artworkFrame(channel: Int) -> Data {
-        var frame = Data()
-        frame.append(BinaryMessageType.artworkChannel0.rawValue + UInt8(channel))
-        var timestamp = Int64(1_000_000).bigEndian
-        frame.append(Data(bytes: &timestamp, count: 8))
+        var frame = Data([BinaryMessageType.artworkChannel0.rawValue + UInt8(channel)])
         frame.append(Data(repeating: 0xFF, count: 100))
         return frame
     }

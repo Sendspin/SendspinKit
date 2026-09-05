@@ -108,7 +108,7 @@ struct PskCandidateTests {
             PskCandidate(psk: .sentinel, category: .sentinel),
             PskCandidate(psk: record, category: .longTerm)
         ]
-        let selected = PskCandidate.select(from: candidates, pskId: record.pskId, serverId: serverId)
+        let selected = PskCandidate.select(from: candidates, pskId: record.pskId, pskCategory: .longTerm, serverId: serverId)
         #expect(selected?.psk == record)
         #expect(selected?.category == .longTerm)
     }
@@ -157,10 +157,17 @@ struct PskCandidateTests {
         }
     }
 
+    @Test("A matching PSK in the wrong declared category is a lookup miss")
+    func wrongCategoryIsLookupMiss() {
+        let record = Psk.generate()
+        let candidates = [PskCandidate(psk: record, category: .longTerm)]
+        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, pskCategory: .pairing, serverId: serverId) == nil)
+    }
+
     @Test("Lookup miss returns nil (handshake failure)")
     func lookupMiss() {
         let candidates = [PskCandidate(psk: .sentinel, category: .sentinel)]
-        #expect(PskCandidate.select(from: candidates, pskId: Psk.generate().pskId, serverId: serverId) == nil)
+        #expect(PskCandidate.select(from: candidates, pskId: Psk.generate().pskId, pskCategory: .sentinel, serverId: serverId) == nil)
     }
 
     @Test("Stored-pubkey record fails when server_id does not match")
@@ -169,15 +176,15 @@ struct PskCandidateTests {
         let candidates = [
             PskCandidate(psk: record, category: .longTerm, requiredServerId: "server-b")
         ]
-        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, serverId: serverId) == nil)
-        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, serverId: "server-b") != nil)
+        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, pskCategory: .longTerm, serverId: serverId) == nil)
+        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, pskCategory: .longTerm, serverId: "server-b") != nil)
     }
 
     @Test("Shared-PSK record accepts any server_id")
     func sharedPskAcceptsAnyServer() {
         let record = Psk.generate()
         let candidates = [PskCandidate(psk: record, category: .longTerm)]
-        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, serverId: "anything") != nil)
+        #expect(PskCandidate.select(from: candidates, pskId: record.pskId, pskCategory: .longTerm, serverId: "anything") != nil)
     }
 }
 

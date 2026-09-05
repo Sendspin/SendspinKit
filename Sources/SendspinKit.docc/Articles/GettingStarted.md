@@ -18,7 +18,7 @@ dependencies: [
 
 ## Create a client
 
-A ``SendspinClient`` needs a unique ID, display name, and at least one role. Players also need a ``PlayerConfiguration`` declaring supported audio formats.
+A ``SendspinClient`` needs a ``SendspinIdentity``, display name, and at least one role. Players also need a ``PlayerConfiguration`` declaring supported audio formats. Artwork and visualizer roles likewise require their role configuration.
 
 ```swift
 import SendspinKit
@@ -27,16 +27,25 @@ let client = try SendspinClient(
     identity: .generate(),
     name: "Kitchen Speaker",
     roles: [.playerV1, .metadataV1],
-    playerConfig: PlayerConfiguration(
+    playerConfig: try PlayerConfiguration(
         bufferCapacity: 1_048_576,
         supportedFormats: [
-            AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
-            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48000, bitDepth: 16),
-            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16),
-        ]
+            try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
+            try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48000, bitDepth: 16),
+            try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16),
+        ],
+        requiredLeadTimeMs: 100,
+        minBufferMs: 500
     )
 )
 ```
+
+For artwork, provide an ``ArtworkConfiguration`` with one to four ``ArtworkChannel`` values;
+use ``ArtworkChannelPreference`` and ``SendspinClient/setArtworkChannelPreference(channel:preference:)``
+to change a channel while connected. For visualizer data, provide a ``VisualizerConfiguration``;
+include ``SpectrumConfiguration`` whenever the requested types contain ``VisualizerType/spectrum``.
+These role configurations seed the initial `client/state` snapshot; dynamic preference changes use the
+corresponding state-preference APIs.
 
 ## Connect to a server
 
@@ -108,6 +117,9 @@ for await event in client.events() {
     case let .pairingCodeChanged(emission?):
         print("Pairing \(emission.format.rawValue): \(emission.payload)")
         // Display or speak digits; render the complete SP:1 payload as a QR code.
+        if let pack = emission.digitAudioPack {
+            playDigitAudio(pack) // The host app decodes and plays the ten clips.
+        }
     case .pairingCodeChanged(nil):
         print("Pairing code cleared")
     case let .pairingAttemptEnded(reason):
@@ -122,10 +134,13 @@ Call ``SendspinClient/openPairingWindow()`` when the app receives its physical-g
 operator-confirmation signal. It returns after recording or consuming the connection-owned window;
 it does not wait for the attempt. ``SendspinClient/cancelPairingAttempt()`` cancels an attempt or
 closes the local window. Dynamic codes are six contiguous digits or a complete version-one `SP:1`
-token. Static pairing instead requires the host to provision and persist a device-unique eight-digit
-ASCII decimal code with ``PairingConfiguration/init(pairingPsk:store:enabled:dynamicPairingCodeEnabled:staticPairingCode:staticPairingCodeEnabled:)``;
-the library never supplies a fixed default or emits that secret. Dynamic pairing binds device
-presence, while a leaked static code is exposed to man-in-the-middle pairing.
+token. If the dynamic method includes a speaker output capability, the digits emission also includes
+a validated ``DigitAudioPack``; the host app decodes and plays its clips. Static pairing instead
+requires the host to provision and persist a device-unique eight-digit ASCII decimal code with
+``PairingConfiguration/init(pairingPsk:store:enabled:dynamicPairingCodeEnabled:staticPairingCode:staticPairingCodeEnabled:digitAudio:)``;
+the library never supplies a fixed default or emits that secret. Choose at most one code method in
+``PairingConfiguration``. Dynamic pairing binds device presence, while a leaked static code is
+exposed to man-in-the-middle pairing.
 
 ## Observe state in SwiftUI
 

@@ -48,12 +48,7 @@ enum HandshakeDriver {
                 timeout: phaseTimeout
             )
             let hello = try JSONDecoder().decode(ServerHelloMessage.self, from: helloData)
-            var clientHello = configuration.clientHello
-            if case .longTerm = outcome.matchedCandidate.category {
-                clientHello.trustLevel = .user
-            } else {
-                clientHello.trustLevel = .none
-            }
+            let clientHello = configuration.clientHello
             try await sendJSON(
                 ClientHelloMessage(payload: clientHello),
                 on: transport,
@@ -63,7 +58,8 @@ enum HandshakeDriver {
             let session = ActivationAdmissibility.SessionContext(
                 category: outcome.matchedCandidate.category,
                 unpairedAccessEnabled: configuration.unpairedAccessEnabled,
-                offeredPairMethods: Set(clientHello.supportedPairMethods.map(\.method))
+                offeredPairMethods: Set(clientHello.supportedPairMethods.keys),
+                offeredDynamicFormats: Set(clientHello.supportedPairMethods[PairMethod.dynamicPairingCode]?.formats ?? [])
             )
 
             while true {

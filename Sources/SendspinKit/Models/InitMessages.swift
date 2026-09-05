@@ -69,13 +69,15 @@ struct NoiseHandshakePayload: Codable, Equatable {
     let data: String
 }
 
-/// The encrypted JSON object inside Noise message 1: the `psk_id` the client uses
-/// to select its PSK before processing message 2.
+/// The encrypted JSON object inside Noise message 1: the `psk_id` and category
+/// the client uses to select its PSK before processing message 2.
 struct NoiseMessage1Payload: Codable, Equatable {
     let pskId: String
+    let pskCategory: PskCategory
 
     enum CodingKeys: String, CodingKey {
         case pskId = "psk_id"
+        case pskCategory = "psk_category"
     }
 }
 

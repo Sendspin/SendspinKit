@@ -10,7 +10,7 @@ import Testing
 /// callback where the bug lives.
 struct FLACChannelSafetyTests {
     /// Complete 1-channel FLAC stream (magic + STREAMINFO + comment + one frame).
-    private static let monoFLAC = Data(base64Encoded: [
+    static let monoFLAC = Data(base64Encoded: [
         "ZkxhQwAAACIQABAAAAKTAAKTCsRA8AAACJ0dJi5K1u7pVRchehGT7NQBAwAAEgAAAAAAAAAAAAAAAAAAAAAInYQAACggAAAAcmVm",
         "ZXJlbmNlIGxpYkZMQUMgMS41LjAgMjAyNTAyMTEAAAAA//h5CAAInBRCAAABALU/5gAAE00mcpKZ/yUKZkpKYFDIcJmZOGZMkhky",
         "ZyckuSnnk8nmSlKecmhKZkyZMmZQzhyUJhhM5knJKTmZzJhQoUKFJl5SZyFkyZzMlOYUkzOSSSThQoZmZkyUJOEpyUKHnp4ULMyc",

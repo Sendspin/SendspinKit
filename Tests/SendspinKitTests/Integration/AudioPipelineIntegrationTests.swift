@@ -54,15 +54,16 @@ enum TestSignal {
         return bytes
     }
 
-    /// Pack PCM audio data into a binary frame: [type:1][timestamp:8 BE][data:N]
+    /// Pack PCM audio data into a type-4 frame with the spec's send_ahead field.
     static func packBinaryFrame(
         audioData: [UInt8],
         timestampMicroseconds: Int64,
+        sendAhead: UInt32 = 0,
         type: BinaryMessageType = .audioChunk
     ) -> Data {
-        var frame = Data()
-        frame.append(type.rawValue)
+        var frame = Data([type.rawValue])
         withUnsafeBytes(of: timestampMicroseconds.bigEndian) { frame.append(contentsOf: $0) }
+        withUnsafeBytes(of: sendAhead.bigEndian) { frame.append(contentsOf: $0) }
         frame.append(contentsOf: audioData)
         return frame
     }
@@ -137,6 +138,25 @@ struct AudioPipelineIntegrationTests {
 
         let sampleCount = pcmBytes.count / 3
         #expect(decoded.count == sampleCount * 4) // 3 bytes in → 4 bytes out
+    }
+
+    @Test
+    func sendAheadValuesDoNotChangePipelinePlayTimes() async {
+        let clock = StubClock()
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+        await engine.start()
+
+        let timestamp = MonotonicClock.absoluteMicroseconds() + 10_000_000
+        engine.enqueueAudioChunk(data: Data(repeating: 0, count: 100), timestamp: timestamp, sendAhead: 1_000)
+        engine.enqueueAudioChunk(data: Data(repeating: 0, count: 100), timestamp: timestamp, sendAhead: 2_000)
+        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 2 }
+        let queued = await scheduler.queuedChunks
+        await engine.shutdown()
+
+        #expect(received)
+        #expect(queued.map(\.playTimeMicroseconds) == [timestamp, timestamp])
     }
 
     // MARK: - Sequential chunks (simulating a stream)
