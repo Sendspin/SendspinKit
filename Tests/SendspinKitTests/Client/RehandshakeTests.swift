@@ -151,6 +151,16 @@ struct RehandshakeTests {
         #expect(await waitUntil {
             await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).count == 1
         })
+        let types = await server.decryptedMessages.compactMap { message -> String? in
+            guard message.first == NoiseFrameType.json else { return nil }
+            return SendspinEncoding.messageType(of: Data(message.dropFirst()))
+        }
+        #expect(Array(types.suffix(2)) == [ClientPairInitMessage.typeString, ClientPairFinalizeMessage.typeString])
+        let initData = try #require(await server.clientJSONMessages(ofType: ClientPairInitMessage.typeString).first)
+        let pairInit = try JSONDecoder().decode(ClientPairInitMessage.self, from: initData)
+        let expectedPairingIndex: UInt32 = 1
+        #expect(pairInit.payload.pairingIndex == expectedPairingIndex)
+        #expect(pairInit.payload.commitB == nil)
         let finalizeData = await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString)[0]
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
         let longTermPsk = try #require(Psk(base64URL: finalize.payload.longTermPsk))

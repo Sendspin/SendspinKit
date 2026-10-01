@@ -505,10 +505,19 @@ extension SendspinConnection {
             guard !Task.isCancelled else { return }
             await self?.pairingAttemptTimedOut(attemptID: attemptID)
         }
-        try? await sendPairingWrapped(
-            ClientPairFinalizeMessage(payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)),
-            attemptID: authorizedAttemptID
-        )
+        do {
+            try await sendPairingWrapped(
+                ClientPairInitMessage(payload: ClientPairInitPayload(pairingIndex: pairingActivateCounter, commitB: nil)),
+                attemptID: authorizedAttemptID
+            )
+            try await sendPairingWrapped(
+                ClientPairFinalizeMessage(payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)),
+                attemptID: authorizedAttemptID
+            )
+        } catch {
+            guard pairingAttemptID == authorizedAttemptID else { return }
+            clearPairingAttempt()
+        }
     }
 
     /// Generate the PSK committed by `client/pair-finalize`.
@@ -580,27 +589,19 @@ extension SendspinConnection {
             return
         }
         do {
-            let reservation = try await pairingStore.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
+            let count = try await pairingStore.dynamicPairingRoundCount()
             guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
-            guard var reservedAttempt = dynamicPairingAttempt else { return }
-            switch reservation {
-            case let .reserved(round, _):
-                reservedAttempt.round = round
-                dynamicPairingAttempt = reservedAttempt
+            if count < dynamicPairingRoundLimit {
                 await sendDynamicPairInit(attemptID: authorizedAttemptID)
-            case .exhausted:
-                // Before the first pair-init, budget exhaustion keeps the attempt pending.
+            } else {
                 try? await sendPairingWrapped(
                     ClientPairPendingMessage(payload: ClientPairPendingPayload(pairingIndex: pairingActivateCounter)),
                     attemptID: authorizedAttemptID
                 )
             }
         } catch {
-            Log.client.error("Dynamic pairing budget reservation failed: \(error.localizedDescription)")
-            guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
-            clearPairingAttempt()
-            disconnectReason = .connectionLost(nil)
-            await transport.disconnect()
+            Log.client.error("Dynamic pairing budget read failed: \(error.localizedDescription)")
+            await failPairingStorage(for: authorizedAttemptID)
         }
     }
 
@@ -667,7 +668,7 @@ extension SendspinConnection {
         guard let authorizedAttemptID = attemptID ?? pairingAttemptID,
               pairingAttemptID == authorizedAttemptID,
               var attempt = dynamicPairingAttempt,
-              attempt.round > 0
+              !attempt.pairInitSent
         else { return }
         closePairingWindow(for: authorizedAttemptID)
         if pairingAttemptTask == nil {
@@ -677,7 +678,6 @@ extension SendspinConnection {
                 await self?.pairingAttemptTimedOut(attemptID: authorizedAttemptID)
             }
         }
-        attempt.pairInitSent = false
         attempt.serverShare = nil
         attempt.cpace = nil
         attempt.secrets = nil
@@ -706,38 +706,25 @@ extension SendspinConnection {
         }
         pairingAttemptActive = true
         let authorizedAttemptID = attemptID
+        guard !pairingWindowOpen, pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
+            throw SendspinClientError.stalePairingAttempt(authorizedAttemptID)
+        }
         // Only dynamic pairing consumes the shared round budget. Static-code
         // approval is scoped to this attempt and does not reset that budget.
-        if var dynamicAttempt = dynamicPairingAttempt, dynamicAttempt.round == 0 {
+        if let dynamicAttempt = dynamicPairingAttempt, !dynamicAttempt.pairInitSent {
             guard let pairingStore else {
                 await failPairingStorage(for: authorizedAttemptID)
                 throw PairingRecordStoreError.storageExhausted
             }
             do {
                 try await pairingStore.resetDynamicPairingBudget()
-                guard pairingAttemptID == authorizedAttemptID else {
-                    throw SendspinClientError.stalePairingAttempt(authorizedAttemptID)
-                }
-                let reservation = try await pairingStore.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
                 guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
                     throw SendspinClientError.stalePairingAttempt(authorizedAttemptID)
                 }
-                guard case let .reserved(round, _) = reservation else {
-                    clearPairingAttempt(reason: .pairingCodeMismatch)
-                    pairingAbortAuthorization = authorizedAttemptID
-                    try? await sendPairingWrapped(
-                        PairAbortMessage(payload: PairAbortPayload(reason: .pairingCodeMismatch)),
-                        attemptID: authorizedAttemptID,
-                        allowClearedAbort: true
-                    )
-                    throw PairingRecordStoreError.storageExhausted
-                }
-                dynamicAttempt.round = round
-                dynamicPairingAttempt = dynamicAttempt
             } catch let error as SendspinClientError {
                 throw error
             } catch {
-                Log.client.error("Dynamic pairing budget reservation failed: \(error.localizedDescription)")
+                Log.client.error("Dynamic pairing budget reset failed: \(error.localizedDescription)")
                 await failPairingStorage(for: authorizedAttemptID)
                 throw error
             }
@@ -855,11 +842,7 @@ extension SendspinConnection {
         guard var attempt = dynamicPairingAttempt, attempt.pairInitSent,
               attempt.cpace == nil, attempt.serverShare == nil
         else { throw PairingProtocolError.invalidSequence }
-        guard attempt.round > 0 else {
-            // The first round is reserved when the attempt is authorized. A pending
-            // attempt cannot receive server/pair-init until a reset authorizes it.
-            return
-        }
+        guard let authorizedAttemptID = pairingAttemptID else { return }
         if attempt.prs == nil {
             guard let encodedNonceA = message.payload.nonceA,
                   let nonceA = Base64URL.decode(encodedNonceA, count: 32)
@@ -898,22 +881,41 @@ extension SendspinConnection {
             }
             attempt.prs = prs
             attempt.emission = emission
-            enqueuePairingCode(emission)
         } else {
-            guard message.payload.nonceA == nil, let prs = attempt.prs else {
+            guard message.payload.nonceA == nil else {
                 throw PairingProtocolError.invalidSequence
-            }
-            if let emission = attempt.emission {
-                enqueuePairingCode(emission)
             }
             attempt.clientConfirmationSent = false
             attempt.serverShare = nil
             attempt.secrets = nil
             attempt.sid = nil
             attempt.cpace = nil
-            _ = prs
         }
-        guard let prs = attempt.prs else { throw PairingProtocolError.invalidSequence }
+        guard let prs = attempt.prs, let emission = attempt.emission else { throw PairingProtocolError.invalidSequence }
+        guard let pairingStore else {
+            await failPairingStorage(for: authorizedAttemptID)
+            return
+        }
+        guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
+        let reservation: DynamicPairingRoundReservation
+        do {
+            reservation = try await pairingStore.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
+        } catch {
+            Log.client.error("Dynamic pairing budget reservation failed: \(error.localizedDescription)")
+            await failPairingStorage(for: authorizedAttemptID)
+            return
+        }
+        // An attempt superseded during the store await consumes a round without emitting.
+        // This only reduces remaining attempts, never exceeds the limit; a refund requires
+        // a persistence API.
+        guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
+        guard case .reserved = reservation else {
+            await abortPairingAttempt(reason: .pairingCodeMismatch, attemptID: authorizedAttemptID)
+            return
+        }
+        // Each emitted round consumes global budget, but its sid counts only this attempt.
+        attempt.round += 1
+        enqueuePairingCode(emission)
         #if DEBUG
             let pairingHandshakeHash = pairingHandshakeHashOverride ?? channel.handshakeHash
         #else
@@ -1030,31 +1032,24 @@ extension SendspinConnection {
         else { throw PairingProtocolError.invalidSequence }
         let expected = CPaceX25519.mcfTag(isk: secrets.isk, sid: sid, share: serverShare, associatedData: CPaceX25519.defaultInitiatorAD)
         guard CPaceX25519.constantTimeEqual(tag, expected) else {
-            if attempt.round < dynamicPairingRoundLimit {
+            guard let pairingStore else {
+                await failPairingStorage(for: authorizedAttemptID)
+                return
+            }
+            let count: UInt32
+            do {
+                count = try await pairingStore.dynamicPairingRoundCount()
+            } catch {
+                Log.client.error("Dynamic pairing budget read failed: \(error.localizedDescription)")
+                await failPairingStorage(for: authorizedAttemptID)
+                return
+            }
+            guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
+            if count < dynamicPairingRoundLimit {
                 attempt.serverShare = nil
                 attempt.cpace = nil
                 attempt.secrets = nil
                 attempt.sid = nil
-                dynamicPairingAttempt = attempt
-                guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
-                guard let pairingStore else {
-                    await failPairingStorage(for: authorizedAttemptID)
-                    return
-                }
-                let reservation: DynamicPairingRoundReservation
-                do {
-                    reservation = try await pairingStore.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
-                } catch {
-                    Log.client.error("Dynamic pairing budget reservation failed: \(error.localizedDescription)")
-                    await failPairingStorage(for: authorizedAttemptID)
-                    return
-                }
-                guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
-                guard case let .reserved(round, _) = reservation else {
-                    await abortPairingAttempt(reason: .pairingCodeMismatch, attemptID: authorizedAttemptID)
-                    return
-                }
-                attempt.round = round
                 dynamicPairingAttempt = attempt
                 guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
                 try? await sendPairingWrapped(
@@ -1062,7 +1057,7 @@ extension SendspinConnection {
                     attemptID: authorizedAttemptID
                 )
                 guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
-                await sendDynamicPairInit(attemptID: authorizedAttemptID)
+                // The server starts the next round; binding values and the timeout stay in place.
             } else {
                 guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
                 await abortPairingAttempt(reason: .pairingCodeMismatch, attemptID: authorizedAttemptID)

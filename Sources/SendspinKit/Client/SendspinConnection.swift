@@ -174,8 +174,9 @@ actor SendspinConnection {
         var nonceA: Data?
         var prs: Data?
         var emission: PairingCodeEmission?
-        /// The atomically reserved global round. Zero means the attempt is held pending
-        /// until an explicit dynamic-budget reset action makes a reservation possible.
+        /// The attempt-local round fed into the CPace sid: 1 on the first validated
+        /// server/pair-init, incremented once per round. The device store owns the
+        /// 20-round budget and charges each valid round immediately before emission.
         var round: UInt32
         var sid: Data?
         var pairInitSent: Bool

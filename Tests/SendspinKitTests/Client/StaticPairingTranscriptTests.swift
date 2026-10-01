@@ -375,8 +375,11 @@ struct StaticPairingTranscriptTests {
             pairingHandshakeHashOverride: dataFromHex(fixture.handshakeHash),
             pairingScalarBOverride: dataFromHex(fixture.scalarB)
         )
+        _ = try await session.store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
+        _ = try await session.store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
         try await activateStatic(session.server)
         let (confirmData, finalizeData) = try await staticServerTranscript(session, operatorOpen: true)
+        #expect(try await session.store.dynamicPairingRoundCount() == 2)
         #expect(session.client.pairingWindow == nil)
         let confirm = try JSONDecoder().decode(ClientPairConfirmMessage.self, from: confirmData)
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)

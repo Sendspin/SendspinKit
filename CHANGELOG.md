@@ -30,6 +30,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
 
 ### Fixed
+- Send `client/pair-init` with the activation's pairing index immediately before `client/pair-finalize` in Pairing PSK attempts, without awaiting a server response.
+- Use attempt-local CPace round numbers while charging the persisted device-wide round budget only for valid dynamic rounds whose code is emitted.
+- Send `client/pair-init` only once per dynamic attempt; after `client/pair-retry`, wait for the server to begin the next round.
 - Honor the host's unpaired-access policy on subsequent server activations, including playback starting after an idle Sentinel connection.
 
 ## [0.3.0] - 2025-10-26
