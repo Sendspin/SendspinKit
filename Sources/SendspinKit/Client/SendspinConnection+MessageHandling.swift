@@ -294,7 +294,7 @@ extension SendspinConnection {
     /// The live message loop starts after setup, so pairing must be initialized here
     /// rather than waiting for another server/activate frame.
     func applyInitialPairingActivation(_ pairing: PairingDirective) async {
-        guard activities == [.pairing] else { return }
+        guard activities.contains(.pairing) else { return }
         if pairingAttemptID == nil {
             admitPairingAttempt()
         } else {
@@ -314,8 +314,61 @@ extension SendspinConnection {
         }
     }
 
+    private func clearRemovedRoles(_ removedRoles: Set<VersionedRole>) {
+        let names = Set(removedRoles.map(\.role))
+        if names.contains(VersionedRole.metadataV1.role) {
+            currentMetadata = nil
+            // Clearing pending state makes a resumed sleeper a no-op even when it swallows cancellation.
+            metadataPending = nil
+            metadataScheduleTask?.cancel()
+            metadataScheduleTask = nil
+            controlSink.enqueue(.metadataCleared)
+        }
+        if names.contains(VersionedRole.colorV1.role) {
+            currentColorState = nil
+            // Clearing pending state makes a resumed sleeper a no-op even when it swallows cancellation.
+            colorPending = nil
+            colorScheduleTask?.cancel()
+            colorScheduleTask = nil
+            controlSink.enqueue(.colorStateCleared)
+        }
+        if names.contains(VersionedRole.controllerV1.role) {
+            currentControllerState = nil
+            controlSink.enqueue(.controllerStateCleared)
+        }
+        if names.contains(VersionedRole.playerV1.role) {
+            if playerStreamActive {
+                controlSink.enqueue(.streamEnded(roles: [StreamRole.player.rawValue]))
+            }
+            playerStreamActive = false
+            announcedPlayerStream = nil
+            resetOutputFormatNegotiationForStreamBoundary()
+            // Stream end stops scheduler/output; stream clear also discards the output buffer.
+            audioEngine.enqueueStreamEnd(roles: [StreamRole.player.rawValue])
+            audioEngine.commands.enqueue(.streamClear(roles: [StreamRole.player.rawValue]))
+        }
+        if names.contains(VersionedRole.artworkV1.role) {
+            if artworkStreamActive {
+                controlSink.enqueue(.streamEnded(roles: [StreamRole.artwork.rawValue]))
+            }
+            invalidateArtworkDelivery()
+            artworkStreamActive = false
+            artworkStreamChannels = []
+            artworkTransfer = nil
+            clearPendingArtwork()
+        }
+        if names.contains(VersionedRole.visualizerV1.role) {
+            if visualizerStreamActive {
+                controlSink.enqueue(.streamEnded(roles: [StreamRole.visualizer.rawValue]))
+            }
+            visualizerStreamActive = false
+            visualizerStreamConfiguration = nil
+            resetVisualizerDelivery(resetTimestampFloor: true)
+        }
+    }
+
     func handleServerActivate(_ message: ServerActivateMessage) async {
-        if Set(message.payload.activities) == [.pairing], pairingAttemptID == nil {
+        if message.payload.activities.contains(.pairing), pairingAttemptID == nil {
             admitPairingAttempt()
         }
         let advertisement = await livePairingAdvertisement()
@@ -326,7 +379,7 @@ extension SendspinConnection {
             offeredDynamicFormats: Set(advertisement.supportedPairMethods[PairMethod.dynamicPairingCode]?.formats ?? [])
         )
         let nextActivities = Set(message.payload.activities)
-        if nextActivities == [.pairing] {
+        if nextActivities.contains(.pairing) {
             pairingActivateCounter = pairingActivateCounter == .max ? 0 : pairingActivateCounter + 1
         }
         let nextRoles: Set<VersionedRole> = if let announcedRoles = message.payload.activeRoles {
@@ -347,7 +400,7 @@ extension SendspinConnection {
             session: sessionContext
         ) {
         case .admit:
-            if activities == [.pairing], nextActivities != [.pairing], let activationGate {
+            if activities.contains(.pairing), !nextActivities.contains(.pairing), let activationGate {
                 let verdict = await activationGate.request(
                     activities: nextActivities,
                     activeRoles: nextRoles
@@ -362,36 +415,32 @@ extension SendspinConnection {
                 }
             }
             activities = nextActivities
-            pairingAttemptActive = nextActivities == [.pairing]
+            pairingAttemptActive = nextActivities.contains(.pairing)
             let completedRehandshake = awaitingRehandshakeActivation
             if completedRehandshake {
                 awaitingRehandshakeActivation = false
             }
             // Full state goes out when a role becomes active (spec client/state);
             // an activate that changes nothing sends nothing.
+            let removedRoles = activeRoles.subtracting(nextRoles)
             let rolesChanged = nextRoles != activeRoles
             activeRoles = nextRoles
+            clearRemovedRoles(removedRoles)
             if rolesChanged || completedRehandshake {
                 playerStateSent = false
                 visualizerStateSent = false
                 artworkStateSent = false
-                artworkTransfer = nil
-                if !activeRoles.contains(.visualizerV1) {
-                    visualizerStreamActive = false
-                    visualizerStreamConfiguration = nil
-                    resetVisualizerDelivery(resetTimestampFloor: true)
-                }
             }
             try? await publishClientState(bypassRehandshakeGate: completedRehandshake)
             if completedRehandshake {
                 rehandshakeInProgress = false
             }
             controlSink.enqueue(.serverActivated(activities: activities, activeRoles: activeRoles))
-            if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.pairingPsk {
+            if nextActivities.contains(.pairing), message.payload.pairing?.method == PairMethod.pairingPsk {
                 await beginPairingAttempt()
-            } else if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.dynamicPairingCode {
+            } else if nextActivities.contains(.pairing), message.payload.pairing?.method == PairMethod.dynamicPairingCode {
                 await beginDynamicPairingAttempt(format: message.payload.pairing?.format)
-            } else if nextActivities == [.pairing], message.payload.pairing?.method == PairMethod.staticPairingCode {
+            } else if nextActivities.contains(.pairing), message.payload.pairing?.method == PairMethod.staticPairingCode {
                 await beginStaticPairingAttempt(format: message.payload.pairing?.format)
             } else if pairingAttemptActive || pendingPairingPsk != nil || dynamicPairingAttempt != nil || staticPairingAttempt != nil {
                 if dynamicPairingAttempt != nil {
@@ -1366,6 +1415,7 @@ extension SendspinConnection {
                 let newConfig = artworkInfo.channels.indices.contains(channel) ? artworkInfo.channels[channel] : nil
                 if oldConfig?.source != newConfig?.source || oldConfig?.format != newConfig?.format
                     || oldConfig?.width != newConfig?.width || oldConfig?.height != newConfig?.height {
+                    invalidateArtworkDelivery()
                     clearPendingArtwork(channel: channel)
                     if artworkTransfer?.channel == channel {
                         artworkTransfer = nil
@@ -1530,6 +1580,7 @@ extension SendspinConnection {
         }
 
         if endedRoles == nil || endedRoles?.contains("artwork") == true {
+            invalidateArtworkDelivery()
             artworkStreamActive = false
             artworkTransfer = nil
             clearPendingArtwork()
@@ -1696,8 +1747,15 @@ extension SendspinConnection {
         return artworkStreamChannels[channel].source != .none
     }
 
+    private func invalidateArtworkDelivery() {
+        artworkDeliveryValidity.invalidate()
+        artworkDeliveryValidity = SessionValidityToken()
+    }
+
     private func receiveCompletedArtwork(_ result: ArtworkTransferResult) async {
+        let deliveryValidity = artworkDeliveryValidity
         let localTime = await clock.serverTimeToLocal(result.timestamp)
+        guard deliveryValidity === artworkDeliveryValidity else { return }
         let artwork = ArtworkData(channel: result.channel, data: result.data, localDisplayTime: localTime)
         let now = scheduleNow()
         if localTime <= now {
@@ -1705,7 +1763,7 @@ extension SendspinConnection {
             artworkScheduleTasks[result.channel]?.cancel()
             artworkScheduleTasks[result.channel] = nil
             if let dataDelivery {
-                dataDelivery.yieldArtworkIfValid(artwork, validity: validity)
+                dataDelivery.yieldArtworkIfValid(artwork, validity: validity, deliveryValidity: deliveryValidity)
             } else {
                 artworkObserver?(artwork)
                 validity.yieldIfValid(artwork, to: artworkSink)
@@ -1718,17 +1776,18 @@ extension SendspinConnection {
             artworkScheduleTasks[result.channel] = Task { [weak self] in
                 let delay = Duration.microseconds(localTime - now())
                 try? await sleep(delay)
-                await self?.applyPendingArtwork(channel: result.channel)
+                await self?.applyPendingArtwork(channel: result.channel, deliveryValidity: deliveryValidity)
             }
         }
     }
 
-    private func applyPendingArtwork(channel: Int) {
+    private func applyPendingArtwork(channel: Int, deliveryValidity: SessionValidityToken) {
+        guard deliveryValidity === artworkDeliveryValidity else { return }
         guard let pending = artworkPending[channel], pending.localDisplayTime <= scheduleNow() else { return }
         artworkPending[channel] = nil
         artworkScheduleTasks[channel] = nil
         if let dataDelivery {
-            dataDelivery.yieldArtworkIfValid(pending.artwork, validity: validity)
+            dataDelivery.yieldArtworkIfValid(pending.artwork, validity: validity, deliveryValidity: deliveryValidity)
         } else {
             artworkObserver?(pending.artwork)
             validity.yieldIfValid(pending.artwork, to: artworkSink)

@@ -53,7 +53,7 @@ enum ConnectionEvent: Equatable {
     /// Audio format changed mid-stream
     case streamFormatChanged(AudioFormatSpec)
 
-    /// One or more streams ended (no longer active), roles optional per wire format.
+    /// One or more streams end through `stream/end` or active-role removal; roles are optional.
     case streamEnded(roles: [String]?)
 
     /// Audio stream cleared (buffers flushed without ending), roles optional

@@ -760,10 +760,12 @@ public final class SendspinClient {
             sessionValidity = validity
         }
         let clockSync = ClockSynchronizer()
-        let deliveryArtworkObserver: (@Sendable (ArtworkData) -> Void) = { [weak self] artwork in
+        let deliveryArtworkObserver: (@Sendable (ArtworkData, SessionValidityToken) -> Void) = { [weak self] artwork, deliveryValidity in
             Task { @MainActor [weak self] in
-                validity.performIfValid {
-                    self?.currentArtwork = artwork.clearsArtwork ? nil : artwork
+                deliveryValidity.performIfValid {
+                    validity.performIfValid {
+                        self?.currentArtwork = artwork.clearsArtwork ? nil : artwork
+                    }
                 }
             }
         }
@@ -1227,6 +1229,7 @@ public final class SendspinClient {
 
         case .metadataCleared:
             updateMetadata(nil)
+            emitEvent(.metadataReceived(.empty))
 
         case let .controllerStateUpdated(state):
             updateControllerState(state)
@@ -1278,6 +1281,7 @@ public final class SendspinClient {
             }
             if roles == nil || roles?.contains(StreamRole.artwork.rawValue) == true {
                 artworkStreamActive = false
+                currentArtwork = nil
             }
             if roles == nil || roles?.contains(StreamRole.visualizer.rawValue) == true {
                 currentVisualizerStreamConfiguration = nil
@@ -1295,6 +1299,9 @@ public final class SendspinClient {
             emitEvent(.outputDelayChanged(milliseconds: milliseconds))
 
         case let .serverActivated(activities, activeRoles):
+            if !activeRoles.contains(.artworkV1) {
+                currentArtwork = nil
+            }
             currentActivities = activities
             if activities.contains(.playback), let currentServerId {
                 Task { await persistenceProvider?.saveLastPlayedServerId(currentServerId) }

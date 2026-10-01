@@ -178,7 +178,7 @@ enum HandshakeDriver {
         if let protectionLease = outcome.protectionLease, let pairingStore = outcome.pairingStore {
             try? await pairingStore.releaseProtection(protectionLease)
         }
-        if outcome.activities == [.pairing], reason == .concurrentAttempt {
+        if outcome.activities.contains(.pairing), reason == .concurrentAttempt {
             try? await sendJSON(
                 PairAbortMessage(payload: PairAbortPayload(reason: .concurrentAttempt)),
                 on: transport,

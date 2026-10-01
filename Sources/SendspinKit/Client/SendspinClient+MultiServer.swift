@@ -106,7 +106,8 @@ extension SendspinClient {
             // The one coexistence exception is a first incoming pairing session
             // beside an admitted playback holder. Keep it parked until a later
             // activation proves that it has become playback-capable.
-            if incomingCandidate.activities == [.pairing] {
+            if incomingCandidate.activities.contains(.pairing),
+               Activity.rank(of: incomingCandidate.activities) == Activity.pairing.rank {
                 if pairingConnection != nil {
                     await HandshakeDriver.reject(outcome, reason: .concurrentAttempt, on: transport)
                     return

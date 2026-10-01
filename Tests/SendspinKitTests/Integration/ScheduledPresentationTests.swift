@@ -4,6 +4,51 @@ import Testing
 
 @Suite(.serialized)
 struct ScheduledPresentationTests {
+    @Test("metadata removal discards an update even when its canceled sleeper fires")
+    func metadataRemovalDiscardsScheduledUpdate() async throws {
+        let schedule = ManualTestClock(now: 0)
+        let sleeper = ScheduledTestSleeper()
+        let fixture = try await makeEstablishedConnection(
+            clock: ScheduledTestClock(), activeRoles: [.metadataV1], roles: [.metadataV1],
+            scheduleNow: { schedule.now }, scheduleSleep: { duration in try await sleeper.sleep(duration) }
+        )
+        await fixture.connection.handleServerState(ServerStateMessage(payload: ServerStatePayload(
+            metadata: ServerMetadataState(timestamp: 200, title: .value("scheduled"))
+        )))
+        #expect(await waitUntil { await sleeper.waitingCount == 1 })
+        await fixture.connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
+            activities: [.playback], activeRoles: []
+        )))
+        #expect(await fixture.connection.metadataPending == nil)
+        schedule.now = 200
+        await sleeper.fireNext()
+        #expect(await fixture.connection.currentMetadata == nil)
+        await fixture.connection.shutdown()
+    }
+
+    @Test
+    func colorRemovalDiscardsScheduledUpdate() async throws {
+        let schedule = ManualTestClock(now: 0)
+        let sleeper = ScheduledTestSleeper()
+        let fixture = try await makeEstablishedConnection(
+            clock: ScheduledTestClock(), activeRoles: [.colorV1], roles: [.colorV1],
+            scheduleNow: { schedule.now }, scheduleSleep: { duration in try await sleeper.sleep(duration) }
+        )
+        let due: Int64 = 200
+        await fixture.connection.handleServerState(ServerStateMessage(payload: ServerStatePayload(
+            color: ServerColorState(timestamp: due)
+        )))
+        #expect(await waitUntil { await sleeper.waitingCount == 1 })
+        await fixture.connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
+            activities: [.playback], activeRoles: []
+        )))
+        #expect(await fixture.connection.colorPending == nil)
+        schedule.now = due
+        await sleeper.fireNext()
+        #expect(await fixture.connection.currentColorState == nil)
+        await fixture.connection.shutdown()
+    }
+
     @Test("future metadata is held and applied at due time without convergence gating")
     func futureMetadataUsesCurrentBestEstimate() async throws {
         let clock = ScheduledTestClock()

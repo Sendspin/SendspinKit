@@ -380,8 +380,8 @@ public enum ClientEvent: Sendable, Equatable {
     case streamStarted(AudioFormatSpec)
     /// Format changed mid-stream after the server applies a client format preference.
     case streamFormatChanged(AudioFormatSpec)
-    /// Server sent `stream/end` — one or more streams have ended and buffers
-    /// should be cleared for those roles. `roles` contains the ended roles, or
+    /// One or more streams end through `stream/end` or active-role removal.
+    /// Consumers clear output for those roles. `roles` contains the ended roles, or
     /// `nil` if all active streams ended (matching the wire format's semantics).
     case streamEnded(roles: [String]?)
     /// Server sent `stream/clear` — buffers have been flushed without ending

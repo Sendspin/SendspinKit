@@ -92,6 +92,7 @@ actor SendspinConnection {
     var visualizerTimestampFloor: Int64?
     var artworkStateSent = false
     var artworkStreamChannels: [StreamArtworkChannelConfig] = []
+    var artworkDeliveryValidity = SessionValidityToken()
     var artworkTransfer: ArtworkTransfer?
     var artworkPending: [Int: ScheduledArtwork] = [:]
     var artworkScheduleTasks: [Int: Task<Void, Never>] = [:]
@@ -320,8 +321,8 @@ actor SendspinConnection {
         self.activities = activities
         self.activeRoles = activeRoles
         let preallocatedPairing = pairingConfigurationRuntime != nil
-            && (activities.isEmpty || activities == [.pairing])
-        pairingAttemptActive = activities == [.pairing]
+            && (activities.isEmpty || activities.contains(.pairing))
+        pairingAttemptActive = activities.contains(.pairing)
         pairingAttemptID = preallocatedPairing ? PairingAttemptID() : nil
         pairingAttemptPeer = preallocatedPairing
             ? PairingPeer(id: serverId, name: serverName)
