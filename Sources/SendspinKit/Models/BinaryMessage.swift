@@ -1,13 +1,8 @@
 import Foundation
 import os
 
-/// Binary message type ID allocation per Sendspin spec:
-/// - 0: JSON, 1: fragmentation, 2-3: reserved
-/// - 4-7: Player role (audio chunks)
-/// - 8-11: Artwork role (channels 0-3)
-/// - 16-23: Visualizer role
-/// - 24-191: Reserved for future roles
-/// - 192-255: Application-specific roles
+/// Sendspin allocates 0 to JSON, 1 to fragmentation, 4–7 to player, 8–11 to artwork, and 16–23 to visualizer.
+/// IDs 2–3 and 24–191 remain reserved; 192–255 belong to application-specific roles.
 enum BinaryMessageType: UInt8 {
     /// IDs 2–3 are reserved by the spec and follow the unknown-ID ignore path.
     static let reservedCoreIDs: ClosedRange<UInt8> = 2 ... 3

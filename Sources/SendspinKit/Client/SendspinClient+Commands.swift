@@ -169,12 +169,9 @@ extension SendspinClient {
 }
 
 public extension SendspinClient {
-    /// Open connection-scoped pairing authorization on the connection carrying `attemptID`.
-    /// The window survives timed-out, cancelled, and superseded attempts. Re-opening is permitted.
-    /// This is the deliberate manufacturer-defined operator action that resets the device-wide
-    /// 20-round budget. Invoke it only from a real operator gesture, never automatically or per
-    /// attempt. Re-opening an open window after dynamic pair-init does not reset the budget.
-    /// The window controls eligibility, not peer trust.
+    /// Only an operator gesture opens connection-scoped eligibility, not peer trust; attempts do not close it.
+    /// Opening resets the device-wide 20-round budget, except when re-opening an open window after dynamic pair-init.
+    /// Never invoke automatically or per attempt.
     @MainActor
     func openPairingWindow(for attemptID: PairingAttemptID) async throws {
         try requireOpen()
