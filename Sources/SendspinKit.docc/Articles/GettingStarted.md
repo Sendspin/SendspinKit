@@ -170,9 +170,13 @@ the app receives its physical-gesture or other operator-confirmation signal. It 
 recording or consuming the connection-owned window; it does not wait for the attempt. To cancel,
 call ``SendspinClient/cancelPairing(attemptID:)`` with that same captured ID. A stale ID throws
 ``SendspinClientError/stalePairingAttempt(_:)`` and never retargets a newer attempt. The observable
-``SendspinClient/currentPairing`` retains the latest terminal snapshot until a new attempt starts;
-``SendspinClient/pairingWindow`` becomes `nil` when its authorization window expires or closes, and
-its `expiresAt` is not a trust assertion. The peer ID is unverified while
+``SendspinClient/currentPairing`` retains the latest genuine terminal snapshot until a new attempt
+starts. A server activation that supersedes or abandons an attempt instead emits
+`ClientEvent.pairingAttemptSuperseded` with its ID and clears that attempt's projection.
+``SendspinClient/pairingWindow`` is connection-scoped and survives timed-out, cancelled, and
+superseded attempts. It becomes `nil` only when the window expires or closes; pass its published
+`attemptID` to ``SendspinClient/cancelPairing(attemptID:)`` to close a surviving window. Its
+`expiresAt` is not a trust assertion. The peer ID is unverified while
 ``PairingPeer/trustLevel`` is `.none`; the authorization window is not proof of server trust. Dynamic
 codes are six contiguous digits or a complete version-one `SP:1` token. If
 the presentation includes a speaker, the host app speaks single digits using its own bundled

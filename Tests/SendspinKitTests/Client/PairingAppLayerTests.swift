@@ -101,9 +101,7 @@ struct PairingAppLayerTests {
         #expect(session.client.currentPairing?.id == first.id)
 
         try await session.client.cancelPairing(attemptID: first.id)
-        #expect(await waitUntil { await MainActor.run {
-            session.client.currentPairing?.phase == .ended(.userCancelled)
-        } })
+        #expect(await waitUntil { await MainActor.run { session.client.currentPairing?.phase == .ended(.userCancelled) } })
         #expect(session.client.currentPairing?.id == first.id)
         await session.client.disconnect()
     }
@@ -158,8 +156,8 @@ struct PairingAppLayerTests {
         await session.client.disconnect()
     }
 
-    @Test("consuming an authorization window clears the public snapshot exactly once")
-    func pairingWindowIsConsumedAtPairInit() async throws {
+    @Test("operator cancellation closes the surviving authorization window exactly once")
+    func pairingWindowSurvivesPairInitUntilOperatorCancellation() async throws {
         let session = try await makeSession()
         let attempt = try #require(session.client.currentPairing)
         #expect(attempt.peer.trustLevel == .none)
@@ -178,6 +176,9 @@ struct PairingAppLayerTests {
         try await session.client.openPairingWindow(for: attempt.id)
         try await activatePairing(session.server)
         _ = try await waitForMessage(session.server, type: ClientPairInitMessage.typeString)
+        #expect(session.client.pairingWindow != nil)
+        let windowID = try #require(session.client.pairingWindow?.attemptID)
+        try await session.client.cancelPairing(attemptID: windowID)
 
         let windowEvents = await observeTask(windowEventsTask, timeout: .seconds(2))
         guard case let .completed(events) = windowEvents else {

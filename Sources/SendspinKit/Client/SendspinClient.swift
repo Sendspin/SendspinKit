@@ -49,11 +49,14 @@ public final class SendspinClient {
     public private(set) var connectionState: ConnectionState = .disconnected
     /// Trust level established by the currently admitted Noise PSK.
     public private(set) var trustLevel: TrustLevel = .none
-    /// Latest immutable pairing projection, including the terminal snapshot until a new attempt starts.
+    /// Latest immutable pairing projection; genuine ends retain their terminal snapshot until a new
+    /// attempt starts. Server activation supersession clears it and emits `pairingAttemptSuperseded`.
     public private(set) var currentPairing: PairingAttemptSnapshot?
-    /// Operator authorization for one pairing attempt, or nil when no window is open.
+    /// Connection-scoped operator authorization, or nil when no window is open. It survives
+    /// timed-out, cancelled, and superseded attempts; its identity can cancel the surviving window.
     /// A window does not change the peer's ``TrustLevel``; that is established only after pairing.
     public private(set) var pairingWindow: PairingWindowSnapshot?
+    var pairingSideWindowID: PairingAttemptID?
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
     /// Written both here and by the control drain's `.operationalState` case, so
@@ -1181,8 +1184,7 @@ public final class SendspinClient {
         case let .pairingCodeChanged(snapshot):
             // A terminal nil-code projection follows the ended event so a
             // consumer can observe both lifecycle and code removal in order.
-            if case .ended = currentPairing?.phase, snapshot.code == nil,
-               snapshot.id == currentPairing?.id {
+            if case .ended = snapshot.phase {
                 emitEvent(.pairingCodeChanged(snapshot))
             } else {
                 currentPairing = snapshot
@@ -1191,8 +1193,13 @@ public final class SendspinClient {
 
         case let .pairingAttemptEnded(snapshot):
             currentPairing = snapshot
-            pairingWindow = nil
             emitEvent(.pairingAttemptEnded(snapshot))
+
+        case let .pairingAttemptSuperseded(attemptID):
+            if currentPairing?.id == attemptID {
+                currentPairing = nil
+            }
+            emitEvent(.pairingAttemptSuperseded(attemptID))
 
         case let .pairingWindowChanged(window):
             pairingWindow = window

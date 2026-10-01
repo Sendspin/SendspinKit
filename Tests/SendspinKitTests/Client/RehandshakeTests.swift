@@ -602,7 +602,7 @@ struct RehandshakeTests {
         await session.client.disconnect()
     }
 
-    @Test("Cancelling pairing discards the attempt and ignores a late finalize")
+    @Test("Cancelling pairing discards the attempt and silently closes on late finalize")
     func cancellingPairingDiscardsLateFinalize() async throws {
         // On a Pairing PSK session the only admissible activity set is ['pairing'],
         // so a server cancels by re-handshaking away — which discards all pairing
@@ -628,7 +628,8 @@ struct RehandshakeTests {
         #expect(await !waitUntil(timeout: .milliseconds(300)) {
             await pairingRecords(session.store).contains { $0.serverId != nil }
         })
-        #expect(await MainActor.run { session.client.connectionState == .connected })
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
         await session.client.disconnect()
     }
 

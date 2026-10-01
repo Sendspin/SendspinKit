@@ -15,8 +15,7 @@ extension SendspinClient {
         case let .pairingCodeChanged(snapshot):
             // The terminal event is followed by a nil-code projection so observers
             // can see code removal without losing the terminal lifecycle state.
-            if case .ended = currentPairing?.phase, snapshot.code == nil,
-               snapshot.id == currentPairing?.id {
+            if case .ended = snapshot.phase {
                 emitEvent(.pairingCodeChanged(snapshot))
             } else {
                 updateCurrentPairing(snapshot)
@@ -24,9 +23,14 @@ extension SendspinClient {
             }
         case let .pairingAttemptEnded(snapshot):
             updateCurrentPairing(snapshot)
-            clearPairingWindow()
             emitEvent(.pairingAttemptEnded(snapshot))
+        case let .pairingAttemptSuperseded(attemptID):
+            if currentPairing?.id == attemptID {
+                updateCurrentPairing(nil)
+            }
+            emitEvent(.pairingAttemptSuperseded(attemptID))
         case let .pairingWindowChanged(window):
+            pairingSideWindowID = window?.attemptID
             updatePairingWindow(window)
             emitEvent(.pairingWindowChanged(window))
         case .disconnected:
@@ -180,6 +184,11 @@ extension SendspinClient {
     @MainActor
     func dropPairingConnection(_ side: SendspinConnection) {
         guard pairingConnection === side else { return }
+        if let pairingSideWindowID, pairingWindow?.attemptID == pairingSideWindowID {
+            clearPairingWindow()
+            emitEvent(.pairingWindowChanged(nil))
+        }
+        pairingSideWindowID = nil
         _ = detachPairingConnection()
         Task { await side.shutdown() }
     }

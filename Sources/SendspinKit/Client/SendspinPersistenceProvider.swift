@@ -39,6 +39,7 @@ struct PairingStorageAccounting: Sendable, Equatable {
 }
 
 let dynamicPairingRoundLimit: UInt32 = 20
+let staticPairingWindowFailureLimit = 5
 let minimumPairingRecordCapacity = 5
 
 /// Presentation capabilities shared by candidate handshakes and live sessions.

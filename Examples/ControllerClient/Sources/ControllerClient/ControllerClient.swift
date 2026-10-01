@@ -184,6 +184,7 @@ struct ControllerClient: AsyncParsableCommand {
             case .paired,
                  .pairingCodeChanged,
                  .pairingAttemptEnded,
+                 .pairingAttemptSuperseded,
                  .pairingWindowChanged,
                  .audioOutputChanged,
                  .outputFormatStatusChanged,

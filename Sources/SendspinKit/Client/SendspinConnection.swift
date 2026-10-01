@@ -199,6 +199,8 @@ actor SendspinConnection {
     var staticPairingAttempt: StaticPairingAttempt?
     var pairingActivateCounter: UInt32 = 0
     var pairingWindowOpen = false
+    var pairingWindowFailedConfirmations = 0
+    var discardingPairingMessages = false
     var pairingWindowAttemptID: PairingAttemptID?
     var pairingWindowExpiresAt: PresentationInstant?
     var pairingWindowTask: Task<Void, Never>?

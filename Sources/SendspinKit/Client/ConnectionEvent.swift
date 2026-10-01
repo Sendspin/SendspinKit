@@ -79,6 +79,7 @@ enum ConnectionEvent: Equatable {
 
     case pairingCodeChanged(PairingAttemptSnapshot)
     case pairingAttemptEnded(PairingAttemptSnapshot)
+    case pairingAttemptSuperseded(PairingAttemptID)
     case pairingWindowChanged(PairingWindowSnapshot?)
 
     /// Server changed admitted activities or active roles.

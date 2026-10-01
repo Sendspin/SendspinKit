@@ -169,9 +169,12 @@ extension SendspinClient {
 }
 
 public extension SendspinClient {
-    /// Open the attempt-scoped pairing window for `attemptID`.
-    /// Dynamic pairing resets the global budget and performs a fallible round reservation;
-    /// static pairing does neither. The window controls eligibility, not peer trust.
+    /// Open connection-scoped pairing authorization on the connection carrying `attemptID`.
+    /// The window survives timed-out, cancelled, and superseded attempts. Re-opening is permitted.
+    /// This is the deliberate manufacturer-defined operator action that resets the device-wide
+    /// 20-round budget. Invoke it only from a real operator gesture, never automatically or per
+    /// attempt. Re-opening an open window after dynamic pair-init does not reset the budget.
+    /// The window controls eligibility, not peer trust.
     @MainActor
     func openPairingWindow(for attemptID: PairingAttemptID) async throws {
         try requireOpen()
@@ -185,16 +188,18 @@ public extension SendspinClient {
         throw SendspinClientError.stalePairingAttempt(attemptID)
     }
 
-    /// Cancel exactly the attempt represented by `attemptID`. The ID is matched
-    /// against both the primary and parked pairing connection; it never retargets
-    /// another connection after the original attempt ends.
+    /// Cancel the attempt, or close the window identified by `pairingWindow.attemptID`.
+    /// A window identity remains valid after its original attempt ends. Closing its window also
+    /// ends any current attempt on the owning connection; it never targets another connection.
     @MainActor
     func cancelPairing(attemptID: PairingAttemptID) async throws {
         try requireOpen()
         let candidates = [connection, pairingConnection].compactMap(\.self)
         guard !candidates.isEmpty else { throw SendspinClientError.notConnected }
         for candidate in candidates {
-            guard let snapshot = await candidate.pairingAttemptSnapshot(), snapshot.id == attemptID else { continue }
+            let snapshot = await candidate.pairingAttemptSnapshot()
+            let windowID = await candidate.pairingWindowAttemptID
+            guard snapshot?.id == attemptID || windowID == attemptID else { continue }
             try await candidate.cancelPairing(attemptID: attemptID)
             return
         }

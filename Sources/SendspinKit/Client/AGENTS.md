@@ -57,9 +57,13 @@ for SwiftUI.
   the snapshot shared by handshake candidates and active sessions; updates do not rely on
   stale copies held by individual connections.
 - **Pairing state is connection-owned and serialized.** `SendspinConnection` holds the single active
-  code attempt, pairing window primitive, timeout/lifetime tasks, and pairing-activate counter. The
-  app gesture uses the connection-owned window primitive; a re-handshake clears attempt state and
-  resets the activate counter before the next activation.
+  attempt, connection-scoped pairing window and failed-confirmation count, timeout/lifetime tasks,
+  pairing-activate counter, and client-abort discard state. Only a client-sent abort opens the
+  discard interval. Window identity cancellation closes authorization even without an active attempt.
+  Activations supersede attempt state without
+  consuming the window or resetting the persisted device-wide budget; the next activation ends the
+  discard interval. The app gesture resets the budget and opens the window; a re-handshake clears
+  attempt state and resets the activate counter before the next activation.
 - **The encoder has no key strategy.** Every outbound `Codable` model declares explicit `CodingKeys`,
   including keys whose wire spelling differs from Swift naming; never rely on encoder key-strategy
   configuration for protocol output.

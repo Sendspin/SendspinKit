@@ -6,6 +6,15 @@ enum PairingProtocolError: Error {
     case invalidSequence
 }
 
+private let pairingMessageTypes: Set<String> = [
+    ServerPairInitMessage.typeString, ServerPairAuthMessage.typeString,
+    ServerPairConfirmMessage.typeString, ServerPairFinalizeMessage.typeString,
+    ClientPairPendingMessage.typeString, ClientPairInitMessage.typeString,
+    ClientPairAuthMessage.typeString, ClientPairRetryMessage.typeString,
+    ClientPairConfirmMessage.typeString, ClientPairFinalizeMessage.typeString,
+    PairAbortMessage.typeString
+]
+
 extension SendspinConnection {
     // MARK: - Frame routing
 
@@ -15,6 +24,10 @@ extension SendspinConnection {
 
         guard let msgType = SendspinEncoding.messageType(of: data) else {
             Log.client.error("Message missing 'type' field: \(text.prefix(200))")
+            return
+        }
+
+        if discardingPairingMessages, pairingMessageTypes.contains(msgType) {
             return
         }
 
@@ -49,7 +62,9 @@ extension SendspinConnection {
 
             case "pair/abort":
                 let abort = try JSONDecoder().decode(PairAbortMessage.self, from: data)
-                clearPairingAttempt(reason: abort.payload.reason)
+                if pairingAttemptID != nil {
+                    clearPairingAttempt(reason: abort.payload.reason)
+                }
 
             case "client/pair-pending", "client/pair-init", "client/pair-auth", "client/pair-retry", "client/pair-confirm":
                 throw PairingProtocolError.invalidSequence
@@ -86,15 +101,7 @@ extension SendspinConnection {
 
             if msgType == ServerActivateMessage.typeString
                 || msgType == NoiseHandshakeMessage.typeString
-                || msgType == "server/pair-init"
-                || msgType == "server/pair-auth"
-                || msgType == "server/pair-confirm"
-                || msgType == "client/pair-pending"
-                || msgType == "client/pair-init"
-                || msgType == "client/pair-auth"
-                || msgType == "client/pair-retry"
-                || msgType == "client/pair-confirm"
-                || msgType == "pair/abort"
+                || pairingMessageTypes.contains(msgType)
                 || (msgType == ServerHelloMessage.typeString && awaitingRehandshakeActivation) {
                 disconnectReason = .incompatibleServer
                 await transport.disconnect()
@@ -335,7 +342,20 @@ extension SendspinConnection {
         }
     }
 
+    private func resetPairingForActivation() {
+        discardingPairingMessages = false
+        // Each activation supersedes attempt state, not connection-scoped authorization.
+        if dynamicPairingAttempt != nil || staticPairingAttempt != nil || pendingPairingPsk != nil || pairingAttemptActive {
+            if let attemptID = pairingAttemptID {
+                // Server activation abandons the attempt without implying an operator abort.
+                controlSink.enqueue(.pairingAttemptSuperseded(attemptID))
+            }
+            clearPairingAttempt(emitCodeRemoval: false)
+        }
+    }
+
     func handleServerActivate(_ message: ServerActivateMessage) async {
+        resetPairingForActivation()
         if message.payload.activities.contains(.pairing), pairingAttemptID == nil {
             admitPairingAttempt()
         }
@@ -425,9 +445,8 @@ extension SendspinConnection {
             disconnectReason = .explicit(reason)
             await transport.disconnect()
         case .abortPairing:
-            if pairingAttemptActive || pendingPairingPsk != nil || dynamicPairingAttempt != nil || staticPairingAttempt != nil {
-                clearPairingAttempt(reason: .methodNotSupported)
-            }
+            discardingPairingMessages = true
+            clearPairingAttempt(reason: .methodNotSupported)
             try? await sendWrapped(
                 PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)),
                 bypassRehandshakeGate: awaitingRehandshakeActivation
@@ -472,6 +491,7 @@ extension SendspinConnection {
               staticPairingAttempt == nil
         else {
             if pskCategory != .pairing, let attemptID = pairingAttemptID {
+                discardingPairingMessages = true
                 try? await sendPairingWrapped(
                     PairAbortMessage(payload: PairAbortPayload(reason: .methodNotSupported)),
                     attemptID: attemptID
@@ -522,14 +542,6 @@ extension SendspinConnection {
         }
         guard let authorizedAttemptID = pairingAttemptID else { return }
         guard await dynamicPairingCodeIsOffered(format: selectedFormat), pairingAttemptID == authorizedAttemptID else { return }
-        guard dynamicPairingAttempt == nil, staticPairingAttempt == nil, pendingPairingPsk == nil else {
-            try? await sendPairingWrapped(
-                PairAbortMessage(payload: PairAbortPayload(reason: .concurrentAttempt)),
-                attemptID: authorizedAttemptID
-            )
-            await transport.disconnect()
-            return
-        }
         #if DEBUG
             let nonceB = nonceBOverride ?? Psk.generate().bytes
         #else
@@ -608,14 +620,6 @@ extension SendspinConnection {
             await abortPairingAttempt(reason: .methodNotSupported, attemptID: attemptID)
             return
         }
-        guard dynamicPairingAttempt == nil, staticPairingAttempt == nil, pendingPairingPsk == nil else {
-            try? await sendPairingWrapped(
-                PairAbortMessage(payload: PairAbortPayload(reason: .concurrentAttempt)),
-                attemptID: authorizedAttemptID
-            )
-            await transport.disconnect()
-            return
-        }
         #if DEBUG
             let pairingHandshakeHash = pairingHandshakeHashOverride ?? channel.handshakeHash
         #else
@@ -648,7 +652,6 @@ extension SendspinConnection {
               var attempt = dynamicPairingAttempt,
               !attempt.pairInitSent
         else { return }
-        closePairingWindow(for: authorizedAttemptID)
         if pairingAttemptTask == nil {
             pairingAttemptTask = Task { [weak self] in
                 try? await Task.sleep(for: self?.pairingAttemptTimeout ?? .seconds(120))
@@ -677,23 +680,18 @@ extension SendspinConnection {
 
     func openPairingWindow(attemptID: PairingAttemptID) async throws {
         // The identity is reserved at admission, before the server chooses a
-        // pairing method. Allow the operator to authorize that reserved attempt
-        // before the activation arrives; method setup consumes the window later.
+        // pairing method. The operator can open connection-scoped authorization
+        // before the activation arrives.
         guard pairingAttemptID == attemptID else {
             throw SendspinClientError.stalePairingAttempt(attemptID)
         }
         pairingAttemptActive = true
         let authorizedAttemptID = attemptID
-        guard !pairingWindowOpen, pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
+        guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
             throw SendspinClientError.stalePairingAttempt(authorizedAttemptID)
         }
-        // Only dynamic pairing consumes the shared round budget. Static-code
-        // approval is scoped to this attempt and does not reset that budget.
-        if let dynamicAttempt = dynamicPairingAttempt, !dynamicAttempt.pairInitSent {
-            guard let pairingStore else {
-                await failPairingStorage(for: authorizedAttemptID)
-                throw PairingRecordStoreError.storageExhausted
-            }
+        // The deliberate gesture resets the device-wide budget even before method selection.
+        if !(pairingWindowOpen && dynamicPairingAttempt?.pairInitSent == true), let pairingStore {
             do {
                 try await pairingStore.resetDynamicPairingBudget()
                 guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
@@ -707,9 +705,16 @@ extension SendspinConnection {
                 throw error
             }
         }
-        guard !pairingWindowOpen, pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
+        guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else {
             throw SendspinClientError.stalePairingAttempt(authorizedAttemptID)
         }
+        if pairingWindowOpen {
+            if dynamicPairingAttempt != nil {
+                await sendDynamicPairInit(attemptID: authorizedAttemptID)
+            }
+            return
+        }
+        pairingWindowFailedConfirmations = 0
         pairingWindowOpen = true
         pairingWindowAttemptID = authorizedAttemptID
         let expiresAt = PresentationInstant.now.adding(pairingWindowLifetime)
@@ -734,7 +739,6 @@ extension SendspinConnection {
     func sendStaticPairInit(attemptID: PairingAttemptID? = nil) async {
         guard attemptID == nil || pairingAttemptID == attemptID,
               var attempt = staticPairingAttempt, attempt.cpace == nil else { return }
-        closePairingWindow(for: attemptID)
         pairingAttemptTask?.cancel()
         let attemptID = pairingAttemptID
         pairingAttemptTask = Task { [weak self] in
@@ -760,13 +764,14 @@ extension SendspinConnection {
         )
     }
 
-    /// Close or consume the one-attempt authorization window. The snapshot's
+    /// Close the connection-scoped authorization window. The snapshot's
     /// lifetime is the public authorization state, so clearing it emits exactly
     /// one nil event even if a close races expiry or finalization.
     func closePairingWindow(for attemptID: PairingAttemptID? = nil, cancelTask: Bool = true) {
         guard attemptID == nil || pairingWindowAttemptID == attemptID else { return }
         let hadPublicWindow = pairingWindowExpiresAt != nil
         pairingWindowOpen = false
+        pairingWindowFailedConfirmations = 0
         pairingWindowAttemptID = nil
         pairingWindowExpiresAt = nil
         if cancelTask {
@@ -786,11 +791,19 @@ extension SendspinConnection {
     }
 
     func cancelPairing(attemptID: PairingAttemptID) async throws {
+        if pairingWindowAttemptID == attemptID {
+            closePairingWindow()
+            guard let activeID = pairingAttemptID else { return }
+            await abortPairingAttempt(reason: .userCancelled, attemptID: activeID)
+            return
+        }
         guard pairingAttemptID == attemptID else { throw SendspinClientError.stalePairingAttempt(attemptID) }
         guard dynamicPairingAttempt != nil || staticPairingAttempt != nil || pendingPairingPsk != nil || pairingAttemptActive else {
             closePairingWindow()
             throw SendspinClientError.stalePairingAttempt(attemptID)
         }
+        closePairingWindow()
+        discardingPairingMessages = true
         clearPairingAttempt(reason: .userCancelled)
         guard pairingAttemptID == nil else { return }
         pairingAbortAuthorization = attemptID
@@ -802,7 +815,9 @@ extension SendspinConnection {
     }
 
     func handleServerPairInit(_ message: ServerPairInitMessage) async throws {
-        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
+        if discardingPairingMessages {
+            return
+        }
         guard var attempt = dynamicPairingAttempt, attempt.pairInitSent,
               attempt.cpace == nil, attempt.serverShare == nil
         else { throw PairingProtocolError.invalidSequence }
@@ -896,7 +911,9 @@ extension SendspinConnection {
     }
 
     func handleServerPairAuth(_ message: ServerPairAuthMessage) async throws {
-        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
+        if discardingPairingMessages {
+            return
+        }
         if var attempt = dynamicPairingAttempt, attempt.serverShare == nil,
            let cpace = attempt.cpace,
            let share = Base64URL.decode(message.payload.pakeMsg1, count: 32) {
@@ -925,7 +942,9 @@ extension SendspinConnection {
     }
 
     func handleServerPairConfirm(_ message: ServerPairConfirmMessage) async throws {
-        guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
+        if discardingPairingMessages {
+            return
+        }
         if dynamicPairingAttempt != nil {
             try await handleDynamicServerPairConfirm(message)
         } else {
@@ -946,6 +965,12 @@ extension SendspinConnection {
             CPaceX25519.mcfTag(isk: secrets.isk, sid: attempt.sid, share: serverShare, associatedData: CPaceX25519.defaultInitiatorAD)
         ) else {
             guard let attemptID = pairingAttemptID else { return }
+            if pairingWindowOpen {
+                pairingWindowFailedConfirmations += 1
+                if pairingWindowFailedConfirmations >= staticPairingWindowFailureLimit {
+                    closePairingWindow()
+                }
+            }
             await abortPairingAttempt(reason: .pairingCodeMismatch, attemptID: attemptID)
             return
         }
@@ -1092,6 +1117,7 @@ extension SendspinConnection {
     private func abortPairingAttempt(reason: PairAbortReason, attemptID: PairingAttemptID) async {
         guard pairingAttemptID == attemptID else { return }
         pairingAbortAuthorization = attemptID
+        discardingPairingMessages = true
         clearPairingAttempt(reason: reason)
         try? await sendPairingWrapped(
             PairAbortMessage(payload: PairAbortPayload(reason: reason)),
@@ -1100,13 +1126,13 @@ extension SendspinConnection {
         )
     }
 
-    func clearPairingAttempt(reason: PairAbortReason? = nil) {
+    func clearPairingAttempt(reason: PairAbortReason? = nil, emitCodeRemoval: Bool = true) {
         if let reason, let id = pairingAttemptID, let peer = pairingAttemptPeer {
-            controlSink.enqueue(.pairingAttemptEnded(PairingAttemptSnapshot(
-                id: id, peer: peer, phase: .ended(reason), code: nil
-            )))
+            let snapshot = PairingAttemptSnapshot(id: id, peer: peer, phase: .ended(reason), code: nil)
+            controlSink.enqueue(.pairingAttemptEnded(snapshot))
+            controlSink.enqueue(.pairingCodeChanged(snapshot))
         }
-        if pairingAttemptID != nil {
+        if emitCodeRemoval, reason == nil, pairingAttemptID != nil {
             enqueuePairingCode(nil)
         }
         pairingAttemptActive = false
@@ -1115,13 +1141,15 @@ extension SendspinConnection {
         staticPairingAttempt = nil
         pairingAttemptTask?.cancel()
         pairingAttemptTask = nil
-        closePairingWindow()
         pairingAttemptID = nil
         pairingAttemptPeer = nil
     }
 
-    func handleServerPairFinalize(_: ServerPairFinalizeMessage) async {
-        guard let generated = pendingPairingPsk, let pairingStore else { return }
+    func handleServerPairFinalize(_: ServerPairFinalizeMessage) async throws {
+        if discardingPairingMessages {
+            return
+        }
+        guard let generated = pendingPairingPsk, let pairingStore else { throw PairingProtocolError.invalidSequence }
         guard let authorizedAttemptID = pairingAttemptID else { return }
         let successSnapshot: PairingAttemptSnapshot? = if let id = pairingAttemptID, let peer = pairingAttemptPeer {
             PairingAttemptSnapshot(id: id, peer: peer, phase: .succeeded, code: nil)
@@ -1144,6 +1172,7 @@ extension SendspinConnection {
                 return
             }
             guard pairingAttemptID == authorizedAttemptID, pairingAttemptActive else { return }
+            closePairingWindow()
             clearPairingAttempt()
             if let successSnapshot {
                 controlSink.enqueue(.paired(successSnapshot))
@@ -1162,6 +1191,7 @@ extension SendspinConnection {
                 try? await pairingStore.releaseProtection(incumbentLease)
             }
             pairingProtectionLease = lease
+            closePairingWindow()
             clearPairingAttempt()
             if let successSnapshot {
                 controlSink.enqueue(.paired(successSnapshot))

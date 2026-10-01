@@ -372,6 +372,7 @@ public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
     case pairingCodeChanged(PairingAttemptSnapshot)
     case pairingAttemptEnded(PairingAttemptSnapshot)
+    case pairingAttemptSuperseded(PairingAttemptID)
     case pairingWindowChanged(PairingWindowSnapshot?)
     case paired(PairingAttemptSnapshot)
     /// The client observed a new advisory audio-output capability snapshot.

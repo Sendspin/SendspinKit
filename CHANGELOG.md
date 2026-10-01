@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced one-message artwork images with announce/part/cancel transfers, and removed BMP support; artwork formats are JPEG and PNG.
 
 ### Added
+- `ClientEvent.pairingAttemptSuperseded(_:)` reports server activation supersession without implying an operator abort; genuine attempt ends retain their terminal `currentPairing` snapshot.
+- `SendspinClient.cancelPairing(attemptID:)` also accepts `pairingWindow.attemptID` to close a surviving window and end its owning connection's current attempt.
 - Added `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` for init refusals; the reason is unauthenticated and only a diagnostic hint.
 - Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
 - Added visualizer state configuration for beat, loudness, peak, and spectrum data, including rate and spectrum parameters.
@@ -35,6 +37,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless. Hosts speak pairing codes using bundled audio or a synthesizer; emissions include the server's ordered `languages` hint.
 
 ### Fixed
+- Keep static pairing windows open across timed-out, cancelled, and superseded attempts; close them on success, five failed server confirmations, connection drop, operator cancellation, or lifetime expiry.
+- Start each superseding pairing activation with fresh attempt state without disconnecting or persisting an abandoned PSK.
+- Discard in-flight server pairing messages only after a client abort and until the next activation; server aborts end the attempt without authorizing later pairing messages, and other sequence violations close silently.
+- Reset an exhausted dynamic pairing budget with one operator gesture, whether the gesture precedes or follows activation.
 - Send `client/pair-init` with the activation's pairing index immediately before `client/pair-finalize` in Pairing PSK attempts, without awaiting a server response.
 - Use attempt-local CPace round numbers while charging the persisted device-wide round budget only for valid dynamic rounds whose code is emitted.
 - Send `client/pair-init` only once per dynamic attempt; after `client/pair-retry`, wait for the server to begin the next round.
