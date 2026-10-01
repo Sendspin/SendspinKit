@@ -4,6 +4,8 @@ A Swift client library for the Sendspin Protocol — synchronized multi-room aud
 
 ## Overview
 
+The Sendspin spec requires every player catalog to include FLAC or PCM; Opus is optional.
+
 SendspinKit handles the full Sendspin protocol lifecycle: server discovery via mDNS/Bonjour, WebSocket transport, NTP-style clock synchronization, and timestamp-based audio scheduling with microsecond precision.
 
 The library supports multiple client roles (player, controller, metadata, artwork, visualizer, and color) and audio codecs (PCM, Opus, FLAC) including hi-res formats up to 192kHz/24-bit.
@@ -22,7 +24,8 @@ let client = try SendspinClient(
     playerConfig: try PlayerConfiguration(
         bufferCapacity: 1_048_576,
         supportedFormats: [
-            try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16)
+            try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
+            try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
         ]
     ),
     access: .allowUnpaired

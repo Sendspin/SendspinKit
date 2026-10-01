@@ -10,6 +10,22 @@ struct FormatPreferenceTests {
     // swiftlint:disable:next force_try
     private let native = try! AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
 
+    @Test("Opus host preferences ignore bit depth when matching the catalog")
+    func opusPreferenceIgnoresBitDepth() async throws {
+        let opus = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let client = try makeClient(formats: [opus, fallback])
+        let server = try await connect(client)
+        try await client.setPlayerFormatPreference(
+            codec: .opus,
+            channels: opus.channels,
+            sampleRate: opus.sampleRate,
+            bitDepth: 7
+        )
+        #expect(await waitUntil { await states(server).last?.payload.player?.format == opus })
+        #expect(await states(server).last?.payload.player?.format?.bitDepth == opus.bitDepth)
+        await client.disconnect()
+    }
+
     @Test("setting a preference publishes client/state.player.format")
     func settingPreferencePublishesWireFormat() async throws {
         let client = try makeClient(formats: [fallback, native])
@@ -53,8 +69,8 @@ struct FormatPreferenceTests {
         await provider.stopMonitoring()
     }
 
-    @Test("route reversal keeps invalidation sticky until the delayed stream start")
-    func routeReversalKeepsInvalidationStickyUntilStreamStart() async throws {
+    @Test("route reversal reopens identical announcements without an engine transition")
+    func identicalAnnouncementReopensMatchingRouteWithoutCommand() async throws {
         let provider = AudioOutputCapabilityService(
             initialSnapshot: output(44_100, "Initial"),
             platformMonitor: InertAudioOutputPlatformMonitor()
@@ -72,13 +88,78 @@ struct FormatPreferenceTests {
 
         try await server.injectText(streamStart(format: fallback))
         let engine = try #require(client.connection?.audioEngineForTesting)
+        #expect(await waitUntil { await client.connection?.routeInvalidationPending == false })
+        #expect(await engine.isRouteInvalidatedForTesting() == false)
+        await server.injectText(#"{"type":"stream/end","payload":{"roles":["player"]}}"#)
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamEnd) })
         #expect(
-            await waitUntil(timeout: .seconds(3)) {
-                await engine.appliedCommandKinds().contains(.routeInvalidatedFormatChange)
-            },
-            "the delayed old-format response must retire invalidated PCM rather than reuse it"
+            await engine.appliedCommandKinds().contains(.routeInvalidatedFormatChange) == false,
+            "a matching returned route reopens ingress without a destructive transition"
         )
-        #expect(await client.connection?.routeInvalidationPending == false)
+        #expect(await engine.appliedCommandKinds().filter { $0 == .streamStart }.count == 1)
+        #expect(await engine.appliedCommandKinds().contains(.formatChange) == false)
+        await client.disconnect()
+        await provider.stopMonitoring()
+    }
+
+    @Test("identical route-request answers rebuild once while the route mismatches")
+    func identicalAnnouncementWaitsForRouteRequest() async throws {
+        let provider = AudioOutputCapabilityService(initialSnapshot: output(44_100, "Initial"), platformMonitor: InertAudioOutputPlatformMonitor())
+        let client = try makeClient(formats: [fallback, native], provider: provider, settle: .zero)
+        let server = try await connect(client)
+        try await server.injectText(streamStart(format: fallback))
+        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
+        await provider.update(output(48_000, "New route"))
+        #expect(await waitUntil { await client.connection?.pendingOutputFormatRequest != nil })
+        let connection = try #require(client.connection)
+        let engine = connection.audioEngineForTesting
+        try await server.injectText(streamStart(format: fallback))
+        #expect(await waitUntil { await connection.pendingOutputFormatRequest == nil })
+        #expect(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1 })
+        #expect(await engine.isRouteInvalidatedForTesting() == false)
+        #expect(await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1)
+        await client.disconnect()
+        await provider.stopMonitoring()
+    }
+
+    @Test("identical announcements rebuild once when no route request is possible")
+    func identicalAnnouncementRebuildsWithoutRouteRequest() async throws {
+        let provider = AudioOutputCapabilityService(initialSnapshot: output(44_100, "Initial"), platformMonitor: InertAudioOutputPlatformMonitor())
+        let client = try makeClient(formats: [fallback], provider: provider, settle: .zero)
+        let server = try await connect(client)
+        try await server.injectText(streamStart(format: fallback))
+        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
+        await provider.update(output(48_000, "Unsupported route"))
+        #expect(await waitUntil { await client.connection?.settledOutputSampleRate == 48_000 })
+        let connection = try #require(client.connection)
+        let engine = connection.audioEngineForTesting
+        #expect(await connection.pendingOutputFormatRequest == nil)
+        try await server.injectText(streamStart(format: fallback))
+        #expect(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1 })
+        #expect(await engine.isRouteInvalidatedForTesting() == false)
+        #expect(await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1)
+        await client.disconnect()
+        await provider.stopMonitoring()
+    }
+
+    @Test("route request timeout rebuilds once and reopens ingress")
+    func routeRequestTimeoutRebuildsOnce() async throws {
+        let provider = AudioOutputCapabilityService(initialSnapshot: output(44_100, "Initial"), platformMonitor: InertAudioOutputPlatformMonitor())
+        let client = try makeClient(formats: [fallback, native], provider: provider, settle: .zero, requestTimeout: .milliseconds(100))
+        let server = try await connect(client)
+        try await server.injectText(streamStart(format: fallback))
+        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
+        let connection = try #require(client.connection)
+        let engine = connection.audioEngineForTesting
+        await provider.update(output(48_000, "Changed route"))
+        // Wire history retains the request even when its deadline fires before this task resumes.
+        #expect(await waitUntil { await states(server).contains { $0.payload.player?.format == native } })
+        #expect(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1 })
+        #expect(await connection.playerStartGeneration == 2)
+        #expect(await connection.pendingOutputFormatRequest == nil)
+        #expect(await engine.isRouteInvalidatedForTesting() == false)
+        #expect(await connection.routeInvalidationPending == false)
+        #expect(await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1)
         await client.disconnect()
         await provider.stopMonitoring()
     }

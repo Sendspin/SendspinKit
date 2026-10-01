@@ -46,6 +46,9 @@ for SwiftUI.
   interleaving.
 - **Seamless-format classification is synchronous.** `announcedPlayerFormat` (set at enqueue in
   handleStreamStart) keys `isFormatChange`; the public render-applied `currentStreamFormat` does not.
+- **Start identity guards sibling tasks.** Engine start/format reports carry the start generation;
+  the connection applies only the report matching its pending generation because the message loop
+  and report drain are sibling tasks.
 - **`EngineReport.operationalState` carries the full target state** (bidirectional in/out of
   `.error`/`.synchronized`) — a one-way edge would break the single-writer claim.
 - **Stream-active mirrors are observational.** The facade's
@@ -89,5 +92,5 @@ for SwiftUI.
 ## Gotchas
 - Do not add MainActor-observable production surface just to make a test observable — it violates the
   off-main goal. Assert via the engine command/report channels instead.
-- A new stream can set `playerStreamActive=true` before a stale prior-stream report drains; the
-  synchronous `announcedPlayerFormat` narrows this but a small residual window is known/accepted.
+- A new stream can set `playerStreamActive=true` before a stale prior-stream report drains;
+  start/format reports require the matching pending start generation, not the stream-active flag.

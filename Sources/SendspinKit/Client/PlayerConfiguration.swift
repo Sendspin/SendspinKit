@@ -26,7 +26,8 @@ public enum OutputSampleRatePolicy: String, Sendable, Hashable, Codable, CaseIte
     case preferCurrentOutput
 
     /// Advertise only formats whose sample rate matches the current output route.
-    /// The session fails before hello if the route is unknown or no supplied format matches.
+    /// The session fails before hello if the route is unknown, no supplied format matches,
+    /// or no supplied FLAC or PCM format matches the route's sample rate.
     case requireCurrentOutput
 }
 
@@ -36,6 +37,8 @@ public enum OutputFormatError: SendspinError, Hashable, LocalizedError {
     case routeUnavailable
     /// No application-supplied format matches the current output sample rate.
     case noMatchingFormat
+    /// The current output rate has no application-supplied FLAC or PCM format.
+    case noMatchingLosslessFormat
 
     public var errorDescription: String? {
         switch self {
@@ -43,14 +46,14 @@ public enum OutputFormatError: SendspinError, Hashable, LocalizedError {
             "The current audio output sample rate is unavailable"
         case .noMatchingFormat:
             "No supported audio format matches the current output sample rate"
+        case .noMatchingLosslessFormat:
+            "No supported FLAC or PCM format matches the current output sample rate"
         }
     }
 }
 
-/// Resolves an application catalog against an advisory output sample rate.
-///
-/// The transformation is pure so normal and competing handshakes can share the
-/// same result. Relative order is preserved within every resulting group.
+/// Resolves the supplied formats against the output sample rate and selection policy.
+/// Relative order is preserved within each resulting group.
 func effectiveSupportedFormats(
     _ formats: [AudioFormatSpec],
     policy: OutputSampleRatePolicy,
@@ -69,6 +72,7 @@ func effectiveSupportedFormats(
         guard let outputSampleRate else { throw .routeUnavailable }
         let matching = formats.filter { $0.sampleRate == outputSampleRate }
         guard !matching.isEmpty else { throw .noMatchingFormat }
+        guard matching.contains(where: { $0.codec == .flac || $0.codec == .pcm }) else { throw .noMatchingLosslessFormat }
         return matching
     }
 }
@@ -232,6 +236,7 @@ public struct PlayerConfiguration: Sendable {
     ) throws(ConfigurationError) {
         guard bufferCapacity > 0 else { throw .nonPositiveBufferCapacity }
         guard !supportedFormats.isEmpty else { throw .emptySupportedFormats }
+        guard supportedFormats.contains(where: { $0.codec == .flac || $0.codec == .pcm }) else { throw .missingLosslessFormat }
         guard initialOutputDelayMs >= 0, initialOutputDelayMs <= maxOutputDelayMs else {
             throw .outputDelayOutOfRange(initialOutputDelayMs)
         }

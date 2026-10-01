@@ -126,7 +126,8 @@ extension SendspinConnection {
 
         switch message.type {
         case .audioChunk:
-            await handleAudioChunk(message)
+            // Direct callers use the same application-arrival measurement as the message loop.
+            await handleAudioChunk(message, arrival: arrival)
 
         case .visualizerLoudness, .visualizerBeat, .visualizerFPeak, .visualizerSpectrum, .visualizerPeak:
             await handleVisualizerBinary(message, arrival: arrival)
@@ -317,6 +318,7 @@ extension SendspinConnection {
             }
             playerStreamActive = false
             announcedPlayerStream = nil
+            playerStartState = .none
             resetOutputFormatNegotiationForStreamBoundary()
             // Stream end stops scheduler/output; stream clear also discards the output buffer.
             audioEngine.enqueueStreamEnd(roles: [StreamRole.player.rawValue])
@@ -1495,34 +1497,65 @@ extension SendspinConnection {
             codecHeader = decoded
         }
 
-        // Seamless change detection on format OR codec header: a gapless track
-        // change re-announces the same format with fresh codec_header (FLAC
-        // streaminfo); routed as .streamStart the player would early-return
-        // and silently discard the new header.
+        // Classification uses the wire-announced format and header before any await.
+        // An identical active-stream announcement preserves the existing audio timeline.
         let previous = announcedPlayerStream
         let isFormatChange = previous.map { $0.format != format || $0.codecHeader != codecHeader } ?? false
         announcedPlayerStream = (format: format, codecHeader: codecHeader)
-        if outputSampleRatePolicy != .requireCurrentOutput {
+        if outputSampleRatePolicy != .requireCurrentOutput, previous == nil || isFormatChange || pendingOutputFormatRequest != nil {
             if case let .accepted(policy) = await handleOutputFormatStreamStart(format) {
                 transitionPolicy = policy
             }
         }
 
-        if isFormatChange || transitionPolicy == .routeInvalidated {
-            switch transitionPolicy ?? .ordered {
-            case .ordered:
-                audioEngine.enqueueFormatChange(format: format, codecHeader: codecHeader)
-            case .routeInvalidated:
-                audioEngine.enqueueRouteInvalidatedFormatChange(format: format, codecHeader: codecHeader)
-            }
+        let failed = if case .failed = playerStartState {
+            true
         } else {
+            false
+        }
+        if previous != nil, !isFormatChange, !failed {
+            if routeInvalidationPending || transitionPolicy == .routeInvalidated {
+                if format.sampleRate == outputSnapshot?.sampleRate {
+                    audioEngine.clearRouteInvalidation()
+                    routeInvalidationPending = false
+                    transitionPolicy = .ordered
+                } else if pendingOutputFormatRequest != nil {
+                    routeInvalidationPending = true
+                    return
+                } else {
+                    transitionPolicy = .routeInvalidated
+                    routeInvalidationPending = false
+                }
+            }
+            if transitionPolicy != .routeInvalidated {
+                if case .started = playerStartState, clientOperationalState == .error {
+                    clientOperationalState = .synchronized
+                    controlSink.enqueue(.operationalState(.synchronized))
+                    try? await publishClientState()
+                }
+                return
+            }
+        }
+        if routeInvalidationPending {
+            transitionPolicy = .routeInvalidated
+            routeInvalidationPending = false
+        }
+        // Sibling report and message tasks require identity before enqueue to protect newer starts.
+        playerStartGeneration &+= 1
+        let generation = playerStartGeneration
+        playerStartState = .pending(generation)
+        controlSink.enqueue(.streamAccepted(format))
+        if previous == nil || failed {
             if clientOperationalState == .error {
                 clientOperationalState = .synchronized
                 controlSink.enqueue(.operationalState(.synchronized))
                 try? await publishClientState()
             }
-            controlSink.enqueue(.streamAccepted(format))
-            audioEngine.enqueueStreamStart(format: format, codecHeader: codecHeader)
+            audioEngine.enqueueStreamStart(format: format, codecHeader: codecHeader, startGeneration: generation)
+        } else if transitionPolicy == .routeInvalidated {
+            audioEngine.enqueueRouteInvalidatedFormatChange(format: format, codecHeader: codecHeader, startGeneration: generation)
+        } else {
+            audioEngine.commands.enqueue(.withStartGeneration(generation, .formatChange(format, codecHeader: codecHeader)))
         }
     }
 
@@ -1547,6 +1580,7 @@ extension SendspinConnection {
             playerStreamActive = false
             audioEngine.enqueueStreamEnd(roles: endedRoles)
             announcedPlayerStream = nil
+            playerStartState = .none
             resetOutputFormatNegotiationForStreamBoundary()
         }
 

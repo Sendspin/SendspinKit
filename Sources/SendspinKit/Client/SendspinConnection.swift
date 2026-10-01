@@ -102,6 +102,15 @@ actor SendspinConnection {
     var colorScheduleTask: Task<Void, Never>?
     var isClockSynced = false
     var announcedPlayerStream: (format: AudioFormatSpec, codecHeader: Data?)?
+    enum PlayerStartState: Equatable {
+        case none
+        case pending(UInt64)
+        case started(UInt64)
+        case failed(UInt64)
+    }
+
+    var playerStartState: PlayerStartState = .none
+    var playerStartGeneration: UInt64 = 0
     /// Written from several places (this method, the engine report drain, stream-start
     /// validation). `operationalStateEpoch` stamps every one of them so a rollback can
     /// tell "nothing moved" from "something moved to the same value".

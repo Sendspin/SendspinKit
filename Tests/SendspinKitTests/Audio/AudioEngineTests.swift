@@ -91,6 +91,8 @@ actor SpyAudioOutput: AudioOutput {
     var decodeDelay: TimeInterval = 0
     var forcedDecodeThrow: Error?
     private(set) var decodedInputs: [Data] = []
+    private var decoderFormat: AudioFormatSpec?
+    private(set) var decodedFormats: [AudioFormatSpec?] = []
     var decodeOutputs: [Data: Data] = [:]
     var playbackState: Bool = false
     var underrunCountValue: Int64 = 0
@@ -103,6 +105,16 @@ actor SpyAudioOutput: AudioOutput {
     private var blockedPCM: CheckedContinuation<Void, Never>?
     private var shouldBlockNextDecode = false
     private var blockedDecode: CheckedContinuation<Void, Never>?
+    private var shouldBlockNextStart = false
+    private nonisolated let startBlock = DispatchSemaphore(value: 0)
+    func blockNextStart() {
+        shouldBlockNextStart = true
+    }
+
+    nonisolated func releaseBlockedStart() {
+        startBlock.signal()
+    }
+
     private var shouldBlockNextSwitch = false
     private var blockedSwitch: CheckedContinuation<Void, Never>?
     private(set) var playedPCMTimestamps: [Int64] = []
@@ -165,6 +177,7 @@ actor SpyAudioOutput: AudioOutput {
     func prepare(format: AudioFormatSpec, codecHeader _: Data?) throws {
         recordedCalls.append("prepare(\(format.codec))")
         preparedFormat = format
+        decoderFormat = format
         if let error = forcedStartThrow {
             throw error
         }
@@ -213,7 +226,13 @@ actor SpyAudioOutput: AudioOutput {
 
     func start(format: AudioFormatSpec, codecHeader _: Data?) throws {
         recordedCalls.append("start(\(format.codec))")
-        if let error = forcedStartThrow {
+        let capturedError = forcedStartThrow
+        if shouldBlockNextStart {
+            shouldBlockNextStart = false
+            forcedStartThrow = nil
+            _ = startBlock.wait(timeout: .now() + 5)
+        }
+        if let error = capturedError {
             throw error
         }
         playbackState = true
@@ -226,6 +245,7 @@ actor SpyAudioOutput: AudioOutput {
 
     func swapDecoder(format: AudioFormatSpec, codecHeader _: Data?) throws {
         recordedCalls.append("swapDecoder(\(format.codec))")
+        decoderFormat = format
         if let error = forcedSwapThrow {
             throw error
         }
@@ -247,6 +267,7 @@ actor SpyAudioOutput: AudioOutput {
 
     func decode(_ data: Data) async throws -> Data {
         decodedInputs.append(data)
+        decodedFormats.append(decoderFormat)
         recordedCalls.append("decode(\(data.count) bytes)")
         if shouldBlockNextDecode {
             shouldBlockNextDecode = false
@@ -477,7 +498,7 @@ struct AudioEngineTests {
         try? await Task.sleep(for: .milliseconds(400))
 
         let formatApplied = await awaitReport(from: engine, timeoutMs: 200) {
-            if case let .formatApplied(applied) = $0 {
+            if case let .formatApplied(applied, _) = $0 {
                 applied == fmt1
             } else {
                 false
@@ -657,6 +678,70 @@ struct AudioEngineTests {
         let calls = await output.recordedCalls
         await engine.shutdown()
         #expect(calls.contains("startPrepared()"))
+    }
+
+    @Test("startup deferred old PCM drains before same-rate or cross-rate format boundaries", arguments: [48_000, 44_100])
+    func startupDeferredPCMDrainsBeforeFormatBoundary(newSampleRate: Int) async throws {
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: MonotonicClock.absoluteMicroseconds())
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let oldFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let newFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: newSampleRate, bitDepth: 32)
+        let primed = Data(repeating: 1, count: 192)
+        let deferredOld = Data(repeating: 2, count: 192)
+        let replacement = Data(repeating: 3, count: 352)
+        for pcm in [primed, deferredOld, replacement] {
+            await output.setDecodeOutput(pcm, pcm: pcm)
+        }
+        await output.blockNextPCM()
+        await engine.start()
+        engine.enqueueStreamStart(format: oldFormat, codecHeader: nil)
+        engine.enqueueAudioChunk(data: primed, timestamp: 500_000)
+        #expect(await waitUntil { await output.playedPCMData.count == 1 })
+        #expect(await engine.startupReleaseCommits == 0)
+        engine.enqueueAudioChunk(data: deferredOld, timestamp: 501_000)
+        #expect(await waitUntil { await output.decodedInputs.count == 2 })
+        engine.enqueueFormatChange(format: newFormat, codecHeader: nil)
+        engine.enqueueAudioChunk(data: replacement, timestamp: 502_000)
+        #expect(await waitUntil { await output.decodedInputs.count == 3 })
+        await output.releaseBlockedPCM()
+        #expect(await waitUntil { await output.playedPCMData.count == 3 })
+        #expect(await output.playedPCMData == [primed, deferredOld, replacement], "all primed and deferred PCM survives in order")
+        #expect(await output.decodedFormats == [oldFormat, oldFormat, newFormat])
+        let calls = await output.recordedCalls
+        let switchIndex = try #require(calls.firstIndex(of: "switchHardwareFormat(pcm)"))
+        #expect(
+            calls[..<switchIndex].filter { $0.hasPrefix("playPCM(") }.count == 2,
+            "the hardware boundary follows the complete primed and deferred old-format PCM"
+        )
+        #expect(calls.filter { $0 == "prepare(pcm)" }.count == 1)
+        await engine.shutdown()
+    }
+
+    @Test("startup format changes retain old PCM before new PCM")
+    func startupFormatChangeRetainsOrderedPCM() async throws {
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: MonotonicClock.absoluteMicroseconds())
+        let output = SpyAudioOutput()
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let oldFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let newFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 32)
+        let oldPCM = Data([0xA1, 0x02, 0x03, 0x04])
+        let newPCM = Data([0xB1, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+        await output.setDecodeOutput(oldPCM, pcm: oldPCM)
+        await output.setDecodeOutput(newPCM, pcm: newPCM)
+        await engine.start()
+        engine.enqueueStreamStart(format: oldFormat, codecHeader: nil)
+        engine.enqueueAudioChunk(data: oldPCM, timestamp: 500_000)
+        engine.enqueueFormatChange(format: newFormat, codecHeader: nil)
+        engine.enqueueAudioChunk(data: newPCM, timestamp: 520_000)
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 2 })
+        #expect(await output.playedPCMData == [oldPCM, newPCM], "startup preserves all PCM in format order")
+        #expect(await output.decodedFormats == [oldFormat, newFormat], "each chunk uses its receipt-time decoder format")
+        #expect(await output.recordedCalls.count(where: { $0 == "prepare(pcm)" }) == 1)
+        #expect(await output.recordedCalls.contains("swapDecoder(pcm)"))
+        await engine.shutdown()
     }
 
     @Test("a route rebuild delivers its first replacement PCM chunk")
@@ -956,7 +1041,7 @@ struct AudioEngineTests {
         // Observe the report before shutdown so finishing the stream cannot satisfy the
         // assertion by itself. The generous timeout covers scheduler latency under load.
         let sawFormatApplied = await awaitReport(from: engine, timeoutMs: 5_000) { report in
-            if case let .formatApplied(applied) = report {
+            if case let .formatApplied(applied, _) = report {
                 return applied == fmt1
             }
             return false
@@ -1417,7 +1502,7 @@ struct AudioEngineTests {
 
 /// Test controls for SpyAudioOutput.
 extension SpyAudioOutput {
-    func setForcedStartThrow(_ error: Error) {
+    func setForcedStartThrow(_ error: Error?) {
         forcedStartThrow = error
     }
 

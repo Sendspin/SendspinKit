@@ -332,7 +332,7 @@ struct DataPlaneSinkTests {
 
         #expect(received.count == 3)
         // Verify order
-        if case let .streamStart(receivedFormat, _) = received.all[0] {
+        if case let .streamStart(receivedFormat, _, _) = received.all[0] {
             #expect(receivedFormat.codec == format.codec)
         } else {
             Issue.record("Expected streamStart as first command")

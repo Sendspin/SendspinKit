@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased] - Noise spec alignment
 
 ### Breaking
+- `PlayerConfiguration` rejects Opus-only catalogs with `missingLosslessFormat`; every player must offer FLAC or PCM. `requireCurrentOutput` reports `noMatchingLosslessFormat` when neither matches the route rate.
 - Replaced the plaintext session handshake with mandatory Noise encryption; clients now require a stable `SendspinIdentity` and host-owned secret-key persistence.
 - Replaced the old client identifier and handshake surface with identity-based `SendspinClient` initialization and encrypted transport framing. `client/hello` no longer carries `trust_level`, artwork support, or mutable player commands; support objects now contain only their protocol-defined capabilities.
 - Removed the protocol `management` namespace, responder, persistence hooks, and remote management operations. `PairingManagementConfiguration` remains the host-local pairing settings value; pairing-window opening is a host gesture/API concern.
@@ -37,6 +38,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless. Hosts speak pairing codes using bundled audio or a synthesizer; emissions include the server's ordered `languages` hint.
 
 ### Fixed
+- Preserve buffered player audio across identical stream announcements and startup format changes, with ordered decoding and render-format boundaries.
+- Ignore Opus bit depth for validation and format matching while retaining strict PCM and FLAC depth validation.
 - Keep static pairing windows open across timed-out, cancelled, and superseded attempts; close them on success, five failed server confirmations, connection drop, operator cancellation, or lifetime expiry.
 - Start each superseding pairing activation with fresh attempt state without disconnecting or persisting an abandoned PSK.
 - Discard in-flight server pairing messages only after a client abort and until the next activation; server aborts end the attempt without authorizing later pairing messages, and other sequence violations close silently.

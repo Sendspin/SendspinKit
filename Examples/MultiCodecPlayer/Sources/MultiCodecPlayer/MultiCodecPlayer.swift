@@ -104,6 +104,10 @@ struct MultiCodecPlayer: AsyncParsableCommand {
             throw ValidationError("Could not build any valid AudioFormatSpec from the given parameters.")
         }
 
+        guard formats.contains(where: { $0.codec == .flac || $0.codec == .pcm }) else {
+            throw ValidationError("The Sendspin player catalog requires FLAC or PCM; include one with --prefer.")
+        }
+
         print("Supported formats (preference order):")
         for (i, fmt) in formats.enumerated() {
             print("  [\(i + 1)] \(fmt.codec.rawValue) \(fmt.channels)ch \(fmt.sampleRate)Hz \(fmt.bitDepth)-bit")

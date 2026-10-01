@@ -45,10 +45,8 @@ extension SendspinConnection {
             do {
                 guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
                 guard let type = plaintext.first else { throw NoiseError.malformedMessage }
-                // Decryption and routing are strictly ordered. NoiseChannel.rekey replaces
-                // the receive transport, so every post-swap frame uses new keys and only
-                // server/activate is permitted. A late old-key frame fails AEAD silently
-                // (connection.md, Failure Handling) before reaching this guard.
+                // Ordered decryption/routing and rekey's receive-transport swap make every post-swap frame new-key.
+                // Only server/activate is allowed before activation; old-key frames fail AEAD before this guard.
                 if awaitingRehandshakeActivation,
                    type != NoiseFrameType.json
                    || SendspinEncoding.messageType(of: Data(plaintext.dropFirst())) != ServerActivateMessage.typeString {
@@ -125,7 +123,13 @@ extension SendspinConnection {
                 // Send client/state on every operational state change
                 try? await publishClientState()
 
-            case let .started(format):
+            case let .started(format, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player start report generation=\(generation)")
+                    continue
+                }
+                // Report drain and message loop are sibling tasks; identity protects newer announcements.
+                playerStartState = .started(generation)
                 controlSink.enqueue(.streamStarted(format))
                 if clientOperationalState == .error {
                     // Successful start: restore to synchronized after an earlier error.
@@ -134,10 +138,25 @@ extension SendspinConnection {
                     try? await publishClientState()
                 }
 
-            case let .formatApplied(format):
+            case let .formatApplied(format, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player format report generation=\(generation)")
+                    continue
+                }
+                playerStartState = .started(generation)
                 controlSink.enqueue(.streamFormatChanged(format))
+                if clientOperationalState == .error {
+                    clientOperationalState = .synchronized
+                    controlSink.enqueue(.operationalState(.synchronized))
+                    try? await publishClientState()
+                }
 
-            case let .startFailed(reason):
+            case let .startFailed(reason, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player failure report generation=\(generation)")
+                    continue
+                }
+                playerStartState = .failed(generation)
                 // Audio start failed: emit error and stay in error state
                 let error = StreamingError.audioStartFailed(reason)
                 clientOperationalState = .error

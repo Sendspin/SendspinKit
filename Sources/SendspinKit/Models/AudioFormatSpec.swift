@@ -16,7 +16,8 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
     public let channels: Int
     /// Sample rate in Hz (e.g., 44100, 48000)
     public let sampleRate: Int
-    /// Bit depth (16, 24, or 32)
+    /// PCM and FLAC bit depth (16, 24, or 32). Opus accepts any value,
+    /// ignores it for matching, and retains the wire value.
     public let bitDepth: Int
 
     enum CodingKeys: String, CodingKey {
@@ -27,14 +28,14 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
     }
 
     /// Validates audio format parameters.
-    private static func validate(channels: Int, sampleRate: Int, bitDepth: Int) throws(ConfigurationError) {
+    private static func validate(codec: AudioCodec, channels: Int, sampleRate: Int, bitDepth: Int) throws(ConfigurationError) {
         guard channels > 0, channels <= maxChannels else { throw .invalidChannelCount(channels) }
         guard sampleRate > 0, sampleRate <= maxSampleRate else { throw .invalidSampleRate(sampleRate) }
-        guard supportedBitDepths.contains(bitDepth) else { throw .unsupportedBitDepth(bitDepth) }
+        guard codec == .opus || supportedBitDepths.contains(bitDepth) else { throw .unsupportedBitDepth(bitDepth) }
     }
 
     public init(codec: AudioCodec, channels: Int, sampleRate: Int, bitDepth: Int) throws(ConfigurationError) {
-        try Self.validate(channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
+        try Self.validate(codec: codec, channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
         self.codec = codec
         self.channels = channels
         self.sampleRate = sampleRate
@@ -49,7 +50,7 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
         let bitDepth = try container.decode(Int.self, forKey: .bitDepth)
 
         do {
-            try Self.validate(channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
+            try Self.validate(codec: codec, channels: channels, sampleRate: sampleRate, bitDepth: bitDepth)
         } catch {
             throw DecodingError.dataCorrupted(
                 DecodingError.Context(
@@ -63,6 +64,20 @@ public struct AudioFormatSpec: Codable, Sendable, Hashable {
         self.channels = channels
         self.sampleRate = sampleRate
         self.bitDepth = bitDepth
+    }
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.codec == rhs.codec && lhs.channels == rhs.channels && lhs.sampleRate == rhs.sampleRate
+            && (lhs.codec == .opus || lhs.bitDepth == rhs.bitDepth)
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(codec)
+        hasher.combine(channels)
+        hasher.combine(sampleRate)
+        if codec != .opus {
+            hasher.combine(bitDepth)
+        }
     }
 
     /// The actual bit depth after decoding to PCM for AudioQueue output.

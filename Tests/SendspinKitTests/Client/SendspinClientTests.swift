@@ -836,8 +836,13 @@ struct SendspinClientTests {
 
         await provider.publish(output(44_100, "Back"))
         #expect(await waitUntil { await stateSnapshots(transport).count == 2 })
+        #expect(await stateSnapshots(transport).last?.payload.player?.format == fallback)
+        // Hold the answer until the published request is observed; completion replaces this status.
+        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .requesting(fallback) } })
         try await transport.injectText(streamStartJSON(native))
-        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(native) } })
+        #expect(await waitUntil { await client.connection?.pendingOutputFormatRequest == nil })
+        try await transport.injectText(streamStartJSON(fallback))
+        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeNative(fallback) } })
         let retried = await waitUntil(timeout: .milliseconds(200)) { await stateSnapshots(transport).count > 2 }
         #expect(!retried)
         await client.disconnect()

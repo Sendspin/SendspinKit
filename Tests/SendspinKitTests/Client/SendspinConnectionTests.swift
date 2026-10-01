@@ -1270,10 +1270,133 @@ struct SendspinConnectionSessionTests {
         await connection.shutdown()
     }
 
-    /// The complement guard: an identical re-announce (same format, same header) must
-    /// stay `.streamStart` — the player's early-return preserves buffered audio, and a
-    /// spurious `.formatChange` would needlessly tear down the decoder.
-    @Test("same-format same-header re-announce stays a stream start")
+    @Test("audio routing records the captured application arrival")
+    func audioRoutingUsesCapturedArrival() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
+        try await connection.sendClientState()
+        let timestamp: Int64 = 1_000_000
+        let sendAhead: UInt32 = 100_000
+        let arrival = timestamp - Int64(sendAhead) + 12_345
+        var frame = Data([BinaryMessageType.audioChunk.rawValue])
+        var encodedTimestamp = timestamp.bigEndian
+        var encodedAhead = sendAhead.bigEndian
+        frame.append(Data(bytes: &encodedTimestamp, count: MemoryLayout<Int64>.size))
+        frame.append(Data(bytes: &encodedAhead, count: MemoryLayout<UInt32>.size))
+        frame.append(Data(repeating: 0, count: 4))
+        await connection.route(binary: frame, arrival: arrival)
+        #expect(await connection.arrivalDelaySamples.last == 12_345, "the delay sample uses the captured application arrival")
+        await connection.shutdown()
+    }
+
+    @Test("identical announcements reopen invalidated audio ingress")
+    func identicalAnnouncementReopensInvalidatedIngress() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
+        await connection.armRouteInvalidationForTesting()
+        #expect(await engine.isRouteInvalidatedForTesting())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.routeInvalidatedFormatChange) })
+        #expect(await engine.isRouteInvalidatedForTesting() == false, "identical announcements reopen the invalidated route gate")
+        await connection.shutdown()
+    }
+
+    @Test("pending format boundaries survive stream clear")
+    func formatBoundarySurvivesStreamClear() async throws {
+        let transport = MockTransport()
+        let clock = StubClock(anchorToNow: true)
+        // Boundary attribution does not depend on real-time scheduler lateness under suite load.
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(clock, transport, playbackWindow: 30)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .started(1) })
+        let header = Data("new-header".utf8).base64EncodedString()
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.formatChange) })
+        #expect(await connection.playerStartState == .pending(2))
+        await connection.handleStreamClear(StreamClearMessage(payload: .init(roles: ["player"])))
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamClear) })
+        let chunk = Data([0xA5, 0x05])
+        await output.setDecodeOutput(chunk, pcm: Data([0xB7, 0x05]))
+        engine.commands.enqueue(.chunk(chunk, ts: 100_000))
+        #expect(await waitUntil { await connection.playerStartState == .started(2) })
+        #expect(await output.recordedCalls.filter { $0 == "switchHardwareFormat(pcm)" }.count == 1)
+        #expect(await connection.announcedPlayerStream?.codecHeader == Data("new-header".utf8))
+        await connection.shutdown()
+    }
+
+    @Test("slow start failures cannot overwrite newer player announcements")
+    func staleStartFailurePreservesNewerAnnouncement() async throws {
+        let transport = MockTransport()
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await output.setForcedStartThrow(StreamingError.audioStartFailed("slow failure"))
+        await output.blockNextStart()
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .pending(1) })
+        let header = Data("new-header".utf8).base64EncodedString()
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        #expect(await waitUntil { await connection.playerStartState == .pending(2) })
+        output.releaseBlockedStart()
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.formatChange) })
+        // The ordered .started(2) report follows .startFailed(1) on the engine report channel;
+        // observing it through the connection proves the stale failure has drained.
+        #expect(await waitUntil { await connection.playerStartState == .started(2) })
+        #expect(await connection.clientOperationalState == .synchronized)
+        #expect(await connection.announcedPlayerStream?.codecHeader == Data("new-header".utf8))
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        try await transport.injectText(streamEndJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamEnd) })
+        #expect(await engine.appliedCommandKinds().filter { $0 == .streamStart }.count == 1)
+        await connection.shutdown()
+    }
+
+    @Test("identical healthy announcements repair corrupt-announcement errors")
+    func identicalAnnouncementRepairsStaleError() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .started(1) })
+        try await transport.injectText(streamStartJSON(codecHeader: "not-base64!"))
+        #expect(await waitUntil { await connection.clientOperationalState == .error })
+        let count = await engine.appliedCommandKinds().count
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.clientOperationalState == .synchronized })
+        #expect(await engine.appliedCommandKinds().count == count)
+        await connection.shutdown()
+    }
+
+    @Test("identical announcements retry a failed audio start")
+    func identicalAnnouncementRetriesFailedStart() async throws {
+        let transport = MockTransport()
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await output.setForcedStartThrow(StreamingError.audioStartFailed("test failure"))
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.clientOperationalState == .error })
+        await output.setForcedStartThrow(nil)
+        try await transport.injectText(streamStartJSON())
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 2 },
+            "a failed start is retried even when its announcement is identical"
+        )
+        await connection.shutdown()
+    }
+
+    @Test("same-format same-header re-announce preserves the active stream")
     func sameFormatSameHeaderReannounceStaysStreamStart() async throws {
         let transport = MockTransport()
         let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
@@ -1283,9 +1406,11 @@ struct SendspinConnectionSessionTests {
         try await transport.injectText(serverHelloJSON())
         try await transport.injectText(streamStartJSON(codecHeader: header))
         try await transport.injectText(streamStartJSON(codecHeader: header))
+        try await transport.injectText(streamEndJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamEnd) })
         #expect(
-            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 2 },
-            "an identical re-announce must route .streamStart again (player early-return keeps buffers)"
+            await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 1,
+            "an identical active announcement must not enqueue a destructive fresh start"
         )
         #expect(
             await !engine.appliedCommandKinds().contains(.formatChange),
@@ -1930,7 +2055,8 @@ private func makeConnectionWithSpyEngine(
     _ transport: MockTransport,
     initialVolume: Int = 100,
     initialMuted: Bool = false,
-    advertisedCommands: Set<PlayerCommand> = [.setOutputDelay]
+    advertisedCommands: Set<PlayerCommand> = [.setOutputDelay],
+    playbackWindow: TimeInterval = 0.05
 ) async throws -> ( // swiftlint:disable:this large_tuple
     connection: SendspinConnection,
     output: SpyAudioOutput,
@@ -1939,7 +2065,7 @@ private func makeConnectionWithSpyEngine(
     server: MockNoiseServer
 ) {
     let output = SpyAudioOutput()
-    let scheduler = AudioScheduler(clockSync: clock)
+    let scheduler = AudioScheduler(clockSync: clock, playbackWindow: playbackWindow)
     let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
     let (binaryStream, _) = AsyncStream<ClientEvent>.makeStream()
     let result = try await makeEstablishedConnection(
