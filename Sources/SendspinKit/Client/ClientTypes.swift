@@ -657,6 +657,9 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     case roleNotActive(VersionedRole)
     /// A facade-initiated send was attempted before `server/hello` completed the handshake.
     case handshakeIncomplete
+    /// The server refused `client/init`. The reason is unauthenticated and is only
+    /// a hint for logging and operator display.
+    case connectionRefused(ServerErrorReason)
     /// A stream-specific operation was attempted for a role whose stream is not
     /// currently active.
     case streamNotActive(StreamRole)
@@ -683,6 +686,8 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
             "The \(role.identifier) role is not active for this connection"
         case .handshakeIncomplete:
             "Handshake is not complete; wait for server/hello before sending commands"
+        case let .connectionRefused(reason):
+            "Server refused connection (unauthenticated reason): \(reason.rawValue)"
         case let .streamNotActive(role):
             "No active \(role.rawValue) stream"
         case let .invalidServerURL(server):

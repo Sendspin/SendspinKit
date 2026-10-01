@@ -160,6 +160,10 @@ enum HandshakeDriver {
                 try? await pairingStore.releaseProtection(protectionLease)
             }
             await transport.disconnect()
+            if let handshakeError = error as? HandshakeError,
+               case let .connectionRefused(reason) = handshakeError {
+                throw SendspinClientError.connectionRefused(reason)
+            }
             throw error
         }
     }

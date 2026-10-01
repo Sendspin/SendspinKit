@@ -13,6 +13,8 @@ enum HandshakeError: Error, Equatable {
     case malformed
     /// The peer's `version` is not the single core version this client speaks.
     case unsupportedVersion
+    /// The server refused `client/init` with an unauthenticated diagnostic.
+    case connectionRefused(ServerErrorReason)
     /// `server_id` is not a valid 43-character base64url Curve25519 public key.
     case invalidServerId
     /// No candidate PSK matches the `psk_id` from Noise message 1 (lookup miss),
@@ -111,6 +113,20 @@ enum NoiseSessionEstablisher {
         )
     }
 
+    private static func decodeInitResponse(_ bytes: Data) throws -> ServerInitMessage {
+        if SendspinEncoding.messageType(of: bytes) == ServerErrorMessage.typeString {
+            guard let refusal = try? JSONDecoder().decode(ServerErrorMessage.self, from: bytes) else {
+                // Communication: unknown values in known fields follow that field's rules; reason defines exactly three values.
+                throw HandshakeError.malformed
+            }
+            throw HandshakeError.connectionRefused(refusal.payload.reason)
+        }
+        guard SendspinEncoding.messageType(of: bytes) == ServerInitMessage.typeString,
+              let serverInit = try? JSONDecoder().decode(ServerInitMessage.self, from: bytes)
+        else { throw HandshakeError.malformed }
+        return serverInit
+    }
+
     private static func run(
         on transport: any SendspinTransport,
         identity: SendspinIdentity,
@@ -139,9 +155,7 @@ enum NoiseSessionEstablisher {
 
         // server/init — retain the exact bytes as received.
         let serverInitBytes = try await nextTextFrame(from: transport, timeout: phaseTimeout)
-        guard SendspinEncoding.messageType(of: serverInitBytes) == ServerInitMessage.typeString,
-              let serverInit = try? JSONDecoder().decode(ServerInitMessage.self, from: serverInitBytes)
-        else { throw HandshakeError.malformed }
+        let serverInit = try decodeInitResponse(serverInitBytes)
         guard serverInit.payload.version == sendspinCoreVersion else {
             throw HandshakeError.unsupportedVersion
         }

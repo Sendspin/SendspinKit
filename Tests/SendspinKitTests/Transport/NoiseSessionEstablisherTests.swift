@@ -37,6 +37,95 @@ struct NoiseSessionEstablisherTests {
         return outcome
     }
 
+    private func assertRefusal(_ reason: ServerErrorReason) async throws {
+        let transport = MockTransport()
+        await transport.injectText(
+            "{\"type\":\"\(ServerErrorMessage.typeString)\",\"payload\":{\"reason\":\"\(reason.rawValue)\"}}"
+        )
+        await #expect(throws: HandshakeError.connectionRefused(reason)) {
+            _ = try await NoiseSessionEstablisher.establish(
+                on: transport, identity: identity, suite: .chaChaPoly, candidates: [], phaseTimeout: .seconds(1)
+            )
+        }
+        #expect(await transport.disconnectCalled)
+        #expect(await transport.sentTextMessages.count == 1)
+        #expect(await transport.sentBinaryMessages.isEmpty)
+    }
+
+    @Test func refusesUnsupportedVersion() async throws {
+        try await assertRefusal(.unsupportedVersion)
+    }
+
+    @Test func refusesUnsupportedSuite() async throws {
+        try await assertRefusal(.unsupportedSuite)
+    }
+
+    @Test func refusesMalformedInit() async throws {
+        try await assertRefusal(.malformed)
+    }
+
+    @Test func unknownRefusalReasonIsMalformed() async throws {
+        let transport = MockTransport()
+        // This is deliberately any string outside ServerErrorReason's raw values.
+        let undefinedReason = "not_a_defined_reason"
+        await transport.injectText(
+            "{\"type\":\"\(ServerErrorMessage.typeString)\",\"payload\":{\"reason\":\"\(undefinedReason)\"}}"
+        )
+        await #expect(throws: HandshakeError.malformed) {
+            _ = try await NoiseSessionEstablisher.establish(
+                on: transport, identity: identity, suite: .chaChaPoly, candidates: [], phaseTimeout: .seconds(1)
+            )
+        }
+        #expect(await transport.disconnectCalled)
+    }
+
+    @Test func refusalAfterServerInitIsMalformed() async throws {
+        let transport = MockTransport()
+        let serverId = SendspinIdentity.generate().clientId
+        let reason = ServerErrorReason.unsupportedSuite
+        await transport.injectText(
+            """
+            {"type":"\(ServerInitMessage.typeString)","payload":{"server_id":"\(serverId)","version":\(sendspinCoreVersion)}}
+            """
+        )
+        await transport.injectText(
+            "{\"type\":\"\(ServerErrorMessage.typeString)\",\"payload\":{\"reason\":\"\(reason.rawValue)\"}}"
+        )
+        await #expect(throws: HandshakeError.malformed) {
+            _ = try await NoiseSessionEstablisher.establish(
+                on: transport, identity: identity, suite: .chaChaPoly, candidates: [], phaseTimeout: .seconds(1)
+            )
+        }
+        #expect(await transport.disconnectCalled)
+    }
+
+    @Test func refusalIgnoresUnrecognizedPayloadFields() async throws {
+        let transport = MockTransport()
+        let reason = ServerErrorReason.unsupportedSuite
+        await transport.injectText(
+            """
+            {"type":"\(ServerErrorMessage.typeString)","payload":{"reason":"\(reason.rawValue)","extra":true}}
+            """
+        )
+        await #expect(throws: HandshakeError.connectionRefused(reason)) {
+            _ = try await NoiseSessionEstablisher.establish(
+                on: transport, identity: identity, suite: .chaChaPoly, candidates: [], phaseTimeout: .seconds(1)
+            )
+        }
+        #expect(await transport.disconnectCalled)
+    }
+
+    @Test func unexpectedInitResponseIsMalformed() async throws {
+        let transport = MockTransport()
+        await transport.injectText("{\"type\":\"\(NoiseHandshakeMessage.typeString)\",\"payload\":{}}")
+        await #expect(throws: HandshakeError.malformed) {
+            _ = try await NoiseSessionEstablisher.establish(
+                on: transport, identity: identity, suite: .chaChaPoly, candidates: [], phaseTimeout: .seconds(1)
+            )
+        }
+        #expect(await transport.disconnectCalled)
+    }
+
     @Test("Full establishment and encrypted round trip", arguments: NoiseCipherSuite.allCases)
     func happyPath(suite: NoiseCipherSuite) async throws {
         let transport = MockTransport()

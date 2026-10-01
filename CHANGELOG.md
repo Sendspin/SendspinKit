@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced one-message artwork images with announce/part/cancel transfers, and removed BMP support; artwork formats are JPEG and PNG.
 
 ### Added
+- Added `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` for init refusals; the reason is unauthenticated and only a diagnostic hint.
 - Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
 - Added optional server-supplied digit-audio packs and speaker capability descriptors. Validated packs are attached to digit pairing emissions for the host app to decode and play; Sentinel fallback handles an initial pairing-PSK miss.
 - Added visualizer state configuration for beat, loudness, peak, and spectrum data, including rate and spectrum parameters.

@@ -84,6 +84,10 @@ private func isRetryableError(_ error: any Error) -> Bool {
             // move. `notConnected` and `handshakeIncomplete` are likewise fine
             // to retry — connect() rebuilds from scratch.
             return true
+        case .connectionRefused:
+            // An init refusal needs operator attention rather than repeated identical init messages.
+            // Its unauthenticated reason is diagnostic only.
+            return false
         case .stalePairingAttempt, .roleNotActive, .streamNotActive,
              .invalidServerURL, .noDiscoveredServers, .serverURLRequired:
             // Logic/configuration errors are not transient connection failures —

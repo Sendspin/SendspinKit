@@ -105,6 +105,22 @@ struct FacadeLifecycleTests {
         await client.disconnect()
     }
 
+    @Test("Init refusal reaches the public connect error", arguments: ServerErrorReason.allCases)
+    func initRefusalReachesApp(reason: ServerErrorReason) async throws {
+        let client = try makeTestClient()
+        let transport = MockTransport()
+        await transport.injectText(
+            "{\"type\":\"\(ServerErrorMessage.typeString)\",\"payload\":{\"reason\":\"\(reason.rawValue)\"}}"
+        )
+        await #expect(throws: SendspinClientError.connectionRefused(reason)) {
+            try await client.acceptConnection(transport)
+        }
+        #expect(client.connection == nil)
+        #expect(client.connectionState == .disconnected)
+        #expect(await transport.disconnectCalled)
+        await client.close()
+    }
+
     @Test("close() during a paused accept terminates without installing")
     func closeDuringPausedAcceptTerminates() async throws {
         let client = try makeTestClient()

@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Observable lifecycle of the client-owned Bonjour listener.
 public enum AdvertisingState: Sendable, Equatable {
@@ -211,6 +212,7 @@ private extension SendspinClient {
                 Task { await transport.disconnect() }
             }
         } catch {
+            Log.client.error("Advertised connection acceptance failed: \(error.localizedDescription, privacy: .public)")
             await transport.disconnect()
         }
     }
