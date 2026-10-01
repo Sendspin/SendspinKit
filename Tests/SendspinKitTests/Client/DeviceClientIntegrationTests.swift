@@ -179,10 +179,7 @@ struct DeviceClientIntegrationTests {
         try await accepted
         try await server.beginRehandshake(to: firstDevice.pairingPsk, pskCategoryOverride: .pairing)
         #expect(await waitUntil { await server.rehandshakeComplete })
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Durable Pairing Server"}}"#)
-        #expect(await waitUntil {
-            await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == 2
-        })
+        #expect(await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == 1)
         try await server.sendJSON(
             #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
         )

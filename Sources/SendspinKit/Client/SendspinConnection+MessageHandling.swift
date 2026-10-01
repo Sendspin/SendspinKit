@@ -217,9 +217,6 @@ extension SendspinConnection {
                 unpairedAccessEnabled: advertisement.unpairedAccessEnabled,
                 offeredPairMethods: advertisement.offeredPairMethods
             )
-            activeRoles = []
-            playerStateSent = false
-            visualizerStateSent = false
             clearPairingAttempt()
             pairingActivateCounter = 0
             awaitingRehandshakeActivation = true
@@ -227,7 +224,7 @@ extension SendspinConnection {
                 serverId: currentServerId ?? "",
                 name: serverName,
                 trustLevel: candidate.category == .longTerm ? .user : .none,
-                activeRoles: [],
+                activeRoles: activeRoles,
                 activities: activities
             )))
         } catch {
@@ -270,24 +267,10 @@ extension SendspinConnection {
         return (methods, configuration.unpairedAccessEnabled, Set(methods.keys))
     }
 
-    func handleServerHello(_ message: ServerHelloMessage) async {
+    func handleServerHello(_: ServerHelloMessage) async {
         guard awaitingRehandshakeActivation else { return }
-        serverName = message.payload.name
-        let advertisement = await livePairingAdvertisement()
-        let hello = ClientHelloPayload(
-            name: clientHelloPayload.name,
-            deviceInfo: clientHelloPayload.deviceInfo,
-            supportedPairMethods: advertisement.supportedPairMethods,
-            unpairedAccess: UnpairedAccessAdvertisement(enabled: advertisement.unpairedAccessEnabled),
-            supportedRoles: clientHelloPayload.supportedRoles,
-            playerV1Support: clientHelloPayload.playerV1Support,
-            visualizerV1Support: clientHelloPayload.visualizerV1Support
-        )
-        do {
-            try await sendWrapped(ClientHelloMessage(payload: hello), bypassRehandshakeGate: true)
-        } catch {
-            return
-        }
+        disconnectReason = .incompatibleServer
+        await transport.disconnect()
     }
 
     /// Apply the activation already consumed by `HandshakeDriver` during handoff.
@@ -407,7 +390,8 @@ extension SendspinConnection {
                 )
                 guard case .admit = verdict else {
                     if case let .reject(reason) = verdict {
-                        try? await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
+                        let goodbye = ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason))
+                        try? await sendWrapped(goodbye, bypassRehandshakeGate: awaitingRehandshakeActivation)
                     }
                     disconnectReason = .explicit(.concurrentAttempt)
                     await transport.disconnect()
@@ -420,18 +404,20 @@ extension SendspinConnection {
             if completedRehandshake {
                 awaitingRehandshakeActivation = false
             }
-            // Full state goes out when a role becomes active (spec client/state);
-            // an activate that changes nothing sends nothing.
+            // Re-handshake preserves state for unchanged roles; newly active roles
+            // require their full client/state objects under the new keys.
             let removedRoles = activeRoles.subtracting(nextRoles)
             let rolesChanged = nextRoles != activeRoles
             activeRoles = nextRoles
             clearRemovedRoles(removedRoles)
-            if rolesChanged || completedRehandshake {
+            if rolesChanged {
                 playerStateSent = false
                 visualizerStateSent = false
                 artworkStateSent = false
             }
-            try? await publishClientState(bypassRehandshakeGate: completedRehandshake)
+            if rolesChanged || !completedRehandshake {
+                try? await publishClientState(bypassRehandshakeGate: completedRehandshake)
+            }
             if completedRehandshake {
                 rehandshakeInProgress = false
             }
@@ -449,7 +435,8 @@ extension SendspinConnection {
                 clearPairingAttempt()
             }
         case let .close(reason):
-            try? await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
+            let goodbye = ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason))
+            try? await sendWrapped(goodbye, bypassRehandshakeGate: awaitingRehandshakeActivation)
             disconnectReason = .explicit(reason)
             await transport.disconnect()
         case .abortPairing:

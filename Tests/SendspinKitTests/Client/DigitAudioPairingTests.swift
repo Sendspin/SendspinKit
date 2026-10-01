@@ -341,11 +341,8 @@ struct RehandshakeDigitAudioTests {
     func rehandshakeAdmitsDigitsWithoutMethodAbort() async throws {
         let descriptor = DigitAudioDescriptor(codec: .pcm, sampleRate: 8_000, bitDepth: 16, maxBytes: 20)
         let session = try await makeDigitAudioSession(descriptor: descriptor)
-        let helloCount = await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
         try await session.server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil { await session.server.rehandshakeComplete })
-        try await session.server.sendJSON(#"{"type":"server/hello","payload":{"name":"Rehandshake Server"}}"#)
-        #expect(await waitUntil { await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCount + 1 })
         try await activateDigits(session.server)
         _ = try await waitForClientMessage(session.server, type: ClientPairInitMessage.typeString)
         #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).isEmpty)

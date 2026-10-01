@@ -45,6 +45,17 @@ extension SendspinConnection {
             do {
                 guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
                 guard let type = plaintext.first else { throw NoiseError.malformedMessage }
+                // Decryption and routing are strictly ordered. NoiseChannel.rekey replaces
+                // the receive transport, so every post-swap frame uses new keys and only
+                // server/activate is permitted. A late old-key frame fails AEAD silently
+                // (connection.md, Failure Handling) before reaching this guard.
+                if awaitingRehandshakeActivation,
+                   type != NoiseFrameType.json
+                   || SendspinEncoding.messageType(of: Data(plaintext.dropFirst())) != ServerActivateMessage.typeString {
+                    disconnectReason = .incompatibleServer
+                    await transport.disconnect()
+                    return
+                }
                 let applicationArrival = MonotonicClock.absoluteMicroseconds()
                 if type == NoiseFrameType.json {
                     await route(text: String(bytes: plaintext.dropFirst(), encoding: .utf8) ?? "", clientReceived: clientReceived)

@@ -566,13 +566,8 @@ struct DynamicPairingTranscriptTests {
         #expect(await endedEvent(session.events, reason: .userCancelled) != nil)
         #expect(await MainActor.run { session.client.connectionState == .connected })
 
-        let helloCountBefore = await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
         try await server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil { await server.rehandshakeComplete })
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
-        #expect(await waitUntil {
-            await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCountBefore + 1
-        })
 
         try await activateDynamic(server)
         let secondInitData = try await waitForClientMessage(server, type: ClientPairInitMessage.typeString, count: 2)

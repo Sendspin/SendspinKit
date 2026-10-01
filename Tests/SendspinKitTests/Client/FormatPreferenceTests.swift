@@ -123,8 +123,6 @@ struct FormatPreferenceTests {
 
         try await server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil(timeout: .seconds(3)) { await server.rehandshakeComplete })
-        await server.injectText(#"{"type":"server/hello","payload":{"name":"Rehandshake"}}"#)
-        #expect(await waitUntil(timeout: .seconds(3)) { await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count >= 2 })
         try await server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
         #expect(await waitUntil(timeout: .seconds(3)) { await states(server).last?.payload.player?.format == native })
 

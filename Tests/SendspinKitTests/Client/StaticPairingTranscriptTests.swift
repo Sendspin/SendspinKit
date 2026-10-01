@@ -599,13 +599,8 @@ struct PairingIndexSequenceTests {
         try await activateStatic(session.server)
         _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
         try await session.server.sendJSON(#"{"type":"pair/abort","payload":{"reason":"user_cancelled"}}"#)
-        let helloCount = await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
         try await session.server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil { await session.server.rehandshakeComplete })
-        try await session.server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
-        #expect(await waitUntil {
-            await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCount + 1
-        })
         try await activateStatic(session.server)
         let pendingData = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString, count: 2)
         let pending = try JSONDecoder().decode(ClientPairPendingMessage.self, from: pendingData)
