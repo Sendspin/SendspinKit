@@ -317,12 +317,14 @@ struct PairingConfiguration: Sendable {
     let staticPairingCodeEnabled: Bool
     let staticPairingCode: String?
     let digitAudio: DigitAudioDescriptor?
+    let unpairedAccessEnabled: Bool
     let runtime: PairingConfigurationRuntime
 
     init(
         presentation: PairingPresentation,
         pairingPsk: Psk,
         store: any PairingRecordStore,
+        unpairedAccessEnabled: Bool,
         staticPairingCode: String? = nil
     ) {
         precondition(presentation != .staticCode || staticPairingCode != nil)
@@ -334,14 +336,16 @@ struct PairingConfiguration: Sendable {
         staticPairingCodeEnabled = presentation == .staticCode
         self.staticPairingCode = staticPairingCode
         digitAudio = presentation.digitAudio
-        runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+        self.unpairedAccessEnabled = unpairedAccessEnabled
+        let initialConfiguration = PairingManagementConfiguration(
             pairingPsk: pairingPsk,
             pairingPskEnabled: true,
-            unpairedAccessEnabled: false,
+            unpairedAccessEnabled: unpairedAccessEnabled,
             presentation: presentation,
             digitAudio: presentation.digitAudio,
             staticPairingCode: staticPairingCode
-        ))
+        )
+        runtime = PairingConfigurationRuntime(configuration: initialConfiguration)
     }
 
     init(
@@ -365,7 +369,8 @@ struct PairingConfiguration: Sendable {
         self.staticPairingCodeEnabled = staticPairingCodeEnabled
         self.staticPairingCode = staticPairingCode
         self.digitAudio = digitAudio
-        runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+        unpairedAccessEnabled = true
+        let initialConfiguration = PairingManagementConfiguration(
             pairingPsk: resolved,
             pairingPskEnabled: enabled,
             unpairedAccessEnabled: true,
@@ -373,7 +378,8 @@ struct PairingConfiguration: Sendable {
                 (dynamicPairingCodeEnabled ? (digitAudio.map { .speaker(audio: $0) } ?? .display) : nil),
             digitAudio: digitAudio,
             staticPairingCode: staticPairingCode
-        ))
+        )
+        runtime = PairingConfigurationRuntime(configuration: initialConfiguration)
     }
 }
 

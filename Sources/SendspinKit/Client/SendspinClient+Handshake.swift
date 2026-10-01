@@ -72,20 +72,7 @@ extension SendspinClient {
                 digitAudio: nil
             )
         }
-        let configuration = await runtime.snapshot()
-        // The facade owns the app-facing policy. PairingConfiguration's runtime
-        // supplies pairing methods and storage state, while this value keeps the
-        // explicit SendspinClient setting authoritative for each handshake.
-        return PairingManagementConfiguration(
-            pairingPsk: configuration.pairingPsk,
-            pairingPskEnabled: configuration.pairingPskEnabled,
-            unpairedAccessEnabled: unpairedAccessEnabled,
-            presentation: configuration.pairingPresentation,
-            outChannels: configuration.outChannels,
-            formats: configuration.formats,
-            digitAudio: configuration.digitAudio,
-            staticPairingCode: configuration.staticPairingCode
-        )
+        return await runtime.snapshot()
     }
 
     /// Build the client/hello payload from the catalog fixed for this session.

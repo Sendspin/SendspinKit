@@ -241,6 +241,87 @@ struct DeviceClientIntegrationTests {
         #expect(client.accessPolicy == .pairedOnly)
     }
 
+    @Test("device policy reaches subsequent Sentinel activations", arguments: [false, true])
+    func unpairedPlaybackActivationRetainsRoles(outbound: Bool) async throws {
+        let client = try makePlayerClient(device: .ephemeral(), access: .allowUnpaired)
+        let transport = MockTransport()
+        client.outboundTransportFactory = { _ in transport }
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        let admission = Task {
+            if outbound {
+                try await client.connect(to: URL(string: "ws://localhost/sendspin")!)
+            } else {
+                try await client.acceptConnection(transport)
+            }
+        }
+        try await server.establishSession(activities: [], activeRoles: [.playerV1])
+        try await admission.value
+        let connection = try #require(client.connection)
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(activities: [.playback], activeRoles: nil))
+        let text = try #require(String(data: JSONEncoder().encode(activation), encoding: .utf8))
+        try await server.sendJSON(text)
+        #expect(await waitUntil { await connection.activities == [.playback] })
+        #expect(await connection.activeRoles == [.playerV1])
+        #expect(client.connectionState == .connected)
+        #expect(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        #expect(await server.disconnectCalled == false)
+        await client.close()
+    }
+
+    @Test("paired-only policy rejects subsequent Sentinel playback")
+    func pairedOnlyRejectsSubsequentPlayback() async throws {
+        let client = try makeClient(device: .ephemeral(), access: .allowUnpaired)
+        let runtime = try #require(client.pairingConfiguration?.runtime)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.pairedOnly)
+        let transport = MockTransport()
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let admission: Void = client.acceptConnection(transport)
+        try await server.establishSession(activities: [], activeRoles: [])
+        try await admission
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(activities: [.playback], activeRoles: nil))
+        let text = try #require(String(data: JSONEncoder().encode(activation), encoding: .utf8))
+        try await server.sendJSON(text)
+        #expect(await waitUntil { await server.disconnectCalled })
+        #expect(await waitUntil {
+            await !server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty
+        })
+        let data = try #require(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).last)
+        let goodbye = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
+        #expect(goodbye.payload.reason == .pairingRequired)
+        await client.close()
+    }
+
+    @Test("runtime policy reflects construction and each policy toggle")
+    func runtimeAccessPolicyMatchesClient() async throws {
+        let client = try makeClient(device: .ephemeral(), access: .allowUnpaired)
+        let configuration = try #require(client.pairingConfiguration)
+        let runtime = configuration.runtime
+        #expect(configuration.unpairedAccessEnabled)
+        #expect(client.accessPolicy == .allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.pairedOnly)
+        #expect(await runtime.snapshot().unpairedAccessEnabled == false)
+        try await client.setAccessPolicy(.allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        await client.close()
+
+        let legacy = PairingConfiguration()
+        let legacyClient = try SendspinClient(
+            identity: .generate(),
+            name: "Legacy Policy Client",
+            roles: [],
+            unpairedAccessEnabled: false,
+            pairing: legacy
+        )
+        #expect(legacy.unpairedAccessEnabled)
+        #expect(legacyClient.accessPolicy == .allowUnpaired)
+        #expect(await legacy.runtime.snapshot().unpairedAccessEnabled)
+        await legacyClient.close()
+    }
+
     private func makeClient(
         device: SendspinDevice,
         pairing: PairingPresentation = .tokenOnly,

@@ -159,7 +159,7 @@ public final class SendspinClient {
         let pairingScalarBOverride: Data?
     #endif
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
-    let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
+    var outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
     let sessionNegotiationHook: @Sendable () async -> Void
     private var audioOutputCapabilityTask: Task<Void, Never>?
     var audioOutputSnapshotSequence: UInt64 = 0
@@ -307,7 +307,7 @@ public final class SendspinClient {
 
         self.identity = identity
         self.name = name
-        self.unpairedAccessEnabled = unpairedAccessEnabled
+        self.unpairedAccessEnabled = pairing?.unpairedAccessEnabled ?? unpairedAccessEnabled
         self.roles = orderedRoles
         self.roleSet = roleSet
         self.deviceInfo = deviceInfo

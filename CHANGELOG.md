@@ -29,6 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added the pinned `jedisct1/swift-sodium` 0.9.1 dependency and the `CElligator` target. `CElligator` vendors libsodium 1.0.21 field-operation sources at revision `3e7548c62f68909461a67f396be0494584a7aae4` for the RFC 9380 Elligator2 composition; the linked `Clibsodium.xcframework` provenance and checksum are documented in `Sources/CElligator/README.md`.
 - The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
 
+### Fixed
+- Honor the host's unpaired-access policy on subsequent server activations, including playback starting after an idle Sentinel connection.
+
 ## [0.3.0] - 2025-10-26
 
 ### Added
