@@ -515,10 +515,7 @@ extension SendspinConnection {
         do {
             try await sendPairingWrapped(
                 ClientPairInitMessage(payload: ClientPairInitPayload(pairingIndex: pairingActivateCounter, commitB: nil)),
-                attemptID: authorizedAttemptID
-            )
-            try await sendPairingWrapped(
-                ClientPairFinalizeMessage(payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)),
+                followedBy: ClientPairFinalizeMessage(payload: ClientPairFinalizePayload(longTermPsk: generated.base64URL)),
                 attemptID: authorizedAttemptID
             )
         } catch {
@@ -1401,15 +1398,14 @@ extension SendspinConnection {
         // Handle visualizer stream. The server's configuration is authoritative for
         // decoding each subsequent binary type until stream/end.
         if let visualizerInfo = message.payload.visualizer {
-            let isValid = !visualizerInfo.types.isEmpty
-                && visualizerInfo.rateMax > 0
+            let isValid = visualizerInfo.rateMax > 0
                 && visualizerInfo.types.contains(.spectrum) == (visualizerInfo.spectrum != nil)
                 && visualizerInfo.types.contains(.beat) == (visualizerInfo.tracksDownbeats != nil)
                 && (visualizerInfo.spectrum.map { $0.nDispBins > 0 && $0.fMin >= 0 && $0.fMax > $0.fMin } ?? true)
                 && (visualizerState.map { requested in
                     visualizerInfo.types.allSatisfy { requested.types.contains($0) }
                         && visualizerInfo.rateMax <= requested.rateMax
-                        && visualizerInfo.spectrum == requested.spectrum
+                        && (!visualizerInfo.types.contains(.spectrum) || visualizerInfo.spectrum == requested.spectrum)
                 } ?? false)
             if !isValid {
                 Log.client.warning("Discarding invalid visualizer stream configuration")
@@ -1676,6 +1672,7 @@ extension SendspinConnection {
             return
         }
 
+        guard publishedAvailability else { return }
         await recordArrivalDelay(message: message, arrival: arrival)
 
         if emitRawAudio {
@@ -1710,7 +1707,7 @@ extension SendspinConnection {
             // A new announce replaces the channel's pending image immediately, even
             // when this transfer is gated and its completed bytes will be discarded.
             clearPendingArtwork(channel: message.channel)
-            let deliver = artworkStreamActive && artworkStateSent && channelIsEnabled(message.channel)
+            let deliver = publishedAvailability && artworkStreamActive && artworkStateSent && channelIsEnabled(message.channel)
             artworkTransfer = ArtworkTransfer(channel: message.channel, timestamp: timestamp, totalSize: totalSize, deliver: deliver)
             if totalSize == 0 {
                 let result = try completeArtworkTransfer()
@@ -1728,6 +1725,11 @@ extension SendspinConnection {
         } else {
             guard var transfer = artworkTransfer else { throw ArtworkTransferError.partWithoutTransfer }
             guard transfer.channel == message.channel else { throw ArtworkTransferError.partWrongChannel }
+            if !publishedAvailability {
+                // Missing image bytes prevent delivery, but all parts still count toward total_size.
+                transfer.deliver = false
+                transfer.data.removeAll()
+            }
             if let result = try transfer.append(message.data) {
                 artworkTransfer = nil
                 if result.deliver {
@@ -1888,6 +1890,7 @@ extension SendspinConnection {
             return
         }
         visualizerTimestampFloor = localDisplayTime
+        guard publishedAvailability else { return }
         let visualizerData = VisualizerFrame(
             type: type,
             data: message.data,

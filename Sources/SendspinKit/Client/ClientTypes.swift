@@ -659,6 +659,10 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     case modeConflict
     /// A role-specific API was called before that protocol role was active.
     case roleNotActive(VersionedRole)
+    /// No complete controller snapshot has been received for the active role.
+    case controllerStateUnavailable
+    /// The latest controller snapshot does not list the requested command.
+    case controllerCommandUnsupported(ControllerCommandType)
     /// A facade-initiated send was attempted before `server/hello` completed the handshake.
     case handshakeIncomplete
     /// The server refused `client/init`. The reason is unauthenticated and is only
@@ -688,6 +692,10 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
             "The requested connection mode conflicts with the active listener or session"
         case let .roleNotActive(role):
             "The \(role.identifier) role is not active for this connection"
+        case .controllerStateUnavailable:
+            "No controller state has been received"
+        case let .controllerCommandUnsupported(command):
+            "The controller does not support \(command.rawValue)"
         case .handshakeIncomplete:
             "Handshake is not complete; wait for server/hello before sending commands"
         case let .connectionRefused(reason):

@@ -123,6 +123,8 @@ actor SendspinConnection {
     /// State publication is serialized by the actor; every publication is a full snapshot.
     var clientStateSendInFlight = false
     var clientStateDirty = false
+    // Availability opens only after a successful client/state publication.
+    var publishedAvailability = false
 
     /// Outbound whole-message fence: nonces burn per fragment up front and the
     /// fragments must reach the transport with nothing interleaved, so one

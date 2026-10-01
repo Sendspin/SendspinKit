@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Replaced one-message artwork images with announce/part/cancel transfers, and removed BMP support; artwork formats are JPEG and PNG.
 
 ### Added
+- `SendspinClient.setVisualizerPreference(_:)` publishes dynamic visualizer preferences, including empty types requests.
+- Typed controller command failures distinguish a missing snapshot from an unsupported command.
 - `ClientEvent.pairingAttemptSuperseded(_:)` reports server activation supersession without implying an operator abort; genuine attempt ends retain their terminal `currentPairing` snapshot.
 - `SendspinClient.cancelPairing(attemptID:)` also accepts `pairingWindow.attemptID` to close a surviving window and end its owning connection's current attempt.
 - Added `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` for init refusals; the reason is unauthenticated and only a diagnostic hint.
@@ -32,12 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
 
 ### Removed
+- Removed `ConfigurationError.emptyVisualizerTypes`; empty visualizer requests are valid.
 - Removed server-supplied pairing digit audio: `DigitAudioDescriptor`, `DigitAudioClip`, `DigitAudioPack`, `DigitAudioPackConstants`, and `PairingCodeEmission.digitAudioPack`, including clip negotiation and validation.
 
 ### Changed
 - `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless. Hosts speak pairing codes using bundled audio or a synthesizer; emissions include the server's ordered `languages` hint.
 
 ### Fixed
+- Validate controller commands against the latest connection-owned supported commands.
+- Decode disabled artwork channels without format or dimensions, and accept empty visualizer stream subsets with spectrum omitted when not streamed.
+- Discard incoming audio, artwork, and visualizer data while published availability is false, preserving artwork transfer byte accounting.
 - Preserve buffered player audio across identical stream announcements and startup format changes, with ordered decoding and render-format boundaries.
 - Ignore Opus bit depth for validation and format matching while retaining strict PCM and FLAC depth validation.
 - Keep static pairing windows open across timed-out, cancelled, and superseded attempts; close them on success, five failed server confirmations, connection drop, operator cancellation, or lifetime expiry.

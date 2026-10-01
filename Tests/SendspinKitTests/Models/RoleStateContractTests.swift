@@ -53,9 +53,7 @@ struct RoleStateContractTests {
         #expect(throws: ConfigurationError.missingSpectrumConfiguration) {
             try VisualizerStateObject(types: [.spectrum], rateMax: 30)
         }
-        #expect(throws: ConfigurationError.emptyVisualizerTypes) {
-            try VisualizerConfiguration(types: [], rateMax: 30)
-        }
+        #expect(try VisualizerConfiguration(types: [], rateMax: 30).types.isEmpty)
         #expect(throws: ConfigurationError.nonPositiveVisualizerRate) {
             try VisualizerConfiguration(types: [.loudness], rateMax: 0)
         }

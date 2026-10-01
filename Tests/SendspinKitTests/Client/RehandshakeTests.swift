@@ -155,7 +155,9 @@ struct RehandshakeTests {
             guard message.first == NoiseFrameType.json else { return nil }
             return SendspinEncoding.messageType(of: Data(message.dropFirst()))
         }
-        #expect(Array(types.suffix(2)) == [ClientPairInitMessage.typeString, ClientPairFinalizeMessage.typeString])
+        let initIndex = try #require(types.firstIndex(of: ClientPairInitMessage.typeString), "Outbound types: \(types)")
+        let finalizeIndex = try #require(types.firstIndex(of: ClientPairFinalizeMessage.typeString), "Outbound types: \(types)")
+        #expect(finalizeIndex == initIndex + 1, "Outbound types: \(types)")
         let initData = try #require(await server.clientJSONMessages(ofType: ClientPairInitMessage.typeString).first)
         let pairInit = try JSONDecoder().decode(ClientPairInitMessage.self, from: initData)
         let expectedPairingIndex: UInt32 = 1

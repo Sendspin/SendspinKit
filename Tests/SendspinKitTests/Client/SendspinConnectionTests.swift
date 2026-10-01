@@ -1279,6 +1279,7 @@ struct SendspinConnectionSessionTests {
         try await transport.injectText(streamStartJSON())
         #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
         try await connection.sendClientState()
+        await connection.establishTestClockSync()
         let timestamp: Int64 = 1_000_000
         let sendAhead: UInt32 = 100_000
         let arrival = timestamp - Int64(sendAhead) + 12_345

@@ -25,7 +25,7 @@ for SwiftUI.
   `DataPlaneSink`; the engine emits `EngineReport`s, drained by the connection's `reportDrain()`
   into `ConnectionEvent`s. (Both enums are `internal`; tests use `@testable import`.)
 - **Outbound sends:** the connection is the transport's single writer. Facade APIs
-  (player/artwork state-preference setters and controller commands) route through connection
+  (player/artwork/visualizer state-preference setters and controller commands) route through connection
   methods that publish full `client/state` snapshots or send `client/command`. The facade stores no transport,
   channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
   through raw init, Noise establishment, encrypted `server/hello`/`client/hello`, pairing setup,
@@ -35,6 +35,8 @@ for SwiftUI.
   `ClockSyncProtocol`. There is no `send(Codable)` transport contract.
 
 ## Key Decisions
+- Binaries are dropped while the last successfully published `client/state` reports
+  `available: false`, without disconnecting.
 - **Lifetime = owned objects, not generation counters.** The old `connectionGeneration` machinery was
   replaced by: a supervisor task (`runLoop`), run-once teardown, an identity guard, and
   `SessionValidityToken`. Reconnect builds a *new* connection+engine+token; `shutdown()` invalidates

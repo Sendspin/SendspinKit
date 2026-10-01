@@ -59,7 +59,7 @@ struct ArtworkTransfer: Sendable {
     let channel: Int
     let timestamp: Int64
     let totalSize: UInt32
-    let deliver: Bool
+    var deliver: Bool
     var received: UInt32 = 0
     var data = Data()
 

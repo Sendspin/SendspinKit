@@ -1280,13 +1280,10 @@ struct ClientIntegrationTests {
         #expect(await waitUntil { await MainActor.run { client.currentControllerState?.seekMaxMs == nil } })
         let countBefore = await mock.sentTextMessages.count
 
-        try await client.seek(to: 400_000)
-
-        let command = try await lastSentCommand(from: mock, after: countBefore)
-        let sent = try #require(command, "Expected a ClientCommandMessage after seek(to:)")
-        #expect(sent.payload.controller?.command == .seek)
-        #expect(sent.payload.controller?.positionMs == 400_000)
-        #expect(sent.payload.controller?.offsetMs == nil)
+        await #expect(throws: SendspinClientError.controllerCommandUnsupported(.seek)) {
+            try await client.seek(to: 400_000)
+        }
+        #expect(try await lastSentCommand(from: mock, after: countBefore) == nil)
 
         await client.disconnect()
     }
@@ -1298,6 +1295,7 @@ struct ClientIntegrationTests {
 
         let countBefore = await mock.sentTextMessages.count
 
+        try await authorizeController(client, command: .seekRelative)
         try await client.seekRelative(by: -15_000)
 
         let command = try await lastSentCommand(from: mock, after: countBefore)
@@ -1316,6 +1314,7 @@ struct ClientIntegrationTests {
 
         let countBefore = await mock.sentTextMessages.count
 
+        try await authorizeController(client, command: .repeatOne)
         try await client.setRepeatMode(.one)
 
         let command = try await lastSentCommand(from: mock, after: countBefore)
@@ -1332,6 +1331,7 @@ struct ClientIntegrationTests {
 
         let countBefore = await mock.sentTextMessages.count
 
+        try await authorizeController(client, command: .shuffle)
         try await client.setShuffle(true)
 
         let command = try await lastSentCommand(from: mock, after: countBefore)
@@ -1348,6 +1348,7 @@ struct ClientIntegrationTests {
 
         let countBefore = await mock.sentTextMessages.count
 
+        try await authorizeController(client, command: .switch)
         try await client.switchGroup()
 
         let command = try await lastSentCommand(from: mock, after: countBefore)
@@ -1399,6 +1400,7 @@ struct ClientIntegrationTests {
         // play() send deterministically eats the injected failure.
         try await establishClockSync(client, via: mock)
 
+        try await authorizeController(client, command: .play)
         await mock.setShouldFailOnSend(true)
 
         let error = try await #require(throws: SendspinClientError.self) {

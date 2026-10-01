@@ -101,6 +101,7 @@ struct ArtworkTransferTests {
             scheduleSleep: scheduleSleep,
             artworkObserver: observer
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         await fixture.connection.handleStreamStart(artworkStart())
         return fixture
@@ -144,6 +145,7 @@ struct ArtworkTransferTests {
             clock: clock, activeRoles: [.artworkV1], artworkSink: sink, roles: [.artworkV1],
             initialArtworkState: activeArtworkState(), scheduleNow: { 1_000_000 }
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         await fixture.connection.handleStreamStart(artworkStart())
         try await fixture.connection.handleArtworkBinary(announce())
@@ -170,6 +172,7 @@ struct ArtworkTransferTests {
             initialArtworkState: activeArtworkState(), scheduleNow: { 1_000_000 },
             artworkObserver: { _ in applied.record() }
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         await fixture.connection.handleStreamStart(artworkStart())
         try await fixture.connection.handleArtworkBinary(announce())
@@ -208,6 +211,7 @@ struct ArtworkTransferTests {
             roles: [.artworkV1, .metadataV1], initialArtworkState: activeArtworkState(),
             scheduleNow: { 1_000_000 }
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         await fixture.connection.handleStreamStart(artworkStart())
         let bytes = Data([0xA, 0xB, 0xC])

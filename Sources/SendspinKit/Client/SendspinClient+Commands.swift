@@ -136,6 +136,18 @@ public extension SendspinClient {
     }
 }
 
+public extension SendspinClient {
+    /// Publish the complete visualizer preference, including an empty types request to disable data.
+    @MainActor
+    func setVisualizerPreference(_ preference: VisualizerStateObject) async throws {
+        try requireOpen()
+        guard roleSet.contains(.visualizerV1) else { throw SendspinClientError.roleNotActive(.visualizerV1) }
+        guard let connection else { throw SendspinClientError.notConnected }
+        guard await connection.isRehandshakeInProgress == false else { throw SendspinClientError.handshakeIncomplete }
+        try await connection.setVisualizerPreference(preference)
+    }
+}
+
 // MARK: - Controller commands
 
 extension SendspinClient {
@@ -144,6 +156,9 @@ extension SendspinClient {
     /// Internal because the typed convenience methods (`play()`, `pause()`, etc.) are the
     /// correct public API — they prevent invalid parameter combinations like
     /// `sendCommand(.play, volume: 50)` which compiles but is nonsensical.
+    /// Every typed command wrapper throws these controller snapshot errors.
+    /// - Throws: ``SendspinClientError/controllerStateUnavailable`` before the first snapshot,
+    ///   or ``SendspinClientError/controllerCommandUnsupported(_:)`` when the command is not listed.
     @MainActor
     func sendCommand(
         _ command: ControllerCommandType,
@@ -155,7 +170,6 @@ extension SendspinClient {
         try requireOpen()
         guard roleSet.contains(.controllerV1) else { throw SendspinClientError.roleNotActive(.controllerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
-        try await connection.requireActiveRole(.controllerV1)
         let controller = ControllerCommand(
             command: command,
             volume: volume,
@@ -163,8 +177,7 @@ extension SendspinClient {
             positionMs: positionMs,
             offsetMs: offsetMs
         )
-        let message = ClientCommandMessage(payload: ClientCommandPayload(controller: controller))
-        try await connection.send(clientMessage: message)
+        try await connection.sendControllerCommand(controller)
     }
 }
 
@@ -205,9 +218,9 @@ public extension SendspinClient {
 
     /// Start playback.
     ///
-    /// Requires the controller role. Check ``currentControllerState`` to verify
-    /// the server supports this command before calling — if the server doesn't
-    /// support it, the command is silently ignored per spec.
+    /// Requires the controller role and a received snapshot listing this command.
+    /// Throws ``SendspinClientError/controllerStateUnavailable`` before the first snapshot,
+    /// or ``SendspinClientError/controllerCommandUnsupported(_:)`` when it is not listed.
     ///
     /// - Throws: ``SendspinClientError/notConnected`` if not connected.
     @MainActor func play() async throws {

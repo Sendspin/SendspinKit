@@ -169,7 +169,7 @@ struct ScheduledPresentationTests {
         let schedule = ManualTestClock(now: 0)
         let sleeper = ScheduledTestSleeper()
         let fixture = try await makeEstablishedConnection(
-            clock: ScheduledTestClock(),
+            clock: StubClock(),
             activeRoles: [.artworkV1], roles: [.artworkV1], initialArtworkState: ArtworkStateObject(channels: [ArtworkStateChannel(
                 source: .album,
                 format: .jpeg,
@@ -181,6 +181,7 @@ struct ScheduledPresentationTests {
         let metadata = ServerMetadataState(timestamp: 100, title: .value("metadata"))
         let color = ServerColorState(timestamp: 100, primary: .value(SendspinColor(red: 1, green: 1, blue: 1)))
         await fixture.connection.handleServerState(ServerStateMessage(payload: ServerStatePayload(metadata: metadata, color: color)))
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         let streamStart = StreamStartMessage(payload: StreamStartPayload(
             player: nil,

@@ -112,17 +112,35 @@ public struct ArtworkChannel: Codable, Sendable, Hashable {
 public struct StreamArtworkChannelConfig: Codable, Sendable, Hashable {
     /// Artwork source type
     public let source: ArtworkSource
-    /// Format of the encoded image
-    public let format: ImageFormat
-    /// Width in pixels of the encoded image
-    public let width: Int
-    /// Height in pixels of the encoded image
-    public let height: Int
+    /// Format of the encoded image; optional for a disabled channel.
+    public let format: ImageFormat?
+    /// Width in pixels of the encoded image; optional for a disabled channel.
+    public let width: Int?
+    /// Height in pixels of the encoded image; optional for a disabled channel.
+    public let height: Int?
 
-    public init(source: ArtworkSource, format: ImageFormat, width: Int, height: Int) {
+    enum CodingKeys: String, CodingKey {
+        case source, format, width, height
+    }
+
+    public init(source: ArtworkSource, format: ImageFormat? = nil, width: Int? = nil, height: Int? = nil) {
         self.source = source
         self.format = format
         self.width = width
         self.height = height
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        source = try container.decode(ArtworkSource.self, forKey: .source)
+        if source == .none {
+            format = try container.decodeIfPresent(ImageFormat.self, forKey: .format)
+            width = try container.decodeIfPresent(Int.self, forKey: .width)
+            height = try container.decodeIfPresent(Int.self, forKey: .height)
+        } else {
+            format = try container.decode(ImageFormat.self, forKey: .format)
+            width = try container.decode(Int.self, forKey: .width)
+            height = try container.decode(Int.self, forKey: .height)
+        }
     }
 }

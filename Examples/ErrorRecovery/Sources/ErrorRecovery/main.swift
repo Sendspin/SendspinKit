@@ -88,6 +88,12 @@ private func isRetryableError(_ error: any Error) -> Bool {
             // An init refusal needs operator attention rather than repeated identical init messages.
             // Its unauthenticated reason is diagnostic only.
             return false
+        case .controllerStateUnavailable:
+            // Wait for the active role's first snapshot instead of reconnecting.
+            return false
+        case .controllerCommandUnsupported:
+            // The latest server snapshot does not authorize this command.
+            return false
         case .stalePairingAttempt, .roleNotActive, .streamNotActive,
              .invalidServerURL, .noDiscoveredServers, .serverURLRequired:
             // Logic/configuration errors are not transient connection failures —

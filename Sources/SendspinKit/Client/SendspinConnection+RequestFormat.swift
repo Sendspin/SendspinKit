@@ -90,6 +90,18 @@ extension SendspinConnection {
         try await publishClientState()
     }
 
+    func setVisualizerPreference(_ preference: VisualizerStateObject) async throws {
+        try requireActiveRole(.visualizerV1)
+        let previousPreference = visualizerState
+        visualizerState = preference
+        do {
+            try await publishClientState()
+        } catch {
+            visualizerState = previousPreference
+            throw error
+        }
+    }
+
     /// Seed status once the session handshake is complete. The pre-hello snapshot
     /// is already normalized and remains the initial settled route.
     func activateOutputFormatNegotiation() async {
