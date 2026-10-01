@@ -39,7 +39,7 @@ struct ClientAdvertiserTests {
 
     @Test
     func isTerminatedIsTrueAfterStop() async throws {
-        let advertiser = ClientAdvertiser(name: "Test", port: 18_931)
+        let advertiser = ClientAdvertiser(name: "Test", port: 0)
         try await advertiser.start()
 
         let terminatedBefore = await advertiser.isTerminated

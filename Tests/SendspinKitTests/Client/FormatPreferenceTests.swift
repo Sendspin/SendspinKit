@@ -107,15 +107,16 @@ struct FormatPreferenceTests {
         let provider = AudioOutputCapabilityService(initialSnapshot: output(44_100, "Initial"), platformMonitor: InertAudioOutputPlatformMonitor())
         let client = try makeClient(formats: [fallback, native], provider: provider, settle: .zero)
         let server = try await connect(client)
+        try await establishClockSync(client, via: server)
         try await server.injectText(streamStart(format: fallback))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
-        await provider.update(output(48_000, "New route"))
-        #expect(await waitUntil { await client.connection?.pendingOutputFormatRequest != nil })
         let connection = try #require(client.connection)
+        try #require(await waitUntil { await connection.audioEngineForTesting.appliedCommandKinds().contains(.streamStart) })
+        await provider.update(output(48_000, "New route"))
+        try #require(await waitUntil { await connection.pendingOutputFormatRequest != nil })
         let engine = connection.audioEngineForTesting
         try await server.injectText(streamStart(format: fallback))
-        #expect(await waitUntil { await connection.pendingOutputFormatRequest == nil })
-        #expect(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1 })
+        try #require(await waitUntil { await connection.pendingOutputFormatRequest == nil })
+        try #require(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1 })
         #expect(await engine.isRouteInvalidatedForTesting() == false)
         #expect(await engine.appliedCommandKinds().filter { $0 == .routeInvalidatedFormatChange }.count == 1)
         await client.disconnect()
@@ -128,10 +129,12 @@ struct FormatPreferenceTests {
         let client = try makeClient(formats: [fallback], provider: provider, settle: .zero)
         let server = try await connect(client)
         try await server.injectText(streamStart(format: fallback))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
-        await provider.update(output(48_000, "Unsupported route"))
-        #expect(await waitUntil { await client.connection?.settledOutputSampleRate == 48_000 })
         let connection = try #require(client.connection)
+        try await requireOutputCondition("no-request initial stream applied") {
+            await connection.audioEngineForTesting.appliedCommandKinds().contains(.streamStart)
+        }
+        await provider.update(output(48_000, "Unsupported route"))
+        try await requireOutputCondition("unsupported route settled") { await connection.settledOutputSampleRate == 48_000 }
         let engine = connection.audioEngineForTesting
         #expect(await connection.pendingOutputFormatRequest == nil)
         try await server.injectText(streamStart(format: fallback))

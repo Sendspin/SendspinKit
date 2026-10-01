@@ -147,6 +147,14 @@ for await event in client.events() {
 }
 ```
 
+## Handle protocol API constraints
+
+- `SendspinClientError.connectionRefused(ServerErrorReason)` carries an unauthenticated setup refusal reason for diagnostics only.
+- `PlayerConfiguration` requires FLAC or PCM and throws `ConfigurationError.missingLosslessFormat` for an Opus-only catalog.
+- `requireCurrentOutput` throws `OutputFormatError.noMatchingLosslessFormat` if output filtering removes every FLAC and PCM format.
+- `setVisualizerPreference(_:)` publishes a new visualizer request, including empty `types` to request no visualizer data.
+- Controller commands throw `controllerStateUnavailable` before the first state or `controllerCommandUnsupported` when absent from the latest `supported_commands`.
+
 ## Pair with a code
 
 Code-based pairing is coordinated by the host app. Declare the presentation your device can actually provide via the client's `pairing` argument (``PairingPresentation``): `.display`, `.digitDisplay`, `.speaker`, `.displayAndSpeaker`, or `.staticCode` — the default `.tokenOnly` presents no dynamic code. Then start consuming ``SendspinClient/events`` and retain the complete ``PairingAttemptSnapshot`` that drives the operator UI:
@@ -167,7 +175,8 @@ for await event in client.events() {
 
 Call ``SendspinClient/openPairingWindow(for:)`` with the ID captured by the rendered snapshot when
 the app receives its physical-gesture or other operator-confirmation signal. It returns after
-recording or consuming the connection-owned window; it does not wait for the attempt. To cancel,
+recording operator consent and resetting the emitted-round budget, including an already-open window;
+it does not wait for the attempt. To cancel,
 call ``SendspinClient/cancelPairing(attemptID:)`` with that same captured ID. A stale ID throws
 ``SendspinClientError/stalePairingAttempt(_:)`` and never retargets a newer attempt. The observable
 ``SendspinClient/currentPairing`` retains the latest genuine terminal snapshot until a new attempt

@@ -1724,9 +1724,9 @@ struct SendspinConnectionSessionTests {
             note: String(repeating: "b", count: NoiseChannel.maxSinglePayload + 2_000)
         )
         async let first: Void = connection.send(clientMessage: big)
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await transport.isGoodbyeGateWaiting })
 
-        // Sequence: wait for the FIRST queued sender before launching the second,
+        // Sequence: wait for the first queued sender before launching the second,
         // so both are deterministically in the queue when the gate opens.
         let second = Task { () -> Result<Void, Error> in
             do {
@@ -1736,7 +1736,7 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await connection.outboundWaiters.count == 1 }, "the first single-frame sender must queue")
+        try await connection.requireOutboundWaiters(1)
 
         let third = Task { () -> Result<Void, Error> in
             do {
@@ -1746,20 +1746,20 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await connection.outboundWaiters.count == 2 }, "both single-frame senders must queue")
+        try await connection.requireOutboundWaiters(2)
 
         await transport.releaseGoodbyeGate()
         try await first
         let secondResult = await second.value
-        _ = try? secondResult.get()
+        try secondResult.get()
         let thirdResult = await third.value
-        _ = try? thirdResult.get()
+        try thirdResult.get()
 
         // Wait for the peer readback of all three before snapshotting order.
         let server = try #require(await connectionReadbacks.server(for: transport))
-        #expect(
+        try #require(
             await waitUntil(timeout: .seconds(3)) {
-                await server.decryptedMessages.count >= 3
+                await server.decryptedMessages.compactMap(typeOfDecryptedJSON).filter { OutboundTestMessageType.all.contains($0) }.count == 3
             },
             "the peer must read all three messages"
         )

@@ -27,6 +27,8 @@ exhaustively over `ClientEvent` on purpose — add the missing case, not a `defa
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.
 
 ## Conventions
+- `swift test --no-parallel` is unsupported: serial runs can hang in actor/queued-delivery fixtures.
+  Use the default parallel runner with `timeout` and `set -o pipefail`; check for leftover testing helpers.
 - No magic values in tests — import the source constant (binary type bytes, role strings, reasons,
   `highWatermark`, etc.).
 - Tautological tests are the recurring failure mode here: every behavior test must fail when the

@@ -5,55 +5,48 @@ All notable changes to SendspinKit will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased] - Noise spec alignment
+## [Unreleased] - Spec alignment
 
 ### Breaking
-- `PlayerConfiguration` rejects Opus-only catalogs with `missingLosslessFormat`; every player must offer FLAC or PCM. `requireCurrentOutput` reports `noMatchingLosslessFormat` when neither matches the route rate.
-- Replaced the plaintext session handshake with mandatory Noise encryption; clients now require a stable `SendspinIdentity` and host-owned secret-key persistence.
-- Replaced the old client identifier and handshake surface with identity-based `SendspinClient` initialization and encrypted transport framing. `client/hello` no longer carries `trust_level`, artwork support, or mutable player commands; support objects now contain only their protocol-defined capabilities.
-- Removed the protocol `management` namespace, responder, persistence hooks, and remote management operations. `PairingManagementConfiguration` remains the host-local pairing settings value; pairing-window opening is a host gesture/API concern.
-- Replaced `requestPlayerFormat`/`requestArtworkFormat` and `stream/request-format` with `setPlayerFormatPreference` and `setArtworkChannelPreference`, which publish state preferences.
-- Changed `client/hello.supported_pair_methods` from an array to a keyed object, with method-specific descriptors. A client advertises Pairing PSK and at most one pairing-code method; code pairing is Sentinel-only, and `psk_category` now binds each handshake candidate to its credential category.
-- Changed Noise fragmentation to the single type-1 framing format with explicit first/last flags and reserved-bit validation. Player audio remains binary type 4 and now includes the `send_ahead` header field.
-- Renamed output-delay wire keys to `output_delay_ms` and `set_output_delay`.
-- Changed `client/state` from deltas to full snapshots, including mutable player commands, artwork channels, and visualizer configuration. Artwork configuration no longer belongs in `client/hello`.
-- Replaced one-message artwork images with announce/part/cancel transfers, and removed BMP support; artwork formats are JPEG and PNG.
+- Player catalogs require FLAC or PCM and report `missingLosslessFormat` otherwise.
+- `requireCurrentOutput` reports `noMatchingLosslessFormat` when its output-filtered catalog contains neither FLAC nor PCM.
+- `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless and require host-provided speech.
 
 ### Added
-- `SendspinClient.setVisualizerPreference(_:)` publishes dynamic visualizer preferences, including empty types requests.
-- Typed controller command failures distinguish a missing snapshot from an unsupported command.
-- `ClientEvent.pairingAttemptSuperseded(_:)` reports server activation supersession without implying an operator abort; genuine attempt ends retain their terminal `currentPairing` snapshot.
-- `SendspinClient.cancelPairing(attemptID:)` also accepts `pairingWindow.attemptID` to close a surviving window and end its owning connection's current attempt.
-- Added `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` for init refusals; the reason is unauthenticated and only a diagnostic hint.
-- Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
-- Added visualizer state configuration for beat, loudness, peak, and spectrum data, including rate and spectrum parameters.
-- Added scheduled metadata, color, and artwork updates using the current best clock estimate.
-- Added `requiredLeadTimeMs` and `minBufferMs` player configuration, with measured buffer-depth publication through full state snapshots.
-- Added dynamic pairing failure-counter provider hooks and host-local pairing configuration updates without returning the static secret.
-- Added the pinned `jedisct1/swift-sodium` 0.9.1 dependency and the `CElligator` target. `CElligator` vendors libsodium 1.0.21 field-operation sources at revision `3e7548c62f68909461a67f396be0494584a7aae4` for the RFC 9380 Elligator2 composition; the linked `Clibsodium.xcframework` provenance and checksum are documented in `Sources/CElligator/README.md`.
-- The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
-
-### Removed
-- Removed `ConfigurationError.emptyVisualizerTypes`; empty visualizer requests are valid.
-- Removed server-supplied pairing digit audio: `DigitAudioDescriptor`, `DigitAudioClip`, `DigitAudioPack`, `DigitAudioPackConstants`, and `PairingCodeEmission.digitAudioPack`, including clip negotiation and validation.
+- `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` expose unauthenticated setup refusals for diagnostics.
+- `ClientEvent.pairingAttemptSuperseded(_:)` identifies an attempt replaced or abandoned by server activation.
+- `cancelPairing(attemptID:)` accepts `pairingWindow.attemptID` to close a surviving window and end its current attempt.
+- `setVisualizerPreference(_:)` publishes dynamic visualizer preferences.
+- Controller command errors distinguish `controllerStateUnavailable` from `controllerCommandUnsupported`.
 
 ### Changed
-- `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless. Hosts speak pairing codes using bundled audio or a synthesizer; emissions include the server's ordered `languages` hint.
+- `PairingCodeEmission.languages` supplies the server's language priority list for host-provided speech.
+- `openPairingWindow(for:)` resets the emitted-round budget with one operator gesture, including an already-open window.
+
+### Removed
+- Server-supplied digit audio descriptors, packs, clips, binary handling, and `PairingCodeEmission.digitAudioPack` are absent.
+- `ConfigurationError.emptyVisualizerTypes` is absent because empty requests are valid.
 
 ### Fixed
-- Validate controller commands against the latest connection-owned supported commands.
-- Decode disabled artwork channels without format or dimensions, and accept empty visualizer stream subsets with spectrum omitted when not streamed.
-- Discard incoming audio, artwork, and visualizer data while published availability is false, preserving artwork transfer byte accounting.
-- Preserve buffered player audio across identical stream announcements and startup format changes, with ordered decoding and render-format boundaries.
-- Ignore Opus bit depth for validation and format matching while retaining strict PCM and FLAC depth validation.
-- Keep static pairing windows open across timed-out, cancelled, and superseded attempts; close them on success, five failed server confirmations, connection drop, operator cancellation, or lifetime expiry.
-- Start each superseding pairing activation with fresh attempt state without disconnecting or persisting an abandoned PSK.
-- Discard in-flight server pairing messages only after a client abort and until the next activation; server aborts end the attempt without authorizing later pairing messages, and other sequence violations close silently.
-- Reset an exhausted dynamic pairing budget with one operator gesture, whether the gesture precedes or follows activation.
-- Send `client/pair-init` with the activation's pairing index immediately before `client/pair-finalize` in Pairing PSK attempts, without awaiting a server response.
-- Use attempt-local CPace round numbers while charging the persisted device-wide round budget only for valid dynamic rounds whose code is emitted.
-- Send `client/pair-init` only once per dynamic attempt; after `client/pair-retry`, wait for the server to begin the next round.
-- Honor the host's unpaired-access policy on subsequent server activations, including playback starting after an idle Sentinel connection.
+- Activation admission follows the credential activity table and permits simultaneous playback and pairing without quiescing playback.
+- Removed versioned roles clear state, scheduled updates, buffers, and temporary output while unchanged roles retain state.
+- Artwork stream end and role removal clear current artwork and invalidate pending image deliveries.
+- Re-handshake preserves roles, streams, buffers, artwork transfers, and clock state without repeating either hello.
+- New-key application messages wait for `server/activate` during re-handshake.
+- Every activation uses the host's shared unpaired-access policy.
+- Pairing PSK init includes the pairing index and remains adjacent to finalize under one outbound acquisition.
+- CPace round numbers are attempt-local and the device-wide budget counts only emitted dynamic codes.
+- Dynamic attempts send one `client/pair-init` and wait for the server's next round after `client/pair-retry`.
+- Static pairing windows survive attempt timeout and supersession and close on success, five failed confirmations, disconnect, operator cancellation, or expiry.
+- Superseding pairing activations replace attempt state without disconnecting or persisting an abandoned PSK.
+- Only client abort opens the silent-discard interval, which ends at the next activation; other pairing sequence violations close silently.
+- Active player configuration updates preserve buffered audio and identical announcements preserve the timeline.
+- Opus validation and format matching ignore bit depth while PCM and FLAC retain depth validation.
+- An advertised session is no longer disconnected when its admission task is cancelled or times out after adoption.
+- Controller commands validate against the latest connection-owned `supported_commands`.
+- Disabled artwork channels decode without format or dimensions.
+- Visualizer streams accept empty type subsets and validate spectrum only when streamed.
+- Unavailable clients discard audio, artwork, and visualizer data while preserving artwork byte accounting.
 
 ## [0.3.0] - 2025-10-26
 

@@ -612,6 +612,19 @@ public final class SendspinClient {
     /// logic from the spec is applied after the handshake completes.
     @MainActor
     public func acceptConnection(_ transport: any SendspinTransport) async throws {
+        try await acceptConnection(transport, ownership: nil)
+    }
+
+    func acceptConnection(
+        _ originalTransport: any SendspinTransport,
+        ownership: AdvertisingTransportOwnership?,
+        afterAcceptance: (@Sendable () async -> Void)? = nil
+    ) async throws {
+        let transport: any SendspinTransport = if let ownership {
+            AdvertisingCandidateTransport(originalTransport, ownership: ownership)
+        } else {
+            originalTransport
+        }
         try requireOpen()
         guard !outgoingAttemptInProgress || connection != nil else {
             await transport.disconnect()
@@ -666,7 +679,9 @@ public final class SendspinClient {
                     outcome: outcome,
                     negotiation: negotiation,
                     runtimeConfiguration: runtimeConfiguration,
-                    setupEpoch: acceptEpoch
+                    setupEpoch: acceptEpoch,
+                    ownership: ownership,
+                    afterAcceptance: afterAcceptance
                 )
                 try requireOpen()
             } catch {
@@ -682,7 +697,7 @@ public final class SendspinClient {
                 throw error
             }
         } else {
-            try await handleCompetingConnection(transport)
+            try await handleCompetingConnection(transport, ownership: ownership, afterAcceptance: afterAcceptance)
         }
         try requireOpen()
     }
@@ -722,7 +737,9 @@ public final class SendspinClient {
         negotiation: SessionFormatNegotiation,
         runtimeConfiguration: PairingManagementConfiguration,
         setupEpoch: Int,
-        installAsPairingSide: Bool = false
+        installAsPairingSide: Bool = false,
+        ownership: AdvertisingTransportOwnership? = nil,
+        afterAcceptance: (@Sendable () async -> Void)? = nil
     ) async {
         guard !isTerminated, sessionEpoch == setupEpoch else {
             if let lease = outcome.protectionLease, let store = outcome.pairingStore {
@@ -757,7 +774,22 @@ public final class SendspinClient {
             }
         }
 
-        // Build the SendspinConnection with configuration from this facade
+        let initialArtworkState = makeInitialArtworkState()
+        await afterAcceptance?()
+        guard !isTerminated, sessionEpoch == setupEpoch,
+              adoptAdvertisingTransport(transport, ownership: ownership) else {
+            await transport.disconnect()
+            if let lease = outcome.protectionLease, let store = outcome.pairingStore {
+                try? await store.releaseProtection(lease)
+            }
+            if sessionEpoch == setupEpoch, connection == nil {
+                updateConnectionState(.disconnected)
+                emitEvent(.disconnected(reason: .connectionLost(nil)))
+            }
+            return
+        }
+        let sessionTransport = (transport as? AdvertisingCandidateTransport)?.underlying ?? transport
+        // Adoption and connection construction have no intervening suspension.
         let validity = SessionValidityToken()
         if !installAsPairingSide {
             sessionValidity = validity
@@ -814,7 +846,7 @@ public final class SendspinClient {
             let pairingScalarBOverride: Data? = nil
         #endif
         let newConnection = SendspinConnection(
-            transport: transport,
+            transport: sessionTransport,
             channel: sessionChannel,
             serverId: outcomeServerId,
             serverName: outcomeServerName,
@@ -865,20 +897,7 @@ public final class SendspinClient {
             initialPreferredPlayerFormat: preferredPlayerFormat,
             initialVolume: currentVolume,
             initialMuted: currentMuted,
-            initialArtworkState: artworkConfig.map { config in
-                do {
-                    return try ArtworkStateObject(channels: config.channels.map { channel in
-                        try ArtworkStateChannel(
-                            source: channel.source,
-                            format: channel.source == .none ? nil : channel.format,
-                            width: channel.source == .none ? nil : channel.width,
-                            height: channel.source == .none ? nil : channel.height
-                        )
-                    })
-                } catch {
-                    preconditionFailure("Validated artwork configuration cannot produce state: \(error)")
-                }
-            },
+            initialArtworkState: initialArtworkState,
             initialVisualizerState: visualizerConfig?.stateObject,
             requiredLeadTimeMs: playerConfig?.requiredLeadTimeMs ?? defaultRequiredLeadTimeMs,
             minBufferMs: playerConfig?.minBufferMs ?? defaultMinBufferMs,
@@ -968,6 +987,23 @@ public final class SendspinClient {
             Task { await persistenceProvider?.saveLastPlayedServerId(outcomeServerId) }
         }
         updateConnectionState(.connected)
+    }
+
+    private func makeInitialArtworkState() -> ArtworkStateObject? {
+        artworkConfig.map { config in
+            do {
+                return try ArtworkStateObject(channels: config.channels.map { channel in
+                    try ArtworkStateChannel(
+                        source: channel.source,
+                        format: channel.source == .none ? nil : channel.format,
+                        width: channel.source == .none ? nil : channel.width,
+                        height: channel.source == .none ? nil : channel.height
+                    )
+                })
+            } catch {
+                preconditionFailure("Validated artwork configuration cannot produce state: \(error)")
+            }
+        }
     }
 
     private func makeAudioEngine(

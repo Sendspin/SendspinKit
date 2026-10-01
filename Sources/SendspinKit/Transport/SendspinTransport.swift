@@ -56,7 +56,7 @@ public protocol SendspinTransport: Actor, Sendable {
     func nextFrame() async -> TransportFrame?
 
     /// Whether the transport is currently connected
-    var isConnected: Bool { get }
+    var isConnected: Bool { get async }
 
     /// Why the frame stream ended; `nil` until ``nextFrame()`` has returned `nil`.
     ///

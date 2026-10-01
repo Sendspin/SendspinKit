@@ -167,12 +167,30 @@ private extension SendspinClient {
             await startTask?.value
         }
     }
+}
+
+extension SendspinClient {
+    func adoptAdvertisingTransport(_ transport: any SendspinTransport, ownership: AdvertisingTransportOwnership?) -> Bool {
+        guard let ownership else { return true }
+        guard ownership.adopt() else { return false }
+        let adoptedIDs = advertisingPendingIDs.filter { pendingTransports[$0] === transport }
+        for id in adoptedIDs {
+            advertisingPendingIDs.remove(id)
+            pendingTransports.removeValue(forKey: id)
+        }
+        return true
+    }
 
     @MainActor
     func admitAdvertisingTransport(
         _ transport: any SendspinTransport,
         from startedAdvertiser: any ClientAdvertising,
-        admissionGate: AdvertisingAdmissionGate
+        admissionGate: AdvertisingAdmissionGate,
+        // Holds the handshake-to-adoption window deterministically in tests.
+        afterAcceptance: (@Sendable () async -> Void)? = nil,
+        afterCompletion: (@Sendable () async -> Void)? = nil,
+        pendingTimeout: Duration = clientAdvertiserPendingConnectionTimeout,
+        timeoutWait: (@Sendable () async throws -> Void)? = nil
     ) async {
         defer { admissionGate.release() }
         guard advertiser === startedAdvertiser, advertisingAccepting else {
@@ -183,15 +201,16 @@ private extension SendspinClient {
             await transport.disconnect()
             return
         }
+        let ownership = AdvertisingTransportOwnership(transport)
         let acceptance = Task { @MainActor [weak self, startedAdvertiser] in
             guard let self,
                   advertiser === startedAdvertiser,
                   advertisingAccepting
             else {
-                await transport.disconnect()
+                await ownership.disconnectIfOwned()
                 return
             }
-            try await acceptConnection(transport)
+            try await acceptConnection(transport, ownership: ownership, afterAcceptance: afterAcceptance)
         }
         defer { acceptance.cancel() }
         do {
@@ -199,21 +218,27 @@ private extension SendspinClient {
                 try await withThrowingTaskGroup(of: Void.self) { group in
                     group.addTask {
                         try await acceptance.value
+                        await afterCompletion?()
                     }
                     group.addTask {
-                        try await Task.sleep(for: clientAdvertiserPendingConnectionTimeout)
-                        await transport.disconnect()
+                        if let timeoutWait {
+                            try await timeoutWait()
+                        } else {
+                            try await Task.sleep(for: pendingTimeout)
+                        }
+                        await ownership.disconnectIfOwned()
                         throw CancellationError()
                     }
                     try await group.next()
                     group.cancelAll()
                 }
             } onCancel: {
-                Task { await transport.disconnect() }
+                let unadopted = ownership.takeUnadopted()
+                Task { await unadopted?.disconnect() }
             }
         } catch {
             Log.client.error("Advertised connection acceptance failed: \(error.localizedDescription, privacy: .public)")
-            await transport.disconnect()
+            await ownership.disconnectIfOwned()
         }
     }
 

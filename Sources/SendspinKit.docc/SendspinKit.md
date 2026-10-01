@@ -42,6 +42,18 @@ for await servers in discovery.servers {
 }
 ```
 
+## API behavior
+
+- `SendspinClientError.connectionRefused(ServerErrorReason)` exposes unauthenticated setup refusal reasons for diagnostics only.
+- Player catalogs require FLAC or PCM, otherwise `ConfigurationError.missingLosslessFormat` is thrown.
+- `requireCurrentOutput` requires FLAC or PCM in the output-filtered catalog, otherwise `OutputFormatError.noMatchingLosslessFormat` is thrown.
+- `setVisualizerPreference(_:)` publishes dynamic preferences, including empty visualizer `types` to request no data.
+- Controller commands require the latest controller state and its `supported_commands`, otherwise `controllerStateUnavailable` or `controllerCommandUnsupported` is thrown.
+- Parameterless `PairingPresentation.speaker` and `.displayAndSpeaker` use host-provided speech selected with `PairingCodeEmission.languages`.
+- `openPairingWindow(for:)` records operator consent and resets the device-wide emitted-round budget even while a window is open.
+- `ClientEvent.pairingAttemptSuperseded` clears the previous attempt's projection without reporting a client abort.
+- `cancelPairing(attemptID:)` accepts the published window identity as well as the active attempt identity.
+
 ## Topics
 
 ### Essentials
