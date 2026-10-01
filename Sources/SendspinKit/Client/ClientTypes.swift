@@ -296,12 +296,15 @@ public enum PairingCodeFormat: String, Codable, Sendable, Equatable {
 public struct PairingCodeEmission: Sendable, Equatable {
     public let format: PairingCodeFormat
     public let payload: String
-    public let digitAudioPack: DigitAudioPack?
+    /// Server language tags in descending operator preference; an empty list supplies no hint.
+    /// A speaking host matches this list against its supported languages using RFC 4647 Lookup and falls back to its own default when nothing
+    /// matches.
+    public let languages: [String]
 
-    public init(format: PairingCodeFormat, payload: String, digitAudioPack: DigitAudioPack? = nil) {
+    public init(format: PairingCodeFormat, payload: String, languages: [String] = []) {
         self.format = format
         self.payload = payload
-        self.digitAudioPack = digitAudioPack
+        self.languages = languages
     }
 }
 

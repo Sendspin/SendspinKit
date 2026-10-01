@@ -206,25 +206,21 @@ struct PairMethodDescriptor: Codable, Equatable, Sendable {
     let outChannels: [String]?
     let formats: [String]?
     let locations: [String]?
-    let digitAudio: DigitAudioDescriptor?
 
     enum CodingKeys: String, CodingKey {
         case outChannels = "out_channels"
         case formats
         case locations
-        case digitAudio = "digit_audio"
     }
 
     init(
         outChannels: [String]? = nil,
         formats: [String]? = nil,
-        locations: [String]? = nil,
-        digitAudio: DigitAudioDescriptor? = nil
+        locations: [String]? = nil
     ) {
         self.outChannels = outChannels
         self.formats = formats
         self.locations = locations
-        self.digitAudio = digitAudio
     }
 
     init(from decoder: Decoder) throws {
@@ -238,62 +234,6 @@ struct PairMethodDescriptor: Codable, Equatable, Sendable {
         locations = try container.decodeIfPresent([String].self, forKey: .locations)?.filter {
             $0 == "device" || $0 == "leaflet" || $0 == "operator"
         }
-        // Invalid optional digit-audio capabilities are ignored, as an absent speaker capability.
-        digitAudio = try? container.decode(DigitAudioDescriptor.self, forKey: .digitAudio)
-    }
-}
-
-public struct DigitAudioDescriptor: Codable, Equatable, Sendable {
-    public let codec: AudioCodec
-    public let sampleRate: Int
-    public let bitDepth: Int
-    public let maxBytes: Int
-
-    enum CodingKeys: String, CodingKey {
-        case codec
-        case sampleRate = "sample_rate"
-        case bitDepth = "bit_depth"
-        case maxBytes = "max_bytes"
-    }
-
-    /// The protocol accepts practical PCM/FLAC rates up to 384 kHz and packs up to
-    /// 64 MiB; these bounds keep validation arithmetic finite on every platform.
-    public static let maximumSampleRate = 384_000
-    public static let maximumBytes = 64 * 1_024 * 1_024
-
-    public init(codec: AudioCodec, sampleRate: Int, bitDepth: Int, maxBytes: Int) {
-        precondition((1 ... Self.maximumSampleRate).contains(sampleRate), "sampleRate must be positive and at most 384 kHz")
-        precondition([8, 16, 24, 32].contains(bitDepth), "bitDepth must be one of 8, 16, 24, or 32")
-        precondition((0 ... Self.maximumBytes).contains(maxBytes), "maxBytes must be non-negative and at most 64 MiB")
-        self.codec = codec
-        self.sampleRate = sampleRate
-        self.bitDepth = bitDepth
-        self.maxBytes = maxBytes
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let rawCodec = try container.decode(String.self, forKey: .codec)
-        guard let codec = AudioCodec(rawValue: rawCodec) else {
-            throw DecodingError.dataCorruptedError(forKey: .codec, in: container, debugDescription: "Unknown digit audio codec")
-        }
-        let sampleRate = try container.decode(Int.self, forKey: .sampleRate)
-        let bitDepth = try container.decode(Int.self, forKey: .bitDepth)
-        let maxBytes = try container.decode(Int.self, forKey: .maxBytes)
-        guard (1 ... Self.maximumSampleRate).contains(sampleRate),
-              [8, 16, 24, 32].contains(bitDepth),
-              (0 ... Self.maximumBytes).contains(maxBytes)
-        else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .sampleRate,
-                in: container,
-                debugDescription: "Digit audio descriptor parameters are outside supported bounds"
-            )
-        }
-        self.codec = codec
-        self.sampleRate = sampleRate
-        self.bitDepth = bitDepth
-        self.maxBytes = maxBytes
     }
 }
 

@@ -68,8 +68,7 @@ extension SendspinClient {
                 unpairedAccessEnabled: unpairedAccessEnabled,
                 presentation: nil,
                 outChannels: [],
-                formats: [],
-                digitAudio: nil
+                formats: []
             )
         }
         return await runtime.snapshot()
@@ -101,8 +100,7 @@ extension SendspinClient {
                 if configuration.dynamicPairingCodeEnabled {
                     methods[PairMethod.dynamicPairingCode] = PairMethodDescriptor(
                         outChannels: configuration.outChannels,
-                        formats: configuration.formats,
-                        digitAudio: configuration.digitAudio
+                        formats: configuration.formats
                     )
                 }
                 if configuration.staticPairingCodeIsAdvertised {

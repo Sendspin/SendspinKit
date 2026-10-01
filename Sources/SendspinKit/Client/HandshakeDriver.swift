@@ -10,6 +10,7 @@ enum HandshakeDriver {
         let suite: NoiseCipherSuite
         let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
         let serverName: String
+        let serverLanguages: [String]
         let matchedCandidate: PskCandidate
         var protectionLease: PairingRecordProtectionLease?
         let pairingStore: (any PairingRecordStore)?
@@ -131,6 +132,7 @@ enum HandshakeDriver {
                         suite: outcome.suite,
                         identityPrivateKey: configuration.identity.privateKey,
                         serverName: hello.payload.name,
+                        serverLanguages: hello.payload.languages ?? [],
                         matchedCandidate: outcome.matchedCandidate,
                         protectionLease: protectionLease,
                         pairingStore: configuration.pairingStore,

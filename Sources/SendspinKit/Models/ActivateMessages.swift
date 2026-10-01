@@ -73,12 +73,12 @@ struct ServerActivatePayload: Codable, Equatable, Sendable {
 struct PairingDirective: Codable, Equatable, Sendable {
     let method: String
     let format: String?
-    let languages: [String]?
 
-    init(method: String, format: String? = nil, languages: [String]? = nil) {
+    enum CodingKeys: String, CodingKey { case method, format }
+
+    init(method: String, format: String? = nil) {
         self.method = method
         self.format = format
-        self.languages = languages
     }
 }
 

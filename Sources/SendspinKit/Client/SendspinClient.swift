@@ -792,6 +792,7 @@ public final class SendspinClient {
         let outcomeActivities = outcome.activities
         let outcomePairing = outcome.pairing
         let outcomeServerName = outcome.serverName
+        let outcomeServerLanguages = outcome.serverLanguages
         let outcomeActiveRoles = outcome.activeRoles
         let outcomeCategory = outcome.matchedCandidate.category
         let outcomePskId = outcome.matchedCandidate.psk.pskId
@@ -814,6 +815,7 @@ public final class SendspinClient {
             channel: sessionChannel,
             serverId: outcomeServerId,
             serverName: outcomeServerName,
+            serverLanguages: outcomeServerLanguages,
             activities: outcomeActivities,
             activeRoles: outcomeActiveRoles,
             pskCategory: outcomeCategory,

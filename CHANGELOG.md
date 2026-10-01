@@ -21,13 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Added `ServerErrorReason` and `SendspinClientError.connectionRefused(_:)` for init refusals; the reason is unauthenticated and only a diagnostic hint.
 - Added dynamic six-digit and QR (`SP:1`) pairing-code flows plus static eight-digit code provisioning through `PairingConfiguration`, with `ClientEvent.pairingCodeChanged(_:)`, `ClientEvent.pairingAttemptEnded(_:)`, `SendspinClient.openPairingWindow()`, and `SendspinClient.cancelPairingAttempt()`.
-- Added optional server-supplied digit-audio packs and speaker capability descriptors. Validated packs are attached to digit pairing emissions for the host app to decode and play; Sentinel fallback handles an initial pairing-PSK miss.
 - Added visualizer state configuration for beat, loudness, peak, and spectrum data, including rate and spectrum parameters.
 - Added scheduled metadata, color, and artwork updates using the current best clock estimate.
 - Added `requiredLeadTimeMs` and `minBufferMs` player configuration, with measured buffer-depth publication through full state snapshots.
 - Added dynamic pairing failure-counter provider hooks and host-local pairing configuration updates without returning the static secret.
 - Added the pinned `jedisct1/swift-sodium` 0.9.1 dependency and the `CElligator` target. `CElligator` vendors libsodium 1.0.21 field-operation sources at revision `3e7548c62f68909461a67f396be0494584a7aae4` for the RFC 9380 Elligator2 composition; the linked `Clibsodium.xcframework` provenance and checksum are documented in `Sources/CElligator/README.md`.
 - The selected dependency advertises watchOS slices, but watchOS 10 pairing-code compilation remains locally unverified when the required SDK is unavailable.
+
+### Removed
+- Removed server-supplied pairing digit audio: `DigitAudioDescriptor`, `DigitAudioClip`, `DigitAudioPack`, `DigitAudioPackConstants`, and `PairingCodeEmission.digitAudioPack`, including clip negotiation and validation.
+
+### Changed
+- `PairingPresentation.speaker` and `.displayAndSpeaker` are parameterless. Hosts speak pairing codes using bundled audio or a synthesizer; emissions include the server's ordered `languages` hint.
 
 ### Fixed
 - Send `client/pair-init` with the activation's pairing index immediately before `client/pair-finalize` in Pairing PSK attempts, without awaiting a server response.

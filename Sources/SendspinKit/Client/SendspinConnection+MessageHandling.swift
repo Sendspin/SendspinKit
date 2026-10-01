@@ -115,30 +115,16 @@ extension SendspinConnection {
             }
             return
         }
-        guard let message = BinaryMessage(data: data) else {
-            if data.first == BinaryMessageType.digitAudioClip.rawValue {
-                disconnectReason = .incompatibleServer
-                await transport.disconnect()
-            }
-            return
-        }
+        guard let message = BinaryMessage(data: data) else { return }
 
         switch message.type {
         case .audioChunk:
             await handleAudioChunk(message)
 
-        case .digitAudioClip:
-            do {
-                try handleDigitAudioClip(message)
-            } catch {
-                disconnectReason = .incompatibleServer
-                await transport.disconnect()
-            }
-
         case .visualizerLoudness, .visualizerBeat, .visualizerFPeak, .visualizerSpectrum, .visualizerPeak:
             await handleVisualizerBinary(message, arrival: arrival)
 
-        default:
+        case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
             preconditionFailure("Artwork messages are routed by the range pre-check")
         }
     }
@@ -257,8 +243,7 @@ extension SendspinConnection {
         if configuration.dynamicPairingCodeEnabled {
             methods[PairMethod.dynamicPairingCode] = PairMethodDescriptor(
                 outChannels: configuration.outChannels,
-                formats: configuration.formats,
-                digitAudio: configuration.digitAudio
+                formats: configuration.formats
             )
         }
         if configuration.staticPairingCodeIsAdvertised {
@@ -558,19 +543,12 @@ extension SendspinConnection {
         #else
             let pairingHandshakeHash = channel.handshakeHash
         #endif
-        let advertisement = await livePairingAdvertisement()
         guard pairingAttemptID == authorizedAttemptID else { return }
-        let dynamicDescriptor = advertisement.supportedPairMethods[PairMethod.dynamicPairingCode]
-        let digitAudioDescriptor = selectedFormat == .digits && dynamicDescriptor?.outChannels?.contains("speaker") == true
-            ? dynamicDescriptor?.digitAudio
-            : nil
         dynamicPairingAttempt = DynamicPairingAttempt(
             format: selectedFormat,
             pairingIndex: pairingActivateCounter,
             nonceB: nonceB,
             commitB: commitB,
-            digitAudioDescriptor: digitAudioDescriptor,
-            digitAudioValidator: digitAudioDescriptor.map { DigitAudioPackValidator(descriptor: $0) },
             nonceA: nil,
             prs: nil,
             round: 0,
@@ -823,20 +801,6 @@ extension SendspinConnection {
         )
     }
 
-    func handleDigitAudioClip(_ message: BinaryMessage) throws {
-        // Pairing traffic that arrives after a local abort has no effect.
-        guard var attempt = dynamicPairingAttempt else { return }
-        guard attempt.format == .digits,
-              attempt.pairInitSent,
-              attempt.nonceA == nil,
-              var validator = attempt.digitAudioValidator,
-              let digit = message.digit
-        else { throw PairingProtocolError.invalidSequence }
-        try validator.append(digit: digit, data: message.data)
-        attempt.digitAudioValidator = validator
-        dynamicPairingAttempt = attempt
-    }
-
     func handleServerPairInit(_ message: ServerPairInitMessage) async throws {
         guard dynamicPairingAttempt != nil || staticPairingAttempt != nil else { return }
         guard var attempt = dynamicPairingAttempt, attempt.pairInitSent,
@@ -847,11 +811,6 @@ extension SendspinConnection {
             guard let encodedNonceA = message.payload.nonceA,
                   let nonceA = Base64URL.decode(encodedNonceA, count: 32)
             else { throw PairingProtocolError.invalidSequence }
-            let digitAudioPack: DigitAudioPack? = if let validator = attempt.digitAudioValidator {
-                try validator.finish()
-            } else {
-                nil
-            }
             attempt.nonceA = nonceA
             var input = Data("sendspin-pairing-code-derive-v1".utf8)
             #if DEBUG
@@ -873,11 +832,11 @@ extension SendspinConnection {
                 emission = PairingCodeEmission(
                     format: .digits,
                     payload: String(data: prs, encoding: .utf8)!,
-                    digitAudioPack: digitAudioPack
+                    languages: serverLanguages
                 )
             case .qrCode:
                 prs = digest.prefix(24)
-                emission = PairingCodeEmission(format: .qrCode, payload: PairingToken.dynamicCodeToken(Data(prs)))
+                emission = PairingCodeEmission(format: .qrCode, payload: PairingToken.dynamicCodeToken(Data(prs)), languages: serverLanguages)
             }
             attempt.prs = prs
             attempt.emission = emission

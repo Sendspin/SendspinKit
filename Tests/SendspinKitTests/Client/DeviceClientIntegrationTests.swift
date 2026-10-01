@@ -104,22 +104,38 @@ struct DeviceClientIntegrationTests {
 
         #expect(descriptor.outChannels == ["display"])
         #expect(descriptor.formats == ["digits"])
-        #expect(descriptor.digitAudio == nil)
+    }
+
+    @Test("display presentations encode only channels and formats", arguments: [PairingPresentation.display, .displayAndSpeaker])
+    func displayDescriptor(presentation: PairingPresentation) async throws {
+        let hello = try await hello(device: SendspinDevice.ephemeral(), pairing: presentation, access: .allowUnpaired)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(hello)) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
+        let encoded = try #require(methods[PairMethod.dynamicPairingCode] as? [String: Any])
+        #expect(Set(encoded.keys) == ["out_channels", "formats"])
+        #expect(encoded["out_channels"] as? [String] == (presentation == .display ? ["display"] : ["display", "speaker"]))
+        #expect(encoded["formats"] as? [String] == ["digits", "qr_code"])
     }
 
     @Test("speaker presentation advertises digits on the speaker")
     func speakerDescriptor() async throws {
-        let audio = DigitAudioDescriptor(codec: .pcm, sampleRate: 8_000, bitDepth: 16, maxBytes: 20)
         let hello = try await hello(
             device: SendspinDevice.ephemeral(),
-            pairing: .speaker(audio: audio),
+            pairing: .speaker,
             access: .allowUnpaired
         )
         let descriptor = try #require(hello.payload.supportedPairMethods[PairMethod.dynamicPairingCode])
 
         #expect(descriptor.outChannels == ["speaker"])
         #expect(descriptor.formats == ["digits"])
-        #expect(descriptor.digitAudio == audio)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(hello)) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
+        let encoded = try #require(methods[PairMethod.dynamicPairingCode] as? [String: Any])
+        #expect(Set(encoded.keys) == ["out_channels", "formats"])
+        #expect(encoded["out_channels"] as? [String] == ["speaker"])
+        #expect(encoded["digit_audio"] == nil)
     }
 
     @Test("changing to paired-only closes sentinel playback")

@@ -129,6 +129,7 @@ actor SendspinConnection {
     /// Server info
     var currentServerId: String?
     var serverName: String
+    let serverLanguages: [String]
     var activities: Set<Activity>
     var pskCategory: PskCategory
     var matchedPskId: String
@@ -169,8 +170,6 @@ actor SendspinConnection {
         let pairingIndex: UInt32
         let nonceB: Data
         let commitB: Data
-        let digitAudioDescriptor: DigitAudioDescriptor?
-        var digitAudioValidator: DigitAudioPackValidator?
         var nonceA: Data?
         var prs: Data?
         var emission: PairingCodeEmission?
@@ -262,6 +261,7 @@ actor SendspinConnection {
         channel: consuming NoiseChannel,
         serverId: String,
         serverName: String,
+        serverLanguages: [String] = [],
         activities: Set<Activity>,
         activeRoles: Set<VersionedRole>,
         pskCategory: PskCategory,
@@ -319,6 +319,7 @@ actor SendspinConnection {
         self.channel = channel
         currentServerId = serverId
         self.serverName = serverName
+        self.serverLanguages = serverLanguages
         self.activities = activities
         self.activeRoles = activeRoles
         let preallocatedPairing = pairingConfigurationRuntime != nil

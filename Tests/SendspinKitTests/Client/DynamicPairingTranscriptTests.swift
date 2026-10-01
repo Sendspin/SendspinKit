@@ -559,13 +559,13 @@ struct DynamicPairingTranscriptTests {
         await session.client.disconnect()
     }
 
-    @Test("server pair-init accepts an empty payload and ignores an unknown audio field")
+    @Test("server pair-init accepts an empty payload and ignores an unknown field")
     func pairInitDecodingIgnoresUnknownFields() throws {
         let plain = try JSONDecoder().decode(ServerPairInitMessage.self, from: Data(#"{"type":"server/pair-init","payload":{}}"#.utf8))
         let encodedNonce = Base64URL.encode(Psk.generate().bytes)
         let extended = try JSONDecoder().decode(
             ServerPairInitMessage.self,
-            from: Data("{\"type\":\"server/pair-init\",\"payload\":{\"nonce_A\":\"\(encodedNonce)\",\"digit_audio\":{\"unexpected\":true}}}".utf8)
+            from: Data("{\"type\":\"server/pair-init\",\"payload\":{\"nonce_A\":\"\(encodedNonce)\",\"x_unknown_field\":{\"unexpected\":true}}}".utf8)
         )
         #expect(plain.payload.nonceA == nil)
         #expect(extended.payload.nonceA == encodedNonce)

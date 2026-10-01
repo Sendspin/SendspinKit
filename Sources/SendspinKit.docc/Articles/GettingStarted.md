@@ -149,7 +149,7 @@ for await event in client.events() {
 
 ## Pair with a code
 
-Code-based pairing is coordinated by the host app. Declare the presentation your device can actually provide via the client's `pairing` argument (``PairingPresentation``): `.display`, `.digitDisplay`, `.speaker(audio:)`, `.displayAndSpeaker(audio:)`, or `.staticCode` — the default `.tokenOnly` presents no dynamic code. Then start consuming ``SendspinClient/events`` and retain the complete ``PairingAttemptSnapshot`` that drives the operator UI:
+Code-based pairing is coordinated by the host app. Declare the presentation your device can actually provide via the client's `pairing` argument (``PairingPresentation``): `.display`, `.digitDisplay`, `.speaker`, `.displayAndSpeaker`, or `.staticCode` — the default `.tokenOnly` presents no dynamic code. Then start consuming ``SendspinClient/events`` and retain the complete ``PairingAttemptSnapshot`` that drives the operator UI:
 
 ```swift
 for await event in client.events() {
@@ -175,8 +175,11 @@ call ``SendspinClient/cancelPairing(attemptID:)`` with that same captured ID. A 
 its `expiresAt` is not a trust assertion. The peer ID is unverified while
 ``PairingPeer/trustLevel`` is `.none`; the authorization window is not proof of server trust. Dynamic
 codes are six contiguous digits or a complete version-one `SP:1` token. If
-the dynamic method includes a speaker output capability, the code emission also includes a validated
-``DigitAudioPack``; the host app decodes and plays its clips. Static pairing instead requires the
+the presentation includes a speaker, the host app speaks single digits using its own bundled
+recordings or synthesizer; the server supplies no audio. Use ``PairingCodeEmission/languages`` as
+the language priority list for RFC 4647 Lookup matching against the languages the app supports,
+falling back to the app's default. Present dynamic digits in two groups of three, with a short gap
+between digits and a longer gap between groups; separators are presentation-only. Static pairing instead requires the
 host to provision a device-unique eight-digit ASCII decimal code when opening the device —
 ``SendspinDevice/open(storage:staticCode:capacity:)`` — and to declare `pairing: .staticCode` when
 creating the client; the library never supplies a fixed default or emits that secret. Declare

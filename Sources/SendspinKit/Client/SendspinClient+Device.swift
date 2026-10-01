@@ -21,7 +21,6 @@ public extension SendspinClient {
                     presentation: configuration.pairingPresentation,
                     outChannels: configuration.outChannels,
                     formats: configuration.formats,
-                    digitAudio: configuration.digitAudio,
                     staticPairingCode: configuration.staticPairingCode
                 ))
             }
