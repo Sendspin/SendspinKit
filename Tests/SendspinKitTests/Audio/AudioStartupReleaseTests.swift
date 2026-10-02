@@ -755,22 +755,23 @@ struct AudioStartupReleaseTests {
 
     @Test("repeated stream start uses prepared startup buffering")
     func repeatedStreamStartUsesPreparedStartupBuffering() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let startupNow = MonotonicClock.absoluteMicroseconds()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: startupNow)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true, startupNow: { startupNow })
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         for index in 0 ..< 8 {
-            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         for index in 0 ..< 8 {
-            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 1_500_000 + Int64(index) * 100_000))
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.count(where: { $0 == "startPrepared()" }) == 2 })
 

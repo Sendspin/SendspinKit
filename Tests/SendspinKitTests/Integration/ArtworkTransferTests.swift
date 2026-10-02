@@ -316,8 +316,8 @@ struct ArtworkTransferTests {
         try await future.connection.handleArtworkBinary(announce(timestamp: 100, totalSize: 0))
         let futureConnection = future.connection
         #expect(await waitUntil(timeout: .seconds(2)) { await futureConnection.artworkPending.count == 1 })
+        try #require(await waitUntil { await sleeper.isWaiting })
         schedule.now = 100
-        await Task.yield()
         await sleeper.fireAll()
         let futureResult = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
             var iterator = futureStream.makeAsyncIterator(); return await iterator.next()
@@ -407,6 +407,10 @@ private final class ManualTestClock: @unchecked Sendable {
 
 private actor ManualTestSleeper {
     private var continuations: [CheckedContinuation<Void, Error>] = []
+
+    var isWaiting: Bool {
+        !continuations.isEmpty
+    }
 
     func sleep(_: Duration) async throws {
         try await withCheckedThrowingContinuation { continuations.append($0) }

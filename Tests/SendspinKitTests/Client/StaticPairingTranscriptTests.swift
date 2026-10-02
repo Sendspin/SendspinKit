@@ -102,7 +102,8 @@ private func makeStaticTestSession(
         pairingAttemptTimeout: attemptTimeout,
         pairingWindowLifetime: windowLifetime,
         pairingHandshakeHashOverride: pairingHandshakeHashOverride,
-        pairingScalarBOverride: pairingScalarBOverride
+        pairingScalarBOverride: pairingScalarBOverride,
+        audioOutputFactory: { _, _ in NoOpAudioOutput() }
     )
     let transport = MockTransport()
     let server = MockNoiseServer(transport: transport, psk: .sentinel)
@@ -262,12 +263,17 @@ struct StaticPairingWindowTests {
             payload: PairAbortPayload(reason: .userCancelled)
         )), encoding: .utf8)))
         #expect(await waitUntil { await connection.pairingAttemptID == nil })
-        let before = await pairingTypes(session.server)
+        let responseTypes: Set<String> = [
+            ClientPairPendingMessage.typeString, ClientPairInitMessage.typeString,
+            ClientPairAuthMessage.typeString, ClientPairRetryMessage.typeString,
+            ClientPairConfirmMessage.typeString, ClientPairFinalizeMessage.typeString, PairAbortMessage.typeString
+        ]
+        let before = await pairingTypes(session.server).filter { responseTypes.contains($0) }
         try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairAuthMessage(
             payload: ServerPairAuthPayload(pakeMsg1: Base64URL.encode(dataFromHex(fixture.pakeMsg1)))
         )), encoding: .utf8)))
         #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
-        #expect(await pairingTypes(session.server) == before)
+        #expect(await pairingTypes(session.server).filter { responseTypes.contains($0) } == before)
         await session.client.disconnect()
     }
 

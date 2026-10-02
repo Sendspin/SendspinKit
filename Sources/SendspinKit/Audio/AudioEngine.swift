@@ -77,6 +77,7 @@ actor AudioEngine {
     private var startupCoordinatorTask: Task<Void, Never>?
     private var schedulerOutputTask: Task<Void, Never>?
     private var telemetryTask: Task<Void, Never>?
+    private let telemetrySleep: @Sendable (Duration) async throws -> Void
 
     // Running state
     private var running = false
@@ -362,12 +363,14 @@ actor AudioEngine {
         clock: any ClockSyncProtocol,
         enableStartupBuffering: Bool = false,
         startupMinBufferMs: Int = 0,
-        startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() }
+        startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
+        telemetrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.output = output
         audioScheduler = scheduler
         self.clock = clock
         self.startupNow = startupNow
+        self.telemetrySleep = telemetrySleep
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
@@ -383,26 +386,20 @@ actor AudioEngine {
     init(
         clock: any ClockSyncProtocol,
         config: PlayerConfiguration,
-        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil,
+        audioOutputFactory: @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+            .makeProductionOutput
     ) {
         let audioScheduler = AudioScheduler(
             clockSync: clock,
             releaseLeadTime: TimeInterval(config.minBufferMs) / 1_000.0
         )
 
-        // Build AudioPlayer with the same configuration the client used to construct it.
-        let pcmBufferCapacity = max(config.bufferCapacity / 2, 131_072) // min 128KB
-        let audioPlayer = AudioPlayer(
-            pcmBufferCapacity: pcmBufferCapacity,
-            volumeControl: VolumeControlFactory.resolve(mode: config.volumeMode).control,
-            processCallback: config.processCallback,
-            outputTransitionCallback: outputTransitionCallback
-        )
-
-        output = audioPlayer
+        output = audioOutputFactory(config, outputTransitionCallback)
         self.audioScheduler = audioScheduler
         self.clock = clock
         startupNow = { MonotonicClock.absoluteMicroseconds() }
+        telemetrySleep = { try await Task.sleep(for: $0) }
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
@@ -413,6 +410,18 @@ actor AudioEngine {
         startupMinBufferUs = Int64(config.minBufferMs) * 1_000
         outputDelayMs = config.initialOutputDelayMs
         _commandsSink.enqueue(.setOutputDelay(config.initialOutputDelayMs))
+    }
+
+    nonisolated static func makeProductionOutput(
+        config: PlayerConfiguration,
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)?
+    ) -> any AudioOutput {
+        AudioPlayer(
+            pcmBufferCapacity: max(config.bufferCapacity / 2, 131_072),
+            volumeControl: VolumeControlFactory.resolve(mode: config.volumeMode).control,
+            processCallback: config.processCallback,
+            outputTransitionCallback: outputTransitionCallback
+        )
     }
 
     // MARK: - Public interface
@@ -512,12 +521,12 @@ actor AudioEngine {
         // Drain task consumes commands and applies them
         drainTask = Task {
             for await command in _commandStream {
+                await apply(command)
                 appliedKinds.append(command.kind)
                 if appliedKinds.count > Self.appliedKindsRetentionLimit {
                     // Trim in batches; removeFirst(1) on an Array is O(n).
                     appliedKinds.removeFirst(appliedKinds.count - Self.appliedKindsRetentionLimit / 2)
                 }
-                await apply(command)
                 _commandsSink.decrementDepth()
             }
         }
@@ -1347,7 +1356,7 @@ actor AudioEngine {
         var underrunMonitor = UnderrunMonitor()
 
         while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await telemetrySleep(.milliseconds(500))
             tickCount += 1
 
             // Poll for reanchor

@@ -35,6 +35,8 @@ for SwiftUI.
   `ClockSyncProtocol`. There is no `send(Codable)` transport contract.
 
 ## Key Decisions
+- Internal `audioOutputFactory` injection follows the facade's setup-to-connection engine handoff;
+  the engine owns the output, and protocol fixtures substitute hardware-free output.
 - Binaries are dropped while the last successfully published `client/state` reports
   `available: false`, without disconnecting.
 - **Activation admission:** long-term PSKs admit empty or playback activities; pairing PSKs and

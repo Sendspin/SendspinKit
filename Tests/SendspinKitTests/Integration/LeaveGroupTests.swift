@@ -104,9 +104,9 @@ struct LeaveGroupTests {
 
         await connection.clockSyncTask?.cancel()
         await connection.clockSyncTask?.value
-        #expect(await waitUntil { await connection.outboundInFlight == false })
+        try #require(await waitUntil { await !connection.outboundInFlight })
 
-        await server.enableGoodbyeGate()
+        await server.parkNextOutboundFrame()
         let firstSend = Task { () -> Result<Void, Error> in
             do {
                 try await connection.send(
@@ -119,7 +119,7 @@ struct LeaveGroupTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await server.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await server.isOutboundFrameParked })
 
         let leave = Task { () -> Result<Void, Error> in
             do {
@@ -134,7 +134,7 @@ struct LeaveGroupTests {
         let disconnect = Task { await client.disconnect(reason: .userRequest) }
         #expect(await waitUntil { await connection.lifecycle == .shuttingDown })
 
-        await server.releaseGoodbyeGate()
+        await server.releaseOutboundFrame()
         let firstResult = await firstSend.value
         #expect((try? firstResult.get()) != nil)
 

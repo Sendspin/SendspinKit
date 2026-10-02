@@ -45,9 +45,9 @@ struct NonPlayerRoleAlignmentTests {
         #expect(try JSONDecoder().decode(ClientCommandMessage.self, from: #require(messages.first)).payload.controller?.command == .play)
         let connection = fixture.connection
         let transport = fixture.transport
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let blocker = Task { try await connection.sendClientState() }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
         let queued = Task {
             await #expect(throws: SendspinClientError.controllerCommandUnsupported(.play)) {
                 try await connection.sendControllerCommand(command)
@@ -55,7 +55,7 @@ struct NonPlayerRoleAlignmentTests {
         }
         #expect(await waitUntil { await connection.outboundWaiters.isEmpty == false })
         await connection.handleServerState(unsupported)
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
         try await blocker.value
         _ = await queued.value
         #expect(await server.clientJSONMessages(ofType: ClientCommandMessage.typeString).count == 1)

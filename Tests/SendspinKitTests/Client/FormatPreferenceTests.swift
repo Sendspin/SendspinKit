@@ -154,6 +154,7 @@ struct FormatPreferenceTests {
         #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
         let connection = try #require(client.connection)
         let engine = connection.audioEngineForTesting
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
         await provider.update(output(48_000, "Changed route"))
         // Wire history retains the request even when its deadline fires before this task resumes.
         #expect(await waitUntil { await states(server).contains { $0.payload.player?.format == native } })
@@ -228,7 +229,8 @@ struct FormatPreferenceTests {
             identity: .generate(), name: "Format Preference", roles: [.playerV1],
             playerConfig: PlayerConfiguration(bufferCapacity: 1_024, supportedFormats: formats, volumeMode: .none),
             audioOutputCapabilityProvider: provider,
-            outputSettleInterval: settle, outputRequestTimeout: requestTimeout
+            outputSettleInterval: settle, outputRequestTimeout: requestTimeout,
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
     }
 

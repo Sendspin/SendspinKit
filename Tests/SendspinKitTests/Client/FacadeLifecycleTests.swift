@@ -70,13 +70,13 @@ struct FacadeLifecycleTests {
         await connection.clockSyncTask?.cancel()
         await connection.clockSyncTask?.value
         try #require(await waitUntil { await !connection.outboundInFlight })
-        await incumbent.enableGoodbyeGate()
+        await incumbent.parkNextOutboundFrame()
         try await candidateServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
-        try #require(await waitUntil { await incumbent.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await incumbent.isOutboundFrameParked })
         #expect(client.connection == nil)
 
         await client.disconnect(reason: .userRequest)
-        await incumbent.releaseGoodbyeGate()
+        await incumbent.releaseOutboundFrame()
         _ = await replacementAccept.value
 
         #expect(client.connection == nil)

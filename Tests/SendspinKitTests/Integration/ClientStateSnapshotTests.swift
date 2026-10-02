@@ -67,7 +67,8 @@ struct ClientStateSnapshotTests {
         let client = try SendspinClient(
             identity: .generate(), name: "Snapshot Roles", roles: [.playerV1, .artworkV1, .visualizerV1],
             playerConfig: player, artworkConfig: artwork, visualizerConfig: visualizer,
-            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let server = try await connectClient(client, activeRoles: [.playerV1, .artworkV1, .visualizerV1])
         let before = await stateMessages(server).count

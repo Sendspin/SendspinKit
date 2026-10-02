@@ -10,6 +10,11 @@ enum RealAudioTestGate {
     static let reason: Comment = "Set SENDSPIN_REAL_AUDIO_TESTS=1 to run real AudioQueue hardware tests"
 }
 
+extension Tag {
+    @Tag static var hardware: Self
+}
+
+@Suite(.tags(.hardware))
 struct AudioPlayerTests {
     @Test
     func initializeAudioPlayerWithDependencies() async {

@@ -24,7 +24,7 @@ struct ProtocolBoundaryTests {
         await connection.clockSyncTask?.value
         #expect(await waitUntil { await !connection.outboundInFlight }, "initial clock samples must drain")
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let fragmented = Task { () -> Result<Void, Error> in
             do {
                 try await connection.send(clientMessage: ProtocolBoundaryOutboundMessage(
@@ -36,7 +36,7 @@ struct ProtocolBoundaryTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         // This sender is queued before message 1 and checks the gate after the fence.
         let queued = Task { () -> Result<Void, Error> in
@@ -54,7 +54,7 @@ struct ProtocolBoundaryTests {
 
         try await server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil { await connection.isRehandshakeInProgress })
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         let fragmentedResult = await fragmented.value
         #expect((try? fragmentedResult.get()) != nil)

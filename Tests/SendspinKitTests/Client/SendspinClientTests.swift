@@ -1092,7 +1092,8 @@ struct SendspinClientTests {
             audioOutputCapabilityProvider: capabilityProvider,
             outputSettleInterval: settle,
             outputRequestTimeout: requestTimeout,
-            outputNegotiationSleep: negotiationSleep
+            outputNegotiationSleep: negotiationSleep,
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
     }
 

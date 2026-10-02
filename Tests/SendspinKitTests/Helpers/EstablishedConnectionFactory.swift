@@ -79,7 +79,8 @@ func makeEstablishedConnection(
             config: PlayerConfiguration(
                 bufferCapacity: 100_000,
                 supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-            )
+            ),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
     }
 

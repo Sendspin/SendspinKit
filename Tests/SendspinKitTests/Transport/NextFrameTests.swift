@@ -68,7 +68,7 @@ struct NextFrameTests {
         }
 
         let client = try await Task { @MainActor () -> SendspinClient in
-            try SendspinClient(
+            let client = try SendspinClient(
                 clientId: "test-client",
                 name: "Test Client",
                 roles: [.playerV1],
@@ -82,6 +82,8 @@ struct NextFrameTests {
                 ),
                 audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
             )
+            client.audioOutputFactory = { _, _ in NoOpAudioOutput() }
+            return client
         }.value
 
         let transport = MockTransport()

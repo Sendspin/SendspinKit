@@ -350,19 +350,23 @@ struct AudioEngineTests {
             bitDepth: 16
         )
 
+        let reports = EngineReportObservation()
+        await reports.start(engine: engine) {
+            if case .started = $0 {
+                return true
+            }
+            return false
+        }
+        try #require(await waitUntil { await reports.isReady })
+
         // Enqueue and process streamStart + chunk
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
         await engine.commands.enqueue(.chunk(Data(repeating: 0, count: 100), ts: 1_000_000))
-        try? await Task.sleep(for: .milliseconds(100))
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.chunk) })
 
-        let started = await awaitReport(from: engine, timeoutMs: 100) {
-            if case .started = $0 {
-                true
-            } else {
-                false
-            }
-        }
+        let started = await waitUntil(timeout: .milliseconds(100)) { await reports.matched }
+        await reports.stop()
         await engine.shutdown()
 
         #expect(started, "Should emit .started")
@@ -1067,20 +1071,23 @@ struct AudioEngineTests {
         let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
 
         await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
 
+        let reports = EngineReportObservation()
+        await reports.start(engine: engine) {
+            if case .startFailed = $0 {
+                return true
+            }
+            return false
+        }
+        try #require(await waitUntil { await reports.isReady })
         await output.setForcedSwapThrow(TestError())
         await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
         await engine.commands.enqueue(.chunk(Data(repeating: 2, count: 100), ts: 0))
-        try? await Task.sleep(for: .milliseconds(150))
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.formatChange) })
 
-        let startFailed = await awaitReport(from: engine, timeoutMs: 100) {
-            if case .startFailed = $0 {
-                true
-            } else {
-                false
-            }
-        }
+        let startFailed = await waitUntil(timeout: .milliseconds(100)) { await reports.matched }
+        await reports.stop()
         let calls = await output.recordedCalls
         await engine.shutdown()
 
@@ -1090,8 +1097,7 @@ struct AudioEngineTests {
         #expect(!calls.contains("playPCM(4 bytes)"), "quarantined new-generation PCM must not render")
     }
 
-    /// Helper: run the telemetry loop across `ticks` underrun increments (one rise per
-    /// 500ms poll), then report whether an operational-state report was emitted.
+    /// Advance ordered telemetry ticks across rising underrun counts, then inspect reports.
     private func observesUnderrunOperationalStateReport(
         external: Bool,
         ticks: Int = 3,
@@ -1100,17 +1106,17 @@ struct AudioEngineTests {
         let clock = StubClock()
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+        let telemetry = TelemetryTickGate()
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, telemetrySleep: { _ in await telemetry.sleep() })
 
         await engine.start()
         if external {
             await engine.setExternalSource(true)
         }
 
-        // Drive a rising underrun count, one increment per telemetry tick (500ms poll).
         for i in 0 ... ticks {
             await output.setUnderrunCount(Int64(i))
-            try? await Task.sleep(for: .milliseconds(600))
+            try await telemetry.tick()
         }
 
         let emitted = await awaitReport(from: engine, timeoutMs: 200, where: predicate)
@@ -1182,10 +1188,8 @@ struct AudioEngineTests {
 
     // MARK: - Spec §Playback Synchronization: mute on error, restore on recovery
 
-    /// Drive the telemetry loop into the error state (rising underrun count),
-    /// optionally entering external source after the error, optionally holding the
-    /// count stable long enough to recover (`recoveryTicks = 2` at the 500 ms poll).
-    /// Returns the recorded `setMute` calls for inspection.
+    /// Drive underrun error, optional external-source entry, and clean recovery ticks.
+    /// Return the effective `setMute` calls after the ordered telemetry effects apply.
     private func driveUnderrunMuteScenario(
         userMutedFirst: Bool = false,
         goExternalAfterError: Bool = false,
@@ -1194,27 +1198,30 @@ struct AudioEngineTests {
         let clock = StubClock()
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
+        let telemetry = TelemetryTickGate()
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, telemetrySleep: { _ in await telemetry.sleep() })
 
         await engine.start()
         if userMutedFirst {
             await engine.setMuted(true)
         }
 
-        // Rising count: the loop observes 1 > 0 and transitions to error.
         for i in 0 ... 1 {
             await output.setUnderrunCount(Int64(i))
-            try? await Task.sleep(for: .milliseconds(600))
+            try await telemetry.tick()
         }
 
         if goExternalAfterError {
             await engine.setExternalSource(true)
-            try? await Task.sleep(for: .milliseconds(600))
+            try await telemetry.tick()
         }
 
         if recover {
-            // Hold the count stable for > recoveryTicks polls to recover.
-            try? await Task.sleep(for: .milliseconds(1_800))
+            let callsBeforeRecovery = await output.recordedCalls.count
+            try #require(await waitUntil {
+                try? await telemetry.tick()
+                return await output.recordedCalls.dropFirst(callsBeforeRecovery).contains { $0.hasPrefix("setMute(") }
+            })
         }
 
         await engine.shutdown()
@@ -1328,35 +1335,23 @@ struct AudioEngineTests {
 
         await engine.start()
 
+        let reports = EngineReportObservation()
+        await reports.start(engine: engine) {
+            if case .startFailed = $0 {
+                return true
+            }
+            return false
+        }
+        try #require(await waitUntil { await reports.isReady })
         await output.setForcedStartThrow(TestError())
 
         let fmt = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.commands.enqueue(.streamStart(fmt, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(200))
+        try #require(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
 
-        let startOutcomeResult: Result<EngineReport?, Error>? = await outcomeOfUnstructuredOperation(
-            timeout: .milliseconds(100),
-            onTimeout: { await engine.shutdown() },
-            operation: {
-                for await report in engine.reports {
-                    if case .startFailed = report {
-                        return report
-                    }
-                    if case .started = report {
-                        return report
-                    }
-                }
-                return nil
-            }
-        )
-        let startOutcome = try? startOutcomeResult?.get()
+        let sawStartFailed = await waitUntil(timeout: .milliseconds(100)) { await reports.matched }
+        await reports.stop()
         await engine.shutdown()
-
-        let sawStartFailed = if case .startFailed = startOutcome {
-            true
-        } else {
-            false
-        }
         #expect(sawStartFailed)
     }
 

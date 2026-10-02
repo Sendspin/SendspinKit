@@ -369,16 +369,16 @@ struct AdvertisingTests {
         await connection.clockSyncTask?.cancel()
         await connection.clockSyncTask?.value
         try #require(await waitUntil { await !connection.outboundInFlight })
-        await incumbent.enableGoodbyeGate()
+        await incumbent.parkNextOutboundFrame()
         let candidate = MockTransport()
         let server = MockNoiseServer(transport: candidate, psk: psk)
         let ownership = AdvertisingTransportOwnership(candidate)
         let acceptance = Task { try await client.acceptConnection(candidate, ownership: ownership) }
         try #require(await waitUntil { await candidate.hasSentFrames })
         try await server.establishSession(activities: [.playback], activeRoles: [])
-        try #require(await waitUntil { await incumbent.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await incumbent.isOutboundFrameParked })
         await client.disconnect()
-        await incumbent.releaseGoodbyeGate()
+        await incumbent.releaseOutboundFrame()
         try await acceptance.value
         #expect(await store.releaseCount == 1)
         #expect(await candidate.disconnectCallCount == 1)

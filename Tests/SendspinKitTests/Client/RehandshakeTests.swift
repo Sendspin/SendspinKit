@@ -60,7 +60,8 @@ struct RehandshakeTests {
             playerConfig: playerConfig,
             pairing: PairingConfiguration(pairingPsk: pairingPsk, store: store, enabled: pairingEnabled),
             audioOutputCapabilityProvider: AudioOutputCapabilityService(),
-            pairingAttemptTimeout: pairingAttemptTimeout
+            pairingAttemptTimeout: pairingAttemptTimeout,
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let transport = MockTransport()
         let server = MockNoiseServer(transport: transport, staticKey: serverStaticKey, psk: initialPsk)
@@ -370,9 +371,10 @@ struct RehandshakeTests {
         #expect(await waitUntil { await connection.clockSyncTask != nil }, "clock-sync task handle must appear before cancel")
         await connection.clockSyncTask?.cancel()
         await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
 
         // #1 takes the outbound slot and parks mid-fragment on the gate.
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let first = Task { () -> Result<Void, Error> in
             do {
                 try await connection.send(clientMessage:
@@ -386,7 +388,7 @@ struct RehandshakeTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         // #2 queues behind #1 (it has NOT acquired the slot, so it has not checked
         // the gate — it will only do so once woken).
@@ -405,7 +407,7 @@ struct RehandshakeTests {
         // release unconditionally so failure cannot wedge the parked send.
         try await server.beginRehandshake(to: longTermPsk, pskCategoryOverride: .longTerm)
         #expect(await waitUntil { await connection.isRehandshakeInProgress })
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         let firstResult = await first.value
         #expect((try? firstResult.get()) != nil, "the first send must complete")

@@ -106,7 +106,8 @@ private func makeDynamicTestSession(
         pairingWindowLifetime: windowLifetime,
         nonceBOverride: nonceBOverride,
         pairingHandshakeHashOverride: pairingHandshakeHashOverride,
-        pairingScalarBOverride: pairingScalarBOverride
+        pairingScalarBOverride: pairingScalarBOverride,
+        audioOutputFactory: { _, _ in NoOpAudioOutput() }
     )
     let transport = MockTransport()
     let server = MockNoiseServer(transport: transport, psk: .sentinel)
@@ -864,17 +865,27 @@ struct PairingFinalFenceTests {
             _ = try await store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
         }
         let session = try await makeDynamicTestSession(store: store)
+        let terminalEvents = AtomicList<String>()
+        let terminalStream = session.client.events()
+        let observer = Task {
+            for await event in terminalStream {
+                if case let .pairingAttemptEnded(snapshot) = event,
+                   snapshot.phase == .ended(.pairingCodeMismatch) {
+                    terminalEvents.append("ended")
+                }
+                if case let .pairingCodeChanged(snapshot) = event, snapshot.code == nil {
+                    terminalEvents.append("codeRemoved")
+                    return
+                }
+            }
+        }
+        defer { observer.cancel() }
         _ = try await dynamicServerTranscript(session, badServerConfirmation: true)
 
         let abort = try await waitForClientMessage(session.server, type: PairAbortMessage.typeString)
         #expect(try JSONDecoder().decode(PairAbortMessage.self, from: abort).payload.reason == .pairingCodeMismatch)
-        #expect(await endedEvent(session.events, reason: .pairingCodeMismatch) != nil)
-        #expect(await collectClientEvent(from: session.events, timeout: .milliseconds(100)) {
-            if case let .pairingCodeChanged(snapshot) = $0 {
-                return snapshot.code == nil
-            }
-            return false
-        } != nil)
+        try #require(await waitUntil(timeout: .seconds(3)) { terminalEvents.all.contains("ended") })
+        #expect(await waitUntil(timeout: .milliseconds(100)) { terminalEvents.all == ["ended", "codeRemoved"] })
         #expect(await MainActor.run { session.client.connectionState == .connected })
         await session.client.disconnect()
     }

@@ -77,7 +77,8 @@ func makeTestClient(
         unpairedAccessEnabled: unpairedAccessEnabled,
         persistenceProvider: persistenceProvider,
         audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
-        handshakeTimeout: handshakeTimeout
+        handshakeTimeout: handshakeTimeout,
+        audioOutputFactory: { _, _ in NoOpAudioOutput() }
     )
 }
 
@@ -394,6 +395,7 @@ struct ClientIntegrationTests {
         // making the transition wire-visible so the send can fail.
         try await establishClockSync(client, via: mock)
 
+        let engine = try #require(client.connection?.audioEngineForTesting)
         await mock.setShouldFailOnSend(true)
 
         await #expect(throws: SendspinClientError.self) {
@@ -402,7 +404,7 @@ struct ClientIntegrationTests {
 
         #expect(client.clientOperationalState == .synchronized)
         #expect(
-            await client.connection?.audioEngineForTesting.isParticipatingInPlaybackForTesting() == true,
+            await engine.isParticipatingInPlaybackForTesting() == true,
             "failed enterExternalSource must not leave the engine suppressing playback telemetry"
         )
 
@@ -418,8 +420,9 @@ struct ClientIntegrationTests {
         try await establishClockSync(client, via: mock)
 
         try await client.enterExternalSource()
+        let engine = try #require(client.connection?.audioEngineForTesting)
         #expect(client.clientOperationalState == .externalSource)
-        #expect(await client.connection?.audioEngineForTesting.isParticipatingInPlaybackForTesting() == false)
+        #expect(await engine.isParticipatingInPlaybackForTesting() == false)
 
         await mock.setShouldFailOnSend(true)
         await #expect(throws: SendspinClientError.self) {
@@ -428,7 +431,7 @@ struct ClientIntegrationTests {
 
         #expect(client.clientOperationalState == .externalSource)
         #expect(
-            await client.connection?.audioEngineForTesting.isParticipatingInPlaybackForTesting() == false,
+            await engine.isParticipatingInPlaybackForTesting() == false,
             "failed exitExternalSource must leave the engine in external-source mode"
         )
 
@@ -1079,6 +1082,7 @@ struct ClientIntegrationTests {
             ),
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
+        client.audioOutputFactory = { _, _ in NoOpAudioOutput() }
         _ = try await connectClient(client, connectionReason: .discovery)
 
         let transportB = MockTransport()
@@ -1176,7 +1180,7 @@ struct ClientIntegrationTests {
 
     @Test
     func competingConnection_silentOpenHandshakeTimesOutAndKeepsExisting() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: .milliseconds(100))
         let mock1 = try await connectClient(client, connectionReason: .discovery)
 
         let mock2 = MockTransport()

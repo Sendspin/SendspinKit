@@ -163,6 +163,8 @@ public final class SendspinClient {
     #endif
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
     var outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
+    var audioOutputFactory: @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+        .makeProductionOutput
     let sessionNegotiationHook: @Sendable () async -> Void
     private var audioOutputCapabilityTask: Task<Void, Never>?
     var audioOutputSnapshotSequence: UInt64 = 0
@@ -290,6 +292,8 @@ public final class SendspinClient {
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
+        audioOutputFactory: @escaping @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+            .makeProductionOutput,
         outboundTransportFactory: @escaping @Sendable (URL) -> any ClientDialingTransport = {
             NWWebSocketTransport(url: $0)
         },
@@ -331,6 +335,7 @@ public final class SendspinClient {
             self.pairingScalarBOverride = pairingScalarBOverride
         #endif
         self.outputNegotiationSleep = outputNegotiationSleep
+        self.audioOutputFactory = audioOutputFactory
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
         outputDelayMs = playerConfig?.initialOutputDelayMs ?? 0
@@ -1031,7 +1036,8 @@ public final class SendspinClient {
                         }
                     }
                 }
-            }
+            },
+            audioOutputFactory: audioOutputFactory
         )
     }
 

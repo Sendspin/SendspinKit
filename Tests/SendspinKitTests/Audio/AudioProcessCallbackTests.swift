@@ -2,6 +2,7 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+@Suite(.tags(.hardware))
 struct AudioProcessCallbackTests {
     // Standard test format used across all tests in this suite
     // swiftlint:disable:next force_try

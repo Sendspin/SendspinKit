@@ -39,9 +39,10 @@ actor MockTransport: ClientDialingTransport {
     /// exactly once across idempotent/concurrent shutdown paths (not just "did not hang").
     private(set) var disconnectCallCount = 0
 
-    /// When enabled, the next outbound frame suspends until ``releaseGoodbyeGate()``.
-    private var goodbyeGateEnabled = false
-    private var goodbyeGateContinuation: CheckedContinuation<Void, Never>?
+    /// When enabled, the next outbound frame suspends until ``releaseOutboundFrame()``.
+    private var outboundFrameGateArmed = false
+    private var outboundFrameGateContinuation: CheckedContinuation<Void, Never>?
+    private(set) var parkedOutboundBinaryFrame: Data?
 
     /// Opt-in mirror of `NWWebSocketTransport`: senders that reach the
     /// transport already-cancelled are rejected. Defaults off so existing
@@ -63,7 +64,7 @@ actor MockTransport: ClientDialingTransport {
         if honorCancellationSends, Task.isCancelled {
             throw CancellationError()
         }
-        await parkNextOutboundFrameIfArmed()
+        await suspendOutboundFrameIfArmed()
         sentTextMessages.append(Data(text.utf8))
         outbox.yield(.text(text))
     }
@@ -75,15 +76,18 @@ actor MockTransport: ClientDialingTransport {
         if honorCancellationSends, Task.isCancelled {
             throw CancellationError()
         }
-        await parkNextOutboundFrameIfArmed()
+        if outboundFrameGateArmed {
+            parkedOutboundBinaryFrame = data
+        }
+        await suspendOutboundFrameIfArmed()
         sentBinaryMessages.append(data)
         outbox.yield(.binary(data))
     }
 
-    private func parkNextOutboundFrameIfArmed() async {
-        guard goodbyeGateEnabled else { return }
-        goodbyeGateEnabled = false
-        await withCheckedContinuation { goodbyeGateContinuation = $0 }
+    private func suspendOutboundFrameIfArmed() async {
+        guard outboundFrameGateArmed else { return }
+        outboundFrameGateArmed = false
+        await withCheckedContinuation { outboundFrameGateContinuation = $0 }
     }
 
     /// Full teardown: marks disconnected and finishes both streams.
@@ -160,9 +164,10 @@ actor MockTransport: ClientDialingTransport {
     }
 
     /// Arm the gate: the next outbound frame will suspend until
-    /// ``releaseGoodbyeGate()``.
-    func enableGoodbyeGate() {
-        goodbyeGateEnabled = true
+    /// ``releaseOutboundFrame()``.
+    func parkNextOutboundFrame() {
+        parkedOutboundBinaryFrame = nil
+        outboundFrameGateArmed = true
     }
 
     /// Opt in to rejecting sends that arrive here already-cancelled.
@@ -171,15 +176,15 @@ actor MockTransport: ClientDialingTransport {
     }
 
     /// Whether an outbound frame is currently parked on the gate.
-    var isGoodbyeGateWaiting: Bool {
-        goodbyeGateContinuation != nil
+    var isOutboundFrameParked: Bool {
+        outboundFrameGateContinuation != nil
     }
 
-    /// Release a parked goodbye send and disarm the gate.
-    func releaseGoodbyeGate() {
-        goodbyeGateEnabled = false
-        goodbyeGateContinuation?.resume()
-        goodbyeGateContinuation = nil
+    /// Release a parked outbound frame and disarm the gate.
+    func releaseOutboundFrame() {
+        outboundFrameGateArmed = false
+        outboundFrameGateContinuation?.resume()
+        outboundFrameGateContinuation = nil
     }
 }
 

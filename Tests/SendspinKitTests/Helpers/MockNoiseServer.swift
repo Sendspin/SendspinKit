@@ -109,16 +109,16 @@ actor MockNoiseServer {
         await transport.setShouldFailOnSend(value)
     }
 
-    func enableGoodbyeGate() async {
-        await transport.enableGoodbyeGate()
+    func parkNextOutboundFrame() async {
+        await transport.parkNextOutboundFrame()
     }
 
-    var isGoodbyeGateWaiting: Bool {
-        get async { await transport.isGoodbyeGateWaiting }
+    var isOutboundFrameParked: Bool {
+        get async { await transport.isOutboundFrameParked }
     }
 
-    func releaseGoodbyeGate() async {
-        await transport.releaseGoodbyeGate()
+    func releaseOutboundFrame() async {
+        await transport.releaseOutboundFrame()
     }
 
     func simulateClose(_ reason: TransportCloseReason) async {

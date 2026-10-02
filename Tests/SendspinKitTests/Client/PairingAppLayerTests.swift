@@ -255,7 +255,8 @@ struct PairingAppLayerTests {
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
             handshakeTimeout: .seconds(3),
             pairingAttemptTimeout: .seconds(30),
-            pairingWindowLifetime: .seconds(30)
+            pairingWindowLifetime: .seconds(30),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let events = client.events()
         let transport = MockTransport()

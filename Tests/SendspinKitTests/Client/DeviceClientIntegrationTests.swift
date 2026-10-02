@@ -362,13 +362,15 @@ struct DeviceClientIntegrationTests {
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
-        return try SendspinClient(
+        let client = try SendspinClient(
             device: device,
             name: "Device Player Client",
             roles: [.playerV1],
             playerConfig: playerConfig,
             access: access
         )
+        client.audioOutputFactory = { _, _ in NoOpAudioOutput() }
+        return client
     }
 
     private func hello(
