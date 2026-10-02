@@ -65,10 +65,15 @@ struct FacadeLifecycleTests {
         let replacementAccept = Task { try? await client.acceptConnection(candidate) }
         #expect(await waitUntil { await candidate.hasSentFrames })
 
-        // Park the incumbent's next send so promotion's teardown stalls.
+        // The next-frame gate must hold promotion's goodbye, not a clock sample.
+        let connection = try #require(client.connection)
+        await connection.clockSyncTask?.cancel()
+        await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
         await incumbent.enableGoodbyeGate()
         try await candidateServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
-        #expect(await waitUntil { await incumbent.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await incumbent.isGoodbyeGateWaiting })
+        #expect(client.connection == nil)
 
         await client.disconnect(reason: .userRequest)
         await incumbent.releaseGoodbyeGate()
