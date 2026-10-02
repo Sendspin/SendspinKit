@@ -37,6 +37,10 @@ private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 /// milliseconds, while multi-second starts can leave CoreAudio consuming inaudible audio.
 let audioQueueStartSlowThresholdUs: Int64 = 2_000_000
 
+/// Report teardown calls that hold the output actor for half a second so slow
+/// disconnects remain visible in user-collected diagnostics.
+let audioQueueTeardownSlowThresholdUs: Int64 = 500_000
+
 /// Leave the queue stopped until the release instant.
 ///
 /// This diagnostic mode allows startup behavior to be compared with pre-warming when
@@ -605,8 +609,28 @@ actor AudioPlayer {
         outputDeviceLiveContinuation = nil
         guard let queue = audioQueue else { return }
 
+        let stopStartedAt = MonotonicClock.absoluteMicroseconds()
         AudioQueueStop(queue, true)
+        let stopUs = MonotonicClock.absoluteMicroseconds() - stopStartedAt
+        let disposeStartedAt = MonotonicClock.absoluteMicroseconds()
         AudioQueueDispose(queue, true)
+        let disposeUs = MonotonicClock.absoluteMicroseconds() - disposeStartedAt
+        let device = OutputDeviceLatency.currentDeviceDescription()
+        Log.audio.info(
+            """
+            AudioQueueStop returned in \(stopUs, privacy: .public)us; \
+            AudioQueueDispose returned in \(disposeUs, privacy: .public)us; \
+            wasPlaying=\(currentlyPlaying, privacy: .public); device \(device, privacy: .public)
+            """
+        )
+        if stopUs > audioQueueTeardownSlowThresholdUs || disposeUs > audioQueueTeardownSlowThresholdUs {
+            Log.audio.notice(
+                """
+                Slow AudioQueue teardown: stop=\(stopUs, privacy: .public)us \
+                dispose=\(disposeUs, privacy: .public)us; device \(device, privacy: .public)
+                """
+            )
+        }
 
         audioQueue = nil
         queueIdentity &+= 1

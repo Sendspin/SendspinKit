@@ -204,6 +204,7 @@ extension SendspinConnection {
     /// Runs only once (lifecycle-guarded) and only after runLoop() returns,
     /// so no frame can reach a finished engine channel.
     func finishTeardown(_ reason: DisconnectReason) async {
+        let teardownStartedAt = MonotonicClock.absoluteMicroseconds()
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
 
@@ -239,9 +240,18 @@ extension SendspinConnection {
         }
 
         // Stop the engine (async cleanup: close output, finish channels)
+        let engineStartedAt = MonotonicClock.absoluteMicroseconds()
         await audioEngine.shutdown()
+        let engineUs = MonotonicClock.absoluteMicroseconds() - engineStartedAt
 
         // Emit exactly one .disconnected (terminal event)
+        let teardownUs = MonotonicClock.absoluteMicroseconds() - teardownStartedAt
+        Log.client.info(
+            """
+            teardown: engine=\(engineUs, privacy: .public)us total=\(teardownUs, privacy: .public)us \
+            reason=\(String(describing: reason), privacy: .public)
+            """
+        )
         controlSink.enqueue(.disconnected(reason: reason))
 
         // Finish the control stream

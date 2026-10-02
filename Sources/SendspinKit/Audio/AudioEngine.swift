@@ -550,6 +550,7 @@ actor AudioEngine {
     /// Shutdown the engine and terminate all three tasks.
     /// Must be called to clean up resources. Idempotent.
     func shutdown() async {
+        let shutdownStartedAt = MonotonicClock.absoluteMicroseconds()
         guard running else { return }
         running = false
 
@@ -572,7 +573,9 @@ actor AudioEngine {
         startupReleaseInProgress = false
         startupSequence &+= 1
         outputHasStarted = false
+        let outputStopStartedAt = MonotonicClock.absoluteMicroseconds()
         await output.stop()
+        let outputStopUs = MonotonicClock.absoluteMicroseconds() - outputStopStartedAt
 
         // 5. Finish the scheduler and clear its queue
         await audioScheduler.finish()
@@ -594,6 +597,10 @@ actor AudioEngine {
 
         // 8. Finish the reports stream
         reportContinuation.finish()
+        let shutdownUs = MonotonicClock.absoluteMicroseconds() - shutdownStartedAt
+        Log.audio.info(
+            "AudioEngine shutdown: outputStop=\(outputStopUs, privacy: .public)us total=\(shutdownUs, privacy: .public)us"
+        )
     }
 
     private func signalStartupCoordinator(_ signal: StartupSignal) {

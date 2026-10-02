@@ -570,6 +570,7 @@ actor SendspinConnection {
     /// Graceful disconnect: send goodbye and close.
     /// Idempotent after lifecycle leaves `.running`.
     func disconnect(reason: GoodbyeReason) async {
+        let disconnectStartedAt = MonotonicClock.absoluteMicroseconds()
         // Record the reason BEFORE the first await (wins a race with loss)
         shuttingDown = true
         disconnectReason = .explicit(reason)
@@ -592,12 +593,18 @@ actor SendspinConnection {
         lifecycle = .shuttingDown
 
         // Send exactly one goodbye (best-effort; ignore send failures)
+        let goodbyeStartedAt = MonotonicClock.absoluteMicroseconds()
         do {
             try await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
         } catch {
             Log.client.warning("Failed to send goodbye: \(error)")
         }
 
+        let goodbyeUs = MonotonicClock.absoluteMicroseconds() - goodbyeStartedAt
+
+        // This phase includes all of finishTeardown; its timings are nested,
+        // not additional durations to add to close+teardown.
+        let closeStartedAt = MonotonicClock.absoluteMicroseconds()
         // Close transport to trigger runLoop() return
         await transport.disconnect()
 
@@ -605,6 +612,14 @@ actor SendspinConnection {
         if let supervisor = supervisorTask {
             await supervisor.value
         }
+        let closeUs = MonotonicClock.absoluteMicroseconds() - closeStartedAt
+        let disconnectUs = MonotonicClock.absoluteMicroseconds() - disconnectStartedAt
+        Log.client.info(
+            """
+            disconnect: goodbye=\(goodbyeUs, privacy: .public)us \
+            close+teardown=\(closeUs, privacy: .public)us total=\(disconnectUs, privacy: .public)us
+            """
+        )
     }
 
     /// Hard shutdown: no goodbye, kill transport, wait for supervisor.
