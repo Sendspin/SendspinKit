@@ -149,53 +149,51 @@ What remains actionable regardless of the cause:
 3. The smoke harness fails on spin-up over 2s, on a peak that never rises, and on any refused
    enqueue.
 
-## Remaining departure — modelled depth against measured depth
+## Measured depth at the correction instant
 
-The placement measures the pipeline. The correction formula still models it as every allocated
-buffer:
+Placement and correction describe the same physical span: frames enqueued but not yet consumed,
+plus the device path. Correction samples that depth before its fill loop, while the cursor still
+names the previous callback's tail. The same sample feeds sync error, grace-expiry rebaseline and
+reanchor targets; the allocated-depth model stands in only until the device reports a position.
+Startup leads and silence-pad ceilings remain conservative allocated-depth estimates.
 
-```
-L_modelled = audioQueueBufferCount * bufferBytes / byteRate + deviceLatency
-           = 139,319 + 14,716 = 154,035 µs
-```
+Three 30-second tone runs on a MacBook Air's built-in speakers use 44,100Hz/stereo/32-bit output:
+16,384 bytes per buffer / 8 bytes per frame = 2,048 frames; three buffers model 6,144 frames.
+Callback depth spans 4,622–5,090 frames (2.26–2.49 buffers), leaving a 1,054–1,522-frame model gap.
+The interval-last medians are 4,801.5 / 4,932.5 / 4,926 frames. The delivery-delay formula clamps to
+zero: measured depth exceeds two buffers rather than simply being two minus callback delay.
+The first callbacks report 1,357 / 1,356–1,361 / 1,356–1,357 consumed frames for a 2,048-frame buffer;
+a queue-to-device internal stage remains in flight and only measured depth captures it.
 
-A running queue does not hold every buffer unplayed. Logged at one placement instant:
+The queue timestamp's host time maps through `AudioQueueDeviceTranslateTime` to the current device
+position within 0–1 frame; host lag spans 0.21–1.04 µs and every API status is successful.
+Queue and device sample origins differ, so translation uses the queue timestamp's host-time
+component. This establishes a current consumption reference, not an already audible position;
+the device latency remains additional. Timestamp evidence does not measure analog speaker delay.
+The callback timestamp read costs at most 11 µs against a 46.44 ms buffer period.
 
-```
-inFlight 4,811 frames = 109,092 µs   deviceLatency 14,716 µs   total 123,808 µs
-```
+With measured depth in correction, three further 30-second runs show:
 
-and the whole residual follows from the difference:
+| run | modelled startOffset | measured startOffset | modelled steady sync | measured steady sync |
+|---|---|---|---|---|
+| 1 | 34,776 µs | 116 µs | −2,956…+4,874 µs | −173…−36 µs |
+| 2 | 29,821 µs | 17,198 µs | −4,624…+3,290 µs | −51…−12 µs |
+| 3 | 32,890 µs | 5,185 µs | −4,034…+3,278 µs | −55…+23 µs |
 
-```
-startOffset = L_modelled − (inFlight + deviceLatency) = 154,035 − 123,808 = 30,227 µs
-```
-
-against 33,504 µs measured — the remaining ~3 ms is unattributed. Sampled during playback,
-`inFlight` ranges 5,096–6,487 frames against 6,144 modelled, so the two disagree by roughly
-half a buffer to a buffer depending on where in the callback cadence the reading falls.
-
-Which of the two is correct for the correction formula is **not yet established**. The formula
-evaluates inside the callback, where the buffer just returned has been re-enqueued, and in-flight
-there may genuinely be the full allocated depth. Two things need measuring before changing it:
-
-1. In-flight sampled *at the callback instant*, not at an arbitrary one.
-2. Whether `AudioQueueGetCurrentTime`'s `mSampleTime` reports the position the device has
-   consumed or the position it is emitting. If the latter, it already carries the device path and
-   adding `deviceLatency` double-counts it. `inFlight` readings above the modelled depth (6,487
-   against 6,144) are weak evidence for the latter and are not conclusive.
-
-Sizing buffers by duration rather than a fixed byte count would remove the format dependence in
-this term at the same time — the depth currently doubles across a bit-depth change.
+The modelled runs alternate drop/insert mode 4 / 3 / 4 times at telemetry cadence; measured-depth
+runs report no correction, drop or insert cadence. All runs report zero late chunks, underruns,
+PCM drops and enqueue failures. Run 2 includes a queue restart; its residual 17.20 ms is real
+placement error at grace expiry, not evidence that all startup placement is accurate to a few ms.
+Sizing buffers by duration rather than a fixed byte count remains separate from correction.
 
 ## Why the offset is still invisible in `sync`
 
-`graceExpiryRebaselineCursor` **assigns** `cursor = expected + L` one second into playback. It does
-not measure the equilibrium; it defines one, after which drift correction holds the system there
-faithfully. The result is internally consistent, stable, and uniformly displaced — a single
-speaker cannot reveal a constant displacement. `startOffset` exists solely to expose it, and any
-change here that leaves the rebaseline asserting rather than measuring will hide the next error
-the same way.
+`graceExpiryRebaselineCursor` **assigns** `cursor = expected + L` one second into playback.
+Measured device depth makes `L` a physical estimate rather than an allocated-buffer model;
+`startupOffsetUs` now measures placement error at grace expiry. The rebaseline still absorbs that
+error into the cursor, so subsequent `sync` cannot expose a constant startup displacement.
+`startOffset` remains necessary even when steady-state sync is quiet: the 17,198 µs placement
+residual above becomes invisible after the rebaseline.
 
 ## Notes that remain true
 

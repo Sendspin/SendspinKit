@@ -921,7 +921,8 @@ actor AudioPlayer {
         let correctionSchedule: CorrectionSchedule
         let underrunCount: Int64
         let pcmBytesDropped: Int64
-        /// Sync error at grace expiry, before the rebaseline froze it. `nil` until then.
+        /// Sync error at grace expiry, before the rebaseline absorbs it. `nil` until then.
+        /// The measured device depth makes this placement error rather than model error.
         let startupOffsetUs: Int64?
         /// `AudioQueueStart` to first device callback. -1 until that callback lands.
         let spinUpUs: Int64
@@ -1039,18 +1040,21 @@ actor AudioPlayer {
         state: inout LockedState,
         capacity: Int,
         frameSize: Int,
-        sampleRate: Int
+        sampleRate: Int,
+        inFlightAtCallback: Int64?
     ) {
         guard state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot else { return }
         let nowAbsolute = MonotonicClock.absoluteMicroseconds()
 
-        // Everything between pulling a frame here and hearing it: every primed buffer — so this
-        // must use the same count `prepare()` primes — plus the device path beyond them.
         let queueDepthUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+        let pipelineLatencyUs = correctionPipelineLatencyUs(
+            inFlightFrames: inFlightAtCallback, sampleRate: sampleRate,
+            modelledQueueDepthUs: queueDepthUs, deviceLatencyUs: state.deviceLatencyUs
+        )
         let equilibriumServerTime = correctionEquilibriumServerTime(
             snapshot: snapshot,
             localNow: nowAbsolute,
-            pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+            pipelineLatencyUs: pipelineLatencyUs,
             outputDelayUs: state.outputDelayUs
         )
 
@@ -1077,7 +1081,7 @@ actor AudioPlayer {
                 state.cursorMicroseconds = graceExpiryRebaselineCursor(
                     snapshot: snapshot,
                     localNow: nowAbsolute,
-                    pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+                    pipelineLatencyUs: pipelineLatencyUs,
                     outputDelayUs: state.outputDelayUs
                 )
                 state.cursorRemainder = 0
@@ -1107,7 +1111,7 @@ actor AudioPlayer {
             state.pendingReanchorServerTime = graceExpiryRebaselineCursor(
                 snapshot: snapshot,
                 localNow: nowAbsolute,
-                pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+                pipelineLatencyUs: pipelineLatencyUs,
                 outputDelayUs: state.outputDelayUs
             )
             state.reanchorRequested = true
@@ -1127,7 +1131,16 @@ actor AudioPlayer {
         }
     }
 
-    private static func measureCallbackDepth(state: inout LockedState, queue: AudioQueueRef, bufferFrames: Int64) {
+    static func correctionPipelineLatencyUs(
+        inFlightFrames: Int64?, sampleRate: Int, modelledQueueDepthUs: Int64, deviceLatencyUs: Int64
+    ) -> Int64 {
+        // Correction and placement describe the same physical span, so both read the device.
+        // The model stands in only until the device reports its position.
+        let queueDepthUs = inFlightFrames.map { $0 * 1_000_000 / Int64(sampleRate) } ?? modelledQueueDepthUs
+        return queueDepthUs + deviceLatencyUs
+    }
+
+    private static func measureCallbackDepth(state: inout LockedState, queue: AudioQueueRef, bufferFrames: Int64) -> Int64? {
         let start = MonotonicClock.absoluteMicroseconds()
         let played = framesPlayed(queue: queue)
         let cost = MonotonicClock.absoluteMicroseconds() - start
@@ -1135,6 +1148,7 @@ actor AudioPlayer {
             total: state.totalFramesEnqueued, played: played, bufferFrames: bufferFrames,
             costUs: cost, prewarming: state.prewarming
         )
+        return played > 0 ? max(0, state.totalFramesEnqueued - played) : nil
     }
 
     private static func logFirstCallback(queue: AudioQueueRef, bufferFrames: Int) {
@@ -1175,12 +1189,11 @@ actor AudioPlayer {
                 return FillResult(outOffset: 0, cb: nil, cbFormat: nil, enqueue: false)
             }
 
-            let sr = state.sampleRate
             let cb = processCallback // nonisolated let, not in locked state
             let cbFormat = state.processCallbackFormat
             let channels = cbFormat?.channels ?? 2
 
-            Self.measureCallbackDepth(state: &state, queue: queue, bufferFrames: Int64(capacity / fs))
+            let inFlightAtCallback = Self.measureCallbackDepth(state: &state, queue: queue, bufferFrames: Int64(capacity / fs))
 
             // `prepare()` fills every buffer through this path before the queue is started,
             // so the first callback with a start time recorded is the device's own.
@@ -1192,7 +1205,9 @@ actor AudioPlayer {
                 }
             }
 
-            Self.updateCorrectionSchedule(state: &state, capacity: capacity, frameSize: fs, sampleRate: sr)
+            Self.updateCorrectionSchedule(
+                state: &state, capacity: capacity, frameSize: fs, sampleRate: state.sampleRate, inFlightAtCallback: inFlightAtCallback
+            )
 
             // --- Fill the buffer with PCM frames, applying drop/insert correction ---
             var outOffset = 0
