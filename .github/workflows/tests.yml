@@ -45,6 +45,20 @@ jobs:
       - name: Build all examples
         run: ./scripts/build-examples.sh
 
+  release-build:
+    name: Release build
+    runs-on: macos-26
+    timeout-minutes: 15
+
+    # `swift test` only compiles the debug configuration, so a symbol that exists
+    # inside `#if DEBUG` but is used outside it ships green; only a release build catches it.
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build release configuration
+        run: swift build -c release -Xswiftc -warnings-as-errors
+
   test:
     name: Test
     runs-on: macos-26

@@ -745,11 +745,16 @@ extension SendspinConnection {
             guard !Task.isCancelled else { return }
             await self?.pairingAttemptTimedOut(attemptID: attemptID)
         }
+        #if DEBUG
+            let scalarOverride = pairingScalarBOverride
+        #else
+            let scalarOverride: Data? = nil
+        #endif
         attempt.cpace = try? CPace(
             role: .responder,
             prs: attempt.prs,
             sid: attempt.sid,
-            scalarOverride: pairingScalarBOverride
+            scalarOverride: scalarOverride
         )
         guard attempt.cpace != nil else {
             clearPairingAttempt()
@@ -900,11 +905,16 @@ extension SendspinConnection {
             round: attempt.round
         )
         attempt.sid = sid
+        #if DEBUG
+            let scalarOverride = pairingScalarBOverride
+        #else
+            let scalarOverride: Data? = nil
+        #endif
         attempt.cpace = try CPace(
             role: .responder,
             prs: prs,
             sid: sid,
-            scalarOverride: pairingScalarBOverride
+            scalarOverride: scalarOverride
         )
         dynamicPairingAttempt = attempt
     }
