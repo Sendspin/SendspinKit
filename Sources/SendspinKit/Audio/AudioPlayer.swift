@@ -121,6 +121,7 @@ private struct LockedState: @unchecked Sendable {
     /// device's played-frame count this gives the frames still in flight, and so when a frame
     /// written to the ring now will be audible.
     var totalFramesEnqueued: Int64 = 0
+    var callbackDepth = CallbackDepthTelemetry()
 
     /// Number of buffers currently owned by AudioQueue. Unlike the cumulative frame count this
     /// reaches zero when a finite drain stops re-enqueuing buffers.
@@ -402,6 +403,7 @@ actor AudioPlayer {
             state.spinUpUs = -1
             state.prewarming = true
             state.totalFramesEnqueued = 0
+            state.callbackDepth = CallbackDepthTelemetry()
             state.enqueuedBufferCount = 0
             state.draining = false
             state.drainComplete = false
@@ -947,11 +949,14 @@ actor AudioPlayer {
         /// Frames handed to the queue but not yet played — the real pipeline depth, against
         /// the modelled one of every allocated buffer.
         let framesInFlight: Int64
+        var callbackDepth = CallbackDepthTelemetry()
+        var queueTimeline = QueueTimelineTelemetry()
     }
 
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
+        let timeline = audioQueue.map { QueueTimelineTelemetry.read(queue: $0) } ?? QueueTimelineTelemetry()
         let appliedVolume = appliedVolume
         // Read back rather than trusted. `appliedVolume` is what this process believes it set;
         // these are what the queue and the device report, and the span between them is the only
@@ -972,7 +977,9 @@ actor AudioPlayer {
             return values
         }
         return lockedState.withLock { state in
-            TelemetrySnapshot(
+            let callbackDepth = state.callbackDepth
+            state.callbackDepth = CallbackDepthTelemetry()
+            return TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
                 sampleRate: state.sampleRate,
                 syncErrorUs: state.lastSyncErrorUs,
@@ -990,7 +997,9 @@ actor AudioPlayer {
                 queueGain: queueGain,
                 deviceVolume: deviceGain.volume ?? -1,
                 deviceMuted: deviceGain.muted ?? false,
-                framesInFlight: max(0, state.totalFramesEnqueued - played)
+                framesInFlight: max(0, state.totalFramesEnqueued - played),
+                callbackDepth: callbackDepth,
+                queueTimeline: timeline
             )
         }
     }
@@ -1118,6 +1127,27 @@ actor AudioPlayer {
         }
     }
 
+    private static func measureCallbackDepth(state: inout LockedState, queue: AudioQueueRef, bufferFrames: Int64) {
+        let start = MonotonicClock.absoluteMicroseconds()
+        let played = framesPlayed(queue: queue)
+        let cost = MonotonicClock.absoluteMicroseconds() - start
+        state.callbackDepth.record(
+            total: state.totalFramesEnqueued, played: played, bufferFrames: bufferFrames,
+            costUs: cost, prewarming: state.prewarming
+        )
+    }
+
+    private static func logFirstCallback(queue: AudioQueueRef, bufferFrames: Int) {
+        var timestamp = AudioTimeStamp()
+        let status = AudioQueueGetCurrentTime(queue, nil, &timestamp, nil)
+        Log.audio.info(
+            """
+            first device callback sampleTime=\(timestamp.mSampleTime)f bufferFrames=\(bufferFrames)f \
+            status=\(status) flags=\(timestamp.mFlags.rawValue)
+            """
+        )
+    }
+
     fileprivate nonisolated func fillBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
         let capacity = Int(buffer.pointee.mAudioDataBytesCapacity)
         let dest = buffer.pointee.mAudioData.assumingMemoryBound(to: UInt8.self)
@@ -1150,10 +1180,13 @@ actor AudioPlayer {
             let cbFormat = state.processCallbackFormat
             let channels = cbFormat?.channels ?? 2
 
+            Self.measureCallbackDepth(state: &state, queue: queue, bufferFrames: Int64(capacity / fs))
+
             // `prepare()` fills every buffer through this path before the queue is started,
             // so the first callback with a start time recorded is the device's own.
             if state.spinUpUs < 0, state.queueStartAbsoluteUs > 0 {
                 state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
+                Self.logFirstCallback(queue: queue, bufferFrames: capacity / fs)
                 Task { [weak self] in
                     await self?.resumeOutputDeviceLiveWaiter()
                 }
