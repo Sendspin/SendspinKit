@@ -44,9 +44,7 @@ struct ArtworkObserverValidityTests {
         let drain = client.drainConnectionEventsTask
         drain?.cancel()
         await drain?.value
-        let finished = DispatchSemaphore(value: 0)
         let delivery = Task.detached {
-            defer { finished.signal() }
             let size: UInt32 = 1
             let pastTimestamp: Int64 = -1_000_000_000
             var timestamp = pastTimestamp.bigEndian
@@ -60,18 +58,17 @@ struct ArtworkObserverValidityTests {
                 activities: [.playback], activeRoles: []
             )))
         }
-        #expect(waitForQueuedDelivery(finished))
-        try await delivery.value
+        let result = await outcomeOfUnstructuredOperation(timeout: .seconds(5)) {
+            try await delivery.value
+        }
+        #expect(result != nil)
+        _ = try result?.get()
         await Task.detached {
             await MainActor.run {}
         }.value
         #expect(await connection.activeRoles.isEmpty)
         #expect(client.currentArtwork == nil)
         await client.disconnect()
-    }
-
-    private func waitForQueuedDelivery(_ finished: DispatchSemaphore) -> Bool {
-        finished.wait(timeout: .now() + 2) == .success
     }
 
     @Test

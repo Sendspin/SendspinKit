@@ -2,18 +2,36 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+private final class ArtworkConversionEntry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+    var value: Bool {
+        lock.withLock { entered }
+    }
+
+    func mark() {
+        lock.withLock { entered = true }
+    }
+}
+
 private actor HeldArtworkClock: ClockSyncProtocol {
-    nonisolated let entered = DispatchSemaphore(value: 0)
+    // A blocking test double owns its executor so it never blocks the cooperative pool.
+    private let queue = DispatchSerialQueue(label: "SendspinKitTests.HeldArtworkClock")
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
+    nonisolated let entered = ArtworkConversionEntry()
     nonisolated let release = DispatchSemaphore(value: 0)
-    nonisolated func waitForConversion() -> Bool {
-        entered.wait(timeout: .now() + 2) == .success
+    nonisolated func waitForConversion() async -> Bool {
+        await waitUntil { self.entered.value }
     }
 
     let hasSynced = true
     func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
         if serverTime == 10 {
-            entered.signal()
-            release.wait()
+            entered.mark()
+            #expect(release.wait(timeout: .now() + 5) == .success)
         }
         return serverTime
     }
@@ -150,7 +168,7 @@ struct ArtworkTransferTests {
         await fixture.connection.handleStreamStart(artworkStart())
         try await fixture.connection.handleArtworkBinary(announce())
         let completion = Task { try await fixture.connection.handleArtworkBinary(part()) }
-        let entered = await Task.detached { clock.waitForConversion() }.value
+        let entered = await clock.waitForConversion()
         #expect(entered)
         await fixture.connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
             activities: [.playback], activeRoles: []
@@ -177,7 +195,7 @@ struct ArtworkTransferTests {
         await fixture.connection.handleStreamStart(artworkStart())
         try await fixture.connection.handleArtworkBinary(announce())
         let completion = Task { try await fixture.connection.handleArtworkBinary(part()) }
-        let entered = await Task.detached { clock.waitForConversion() }.value
+        let entered = await clock.waitForConversion()
         #expect(entered)
         await fixture.connection.handleStreamStart(artworkStart(source: changed ? .artist : .album))
         clock.release.signal()

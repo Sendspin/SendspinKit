@@ -77,6 +77,12 @@ actor StubClock: ClockSyncProtocol {
 
 /// Mock audio output that records all calls and allows control over behavior.
 actor SpyAudioOutput: AudioOutput {
+    // A blocking test double owns its executor so it never blocks the cooperative pool.
+    private let queue = DispatchSerialQueue(label: "SendspinKitTests.SpyAudioOutput")
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
     var recordedCalls: [String] = []
     /// Set at `prepare`, so `pipelineLatencyMicroseconds` can answer the way a real player does.
     var preparedFormat: AudioFormatSpec?
@@ -230,7 +236,7 @@ actor SpyAudioOutput: AudioOutput {
         if shouldBlockNextStart {
             shouldBlockNextStart = false
             forcedStartThrow = nil
-            _ = startBlock.wait(timeout: .now() + 5)
+            #expect(startBlock.wait(timeout: .now() + 5) == .success)
         }
         if let error = capturedError {
             throw error
