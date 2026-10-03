@@ -243,6 +243,7 @@ actor AudioPlayer {
     private var volumeRampID = 0
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
+    private let volumeRampSleep: @Sendable (Duration) async throws -> Void
 
     /// Process callback for local visualization / audio effects.
     /// Set once at init, never mutated — `@Sendable` and safe to read from any context.
@@ -271,8 +272,10 @@ actor AudioPlayer {
         pcmBufferCapacity: Int = 524_288,
         volumeControl: VolumeControl = SoftwareVolumeControl(),
         processCallback: AudioProcessCallback? = nil,
-        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil,
+        volumeRampSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
+        self.volumeRampSleep = volumeRampSleep
         self.volumeControl = volumeControl
         self.processCallback = processCallback
         self.outputTransitionCallback = outputTransitionCallback
@@ -1389,13 +1392,14 @@ actor AudioPlayer {
         let startVolume = appliedVolume
         guard startVolume != targetVolume else { return }
 
+        let sleep = volumeRampSleep
         volumeRampTask = Task { [weak self] in
             for step in 1 ... volumeRampStepCount {
                 if Task.isCancelled {
                     return
                 }
                 if step > 1 {
-                    try? await Task.sleep(for: volumeRampStepDuration)
+                    try? await sleep(volumeRampStepDuration)
                     if Task.isCancelled {
                         return
                     }

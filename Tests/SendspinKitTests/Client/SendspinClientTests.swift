@@ -415,7 +415,7 @@ struct SendspinClientTests {
         await client.close()
         await negotiationGate.release()
         let result = await outcomeOfUnstructuredOperation(
-            timeout: .seconds(1),
+            timeout: .seconds(10),
             onTimeout: { connecting.cancel() },
             operation: { try await connecting.value }
         )

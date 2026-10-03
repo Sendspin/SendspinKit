@@ -99,7 +99,7 @@ struct VolumeControlTests {
     @Test
     func audioPlayerRampsVolumeChanges() async {
         let recorder = RecordingVolumeControl()
-        let player = AudioPlayer(volumeControl: recorder)
+        let player = AudioPlayer(volumeControl: recorder, volumeRampSleep: { _ in })
 
         await player.setVolume(0.5)
         #expect(
@@ -116,10 +116,14 @@ struct VolumeControlTests {
     @Test
     func audioPlayerCancelsInFlightVolumeRampWhenNewTargetArrives() async {
         let recorder = RecordingVolumeControl()
-        let player = AudioPlayer(volumeControl: recorder)
+        let sleeper = ParkedVolumeRampSleep()
+        let player = AudioPlayer(volumeControl: recorder, volumeRampSleep: { _ in await sleeper.sleep() })
 
         await player.setVolume(0.0)
+        #expect(await waitUntil { await sleeper.isParked })
+        #expect(recorder.volumeValues.contains { $0 > 0.0 && $0 < 1.0 })
         await player.setVolume(0.5)
+        await sleeper.release()
 
         #expect(await waitUntil { recorder.volumeValues.last == 0.5 })
         let volumes = recorder.volumeValues
@@ -130,7 +134,7 @@ struct VolumeControlTests {
     @Test
     func audioPlayerRampsVolumeOnUnmute() async {
         let recorder = RecordingVolumeControl()
-        let player = AudioPlayer(volumeControl: recorder)
+        let player = AudioPlayer(volumeControl: recorder, volumeRampSleep: { _ in })
 
         await player.setVolume(0.75)
         _ = await waitUntil { recorder.volumeValues.last == 0.75 }
@@ -147,7 +151,8 @@ struct VolumeControlTests {
     func audioPlayer_usesProvidedVolumeControlForVolume() async {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
-            volumeControl: recorder
+            volumeControl: recorder,
+            volumeRampSleep: { _ in }
         )
 
         await player.setVolume(0.75)
@@ -173,7 +178,8 @@ struct VolumeControlTests {
     func audioPlayer_doesNotCallSetVolumeWhenMuted() async {
         let recorder = RecordingVolumeControl()
         let player = AudioPlayer(
-            volumeControl: recorder
+            volumeControl: recorder,
+            volumeRampSleep: { _ in }
         )
 
         await player.setMute(true)
@@ -218,6 +224,28 @@ struct VolumeControlTests {
 }
 
 // MARK: - Test helpers
+
+private actor ParkedVolumeRampSleep {
+    private var continuations: [CheckedContinuation<Void, Never>] = []
+    private var released = false
+
+    var isParked: Bool {
+        !continuations.isEmpty
+    }
+
+    func sleep() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuations.append($0) }
+    }
+
+    func release() {
+        released = true
+        for continuation in continuations {
+            continuation.resume()
+        }
+        continuations.removeAll()
+    }
+}
 
 /// A VolumeControl that records calls for verification in tests.
 private final class RecordingVolumeControl: VolumeControl, @unchecked Sendable {

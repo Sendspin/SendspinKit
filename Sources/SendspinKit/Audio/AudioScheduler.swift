@@ -28,6 +28,7 @@ struct ScheduledChunk {
 /// Actor managing timestamp-based audio playback scheduling
 actor AudioScheduler {
     private let clockSync: any ClockSyncProtocol
+    private let now: @Sendable () -> Int64
     /// Playback window in microseconds — chunks this late are dropped as unsalvageable.
     private let playbackWindowUs: Int64
     /// How far ahead of nominal play time chunks are released to the output ring.
@@ -46,8 +47,10 @@ actor AudioScheduler {
     init(
         clockSync: any ClockSyncProtocol,
         playbackWindow: TimeInterval = 0.05,
-        releaseLeadTime: TimeInterval? = nil
+        releaseLeadTime: TimeInterval? = nil,
+        now: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() }
     ) {
+        self.now = now
         self.clockSync = clockSync
         playbackWindowUs = Int64(playbackWindow * 1_000_000)
         releaseLeadTimeUs = Int64((releaseLeadTime ?? playbackWindow) * 1_000_000)
@@ -130,7 +133,7 @@ actor AudioScheduler {
         var snapshot = counters
         snapshot.queueSize = activeCount
 
-        let nowUs = MonotonicClock.absoluteMicroseconds()
+        let nowUs = now()
         if let lastChunk = queue.last {
             snapshot.bufferFillMs = max(0, Double(lastChunk.playTimeMicroseconds - nowUs) / 1_000.0)
         }
@@ -151,7 +154,7 @@ actor AudioScheduler {
                 let sleepDuration: Duration
                 if readIndex < queue.count {
                     let next = queue[readIndex]
-                    let nowUs = MonotonicClock.absoluteMicroseconds()
+                    let nowUs = now()
                     let delayUs = next.playTimeMicroseconds - nowUs - releaseLeadTimeUs
                     if delayUs > 0 {
                         // Cap at playbackWindow so new arrivals aren't delayed too long
@@ -220,7 +223,7 @@ actor AudioScheduler {
     /// timer task (which competes for cooperative-pool threads under heavy
     /// parallel-test load).
     func checkQueue() {
-        let nowUs = MonotonicClock.absoluteMicroseconds()
+        let nowUs = now()
 
         while readIndex < queue.count {
             let next = queue[readIndex]

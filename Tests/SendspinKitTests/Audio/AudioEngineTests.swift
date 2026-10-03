@@ -692,10 +692,14 @@ struct AudioEngineTests {
 
     @Test("startup deferred old PCM drains before same-rate or cross-rate format boundaries", arguments: [48_000, 44_100])
     func startupDeferredPCMDrainsBeforeFormatBoundary(newSampleRate: Int) async throws {
-        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: MonotonicClock.absoluteMicroseconds())
+        let releaseInstant: Int64 = 500_000
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: 0)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: { releaseInstant })
+        let engine = AudioEngine(
+            output: output, scheduler: scheduler, clock: clock,
+            enableStartupBuffering: true, startupNow: { releaseInstant }
+        )
         let oldFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let newFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: newSampleRate, bitDepth: 32)
         let primed = Data(repeating: 1, count: 192)
@@ -731,10 +735,14 @@ struct AudioEngineTests {
 
     @Test("startup format changes retain old PCM before new PCM")
     func startupFormatChangeRetainsOrderedPCM() async throws {
-        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: MonotonicClock.absoluteMicroseconds())
+        let releaseInstant: Int64 = 500_000
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: 0)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: { releaseInstant })
+        let engine = AudioEngine(
+            output: output, scheduler: scheduler, clock: clock,
+            enableStartupBuffering: true, startupNow: { releaseInstant }
+        )
         let oldFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let newFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 32)
         let oldPCM = Data([0xA1, 0x02, 0x03, 0x04])
@@ -924,7 +932,7 @@ struct AudioEngineTests {
     func formatChangePreservesQueuedOldFormatCommands() async throws {
         let clock = StubClock()
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: { 0 })
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
         await engine.start()
 
@@ -943,6 +951,7 @@ struct AudioEngineTests {
             await output.recordedCalls.contains("swapDecoder(pcm)")
         }
         #expect(sawSwap)
+        #expect(await waitUntil { await scheduler.stats.received == 2 })
 
         let calls = await output.recordedCalls
         let decodeCalls = calls.filter { $0.hasPrefix("decode(") }
@@ -1420,16 +1429,16 @@ struct AudioEngineTests {
     /// to completion. Future-dated chunks remain queued until the stream ends.
     @Test("streamEnd truncates queued-but-unplayed audio")
     func streamEndTruncation() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let clock = StubClock()
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
+        let scheduler = AudioScheduler(clockSync: clock, now: { 0 })
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
 
         await engine.start()
 
         let fmt = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.commands.enqueue(.streamStart(fmt, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil { await engine.appliedCommandKinds().last == .streamStart })
 
         // Far-future timestamps (~10s ahead): queued but never within the playback window,
         // so they sit unplayed until the stream ends.
@@ -1437,7 +1446,7 @@ struct AudioEngineTests {
         for i in 0 ..< chunkCount {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: 10_000_000 + Int64(i) * 1_000))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await waitUntil { await scheduler.stats.received == chunkCount })
 
         // All chunks should be queued and unplayed before the end.
         let before = await scheduler.stats
@@ -1445,7 +1454,7 @@ struct AudioEngineTests {
         #expect(before.played == 0)
 
         engine.commands.enqueue(.streamEnd(roles: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil { await engine.appliedCommandKinds().last == .streamEnd })
 
         let kinds = await engine.appliedCommandKinds()
         #expect(kinds.last == .streamEnd)
