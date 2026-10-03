@@ -4,6 +4,8 @@
 # Usage: STALL_SECONDS=30 SUITE_POLICY="-b -t 5 -l 5" scripts/load-test.sh <label> [hogs-per-core] [fg|bg]
 # Build tests unloaded first with: timeout 600 swift build --build-tests
 set -o pipefail
+# GNU timeout (brew install coreutils) bounds the suite and the sampler; without it the run is unbounded.
+command -v timeout > /dev/null 2>&1 || { echo "requires GNU timeout: brew install coreutils"; exit 2; }
 LABEL="${1:-run}"
 PER_CORE="${2:-4}"
 MODE="${3:-bg}"
@@ -32,11 +34,9 @@ else
     ${PREFIX} timeout 300 swift test --skip-build > "${LOG}" 2>&1 &
 fi
 suite_pid=$!
-last_size=-1
-quiet=0
-while kill -0 "${suite_pid}" 2>/dev/null; do
-    sleep 1
-    helper=$(ps -axo pid,ppid,command | awk -v root="${suite_pid}" '
+# The testing helper that descends from this run's suite process, if one is alive.
+find_helper() {
+    ps -axo pid,ppid,command | awk -v root="${suite_pid}" '
         { parent[$1]=$2; command[$1]=$0 }
         END {
             for (pid in parent) {
@@ -44,7 +44,13 @@ while kill -0 "${suite_pid}" 2>/dev/null; do
                 while (ancestor in parent && ancestor != root) ancestor=parent[ancestor]
                 if (ancestor == root && command[pid] ~ /swiftpm-testing-helper/) { print pid; exit }
             }
-        }')
+        }'
+}
+last_size=-1
+quiet=0
+while kill -0 "${suite_pid}" 2>/dev/null; do
+    sleep 1
+    helper=$(find_helper)
     [ -z "${helper}" ] && continue
     size=$(stat -f %z "${LOG}" 2>/dev/null || echo 0)
     if [ "${size}" = "${last_size}" ]; then
@@ -63,7 +69,8 @@ while kill -0 "${suite_pid}" 2>/dev/null; do
 done
 wait "${suite_pid}"
 rc=$?
-if [ "${rc}" -ne 0 ] && [ -n "${helper:-}" ]; then kill -9 "${helper}" 2>/dev/null; fi
+live=$(find_helper)
+[ -n "${live}" ] && kill -9 "${live}" 2>/dev/null
 cleanup
 trap - EXIT
 echo "exit=${rc}"
