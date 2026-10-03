@@ -40,9 +40,8 @@ struct AudioProcessCallbackTests {
 
         try await player.start(format: Self.stereo16, codecHeader: nil)
 
-        // Feed enough PCM data that the AudioQueue callback must fire.
-        // At 48kHz stereo 16-bit, each frame is 4 bytes. 16384-byte buffers
-        // need ~4096 frames. Feed 2 seconds to ensure at least one callback.
+        // Two seconds of PCM comfortably exceeds the duration-sized queue depth,
+        // so the callback receives audio rather than only primed silence.
         let bytesPerFrame = Self.stereo16.channels * (Self.stereo16.bitDepth / 8)
         let twoSeconds = Self.stereo16.sampleRate * bytesPerFrame * 2
         let pcmData = Data(repeating: 0, count: twoSeconds)
@@ -177,9 +176,7 @@ struct AudioProcessCallbackTests {
         #expect(fired)
 
         let byteCounts = invoked.byteCounts
-        // Import the source constant rather than duplicating it, so retuning the
-        // buffer size cannot silently decouple this assertion from production.
-        let expectedBufferSize = Int(audioQueueBufferByteSize)
+        let expectedBufferSize = Int(audioQueueBufferSize(for: Self.stereo16).bytes)
         for byteCount in byteCounts {
             #expect(
                 byteCount == expectedBufferSize,

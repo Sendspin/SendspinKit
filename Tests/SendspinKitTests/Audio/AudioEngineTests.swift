@@ -191,10 +191,8 @@ actor SpyAudioOutput: AudioOutput {
 
     func pipelineLatencyMicroseconds() -> Int64 {
         guard let format = preparedFormat else { return 0 }
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
-        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * bytesPerFrame)
+        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferSize(for: format).frames) * 1_000_000
+            / Int64(format.sampleRate)
         return depth + stubDeviceLatencyUs
     }
 

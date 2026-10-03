@@ -6,8 +6,8 @@ struct CorrectionPipelineLatencyTests {
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let frames = Int64(format.sampleRate / format.channels)
         let deviceLatency = Int64(1_000_000 / format.sampleRate)
-        let modelledDepth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * format.channels * (format.bitDepth / 8))
+        let modelledDepth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferSize(for: format).frames) * 1_000_000
+            / Int64(format.sampleRate)
         let pipeline = AudioPlayer.correctionPipelineLatencyUs(
             inFlightFrames: frames, sampleRate: format.sampleRate,
             modelledQueueDepthUs: modelledDepth, deviceLatencyUs: deviceLatency
@@ -20,8 +20,8 @@ struct CorrectionPipelineLatencyTests {
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let frames = Int64(format.sampleRate / format.channels)
         let deviceLatency = Int64(1_000_000 / format.sampleRate)
-        let modelledDepth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * format.channels * (format.bitDepth / 8))
+        let modelledDepth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferSize(for: format).frames) * 1_000_000
+            / Int64(format.sampleRate)
         var previous: Int64?
         let absent = CallbackDepthTelemetry.measuredDepth(total: frames, played: 0, previous: &previous)
         #expect(absent == nil)

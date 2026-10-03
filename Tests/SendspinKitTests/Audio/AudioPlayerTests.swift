@@ -17,6 +17,25 @@ extension Tag {
 @Suite(.tags(.hardware))
 struct AudioPlayerTests {
     @Test
+    func bufferSizingUsesDurationRateAndOutputWidth() throws {
+        let components = audioQueueBufferDuration.components
+        let milliseconds = components.seconds * 1_000 + components.attoseconds / 1_000_000_000_000_000
+        for rate in [44_100, 48_000] {
+            let expectedFrames = Int(milliseconds) * rate / 1_000
+            for codec in [AudioCodec.pcm, .flac, .opus] {
+                for bitDepth in [16, 32] {
+                    let format = try AudioFormatSpec(codec: codec, channels: 2, sampleRate: rate, bitDepth: bitDepth)
+                    let size = audioQueueBufferSize(for: format)
+                    let sampleBytes = codec == .pcm && bitDepth == 16
+                        ? MemoryLayout<Int16>.size : MemoryLayout<Int32>.size
+                    #expect(size.frames == expectedFrames)
+                    #expect(Int(size.bytes) == expectedFrames * format.channels * sampleBytes)
+                }
+            }
+        }
+    }
+
+    @Test
     func initializeAudioPlayerWithDependencies() async {
         let player = AudioPlayer()
 
@@ -29,8 +48,7 @@ struct AudioPlayerTests {
         let player = AudioPlayer()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         try await player.prepare(format: format, codecHeader: nil)
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-        let expected = Int64(audioQueueBufferCount) * (Int64(audioQueueBufferByteSize) / Int64(bytesPerFrame))
+        let expected = Int64(audioQueueBufferCount) * Int64(audioQueueBufferSize(for: format).frames)
         let primedFrames = await player.totalFramesEnqueued
         await player.stop()
         #expect(primedFrames == expected)
@@ -177,9 +195,8 @@ struct AudioPlayerTests {
         try await player.prepare(format: format, codecHeader: nil)
         defer { Task { await player.stop() } }
 
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * bytesPerFrame)
+        let depth = Int64(audioQueueBufferCount) * Int64(audioQueueBufferSize(for: format).frames) * 1_000_000
+            / Int64(format.sampleRate)
         let reported = await player.pipelineLatencyMicroseconds()
 
         #expect(reported >= depth, "latency must at least cover the buffers we prime")

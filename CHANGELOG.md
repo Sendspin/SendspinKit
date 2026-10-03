@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Controller command errors distinguish `controllerStateUnavailable` from `controllerCommandUnsupported`.
 
 ### Changed
+- Queue buffers are sized by duration so pipeline depth no longer depends on bit depth or sample rate.
 - `PairingCodeEmission.languages` supplies the server's language priority list for host-provided speech.
 - `openPairingWindow(for:)` resets the emitted-round budget with one operator gesture, including an already-open window.
 
