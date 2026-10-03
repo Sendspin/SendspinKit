@@ -11,6 +11,13 @@ struct CallbackDepthTelemetry: Sendable {
     var prewarmSkipped: Int64 = 0
     var zeroPlayedSkipped: Int64 = 0
 
+    static func measuredDepth(total: Int64, played: Int64, previous: inout Int64?) -> Int64? {
+        if played > 0 {
+            previous = max(0, total - played)
+        }
+        return previous
+    }
+
     static func depth(total: Int64, played: Int64, bufferFrames: Int64) -> (inFlight: Int64, delay: Int64) {
         let inFlight = max(0, total - played)
         let delay = max(0, Int64(audioQueueBufferCount - 1) * bufferFrames - inFlight)
@@ -50,6 +57,7 @@ struct QueueTimelineTelemetry: Sendable {
         var translated = AudioTimeStamp()
         translated.mFlags = [.sampleTimeValid, .hostTimeValid]
         result.deviceStatus = AudioQueueDeviceGetCurrentTime(queue, &device)
+        result.deviceFlags = device.mFlags.rawValue
         result.queueStatus = AudioQueueGetCurrentTime(queue, nil, &current, nil)
         let now = mach_absolute_time()
         if result.queueStatus == noErr {
@@ -63,13 +71,12 @@ struct QueueTimelineTelemetry: Sendable {
                 let ticks = Double(now) - Double(current.mHostTime)
                 result.hostLagUs = ticks * Double(timebase.numer) / Double(timebase.denom) / 1_000
             }
-            result.deviceFlags = device.mFlags.rawValue
-            result.translatedFlags = translated.mFlags.rawValue
             if result.deviceStatus == noErr, result.translateStatus == noErr,
                device.mFlags.contains(.sampleTimeValid), translated.mFlags.contains(.sampleTimeValid) {
                 result.deviceDeltaFrames = translated.mSampleTime - device.mSampleTime
             }
         }
+        result.translatedFlags = translated.mFlags.rawValue
         return result
     }
 }

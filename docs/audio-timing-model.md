@@ -1,8 +1,9 @@
 # Audio timing model
 
 How a server timestamp becomes a sample at the speaker, what the playback cursor means, and
-where the current implementation departs from the model. Written after measuring the departure;
-every figure here is observed on a Mac Studio driving a USB DAC at 44.1kHz/2ch/32-bit output.
+where the current implementation departs from the model. Each measurement section identifies
+its hardware; startup-offset reference figures use a Mac Studio and USB DAC, while callback-depth
+and measured-correction figures use a MacBook Air's built-in speakers.
 
 ## The contract
 
@@ -62,7 +63,8 @@ is deliberately not combined with drift correction.
 
 ## Measured start offset
 
-Each row is the offset playback actually starts at on the reference setup.
+Each row is the offset playback actually starts at on the Mac Studio/USB DAC reference setup,
+with 44.1kHz/stereo/32-bit output.
 
 | | startOffset | note |
 |---|---|---|
@@ -154,7 +156,9 @@ What remains actionable regardless of the cause:
 Placement and correction describe the same physical span: frames enqueued but not yet consumed,
 plus the device path. Correction samples that depth before its fill loop, while the cursor still
 names the previous callback's tail. The same sample feeds sync error, grace-expiry rebaseline and
-reanchor targets; the allocated-depth model stands in only until the device reports a position.
+reanchor targets. Before the first positive device position, the allocated-depth model stands in;
+once a position is observed for the queue, a missed or zero read holds its previous measured depth.
+Only successful enqueues enter the cumulative frame count; refused and withheld buffers do not.
 Startup leads and silence-pad ceilings remain conservative allocated-depth estimates.
 
 Three 30-second tone runs on a MacBook Air's built-in speakers use 44,100Hz/stereo/32-bit output:
@@ -193,7 +197,8 @@ Measured device depth makes `L` a physical estimate rather than an allocated-buf
 `startupOffsetUs` now measures placement error at grace expiry. The rebaseline still absorbs that
 error into the cursor, so subsequent `sync` cannot expose a constant startup displacement.
 `startOffset` remains necessary even when steady-state sync is quiet: the 17,198 µs placement
-residual above becomes invisible after the rebaseline.
+residual above becomes invisible after the rebaseline. `startLate` reports how late the first frame
+is when a negative silence-pad gap clamps to zero; it is zero when no late clamp occurs.
 
 ## Notes that remain true
 

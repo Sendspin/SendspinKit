@@ -1474,6 +1474,7 @@ actor AudioEngine {
                     + " startOffset=\(tSnap.startupOffsetUs.map(String.init) ?? "pending")us"
                     + " spinUp=\(tSnap.spinUpUs)us"
                     + " startPad=\(tSnap.startupPadFrames)f"
+                    + " startLate=\(tSnap.startupLateUs)us"
                     + " inFlight=\(tSnap.framesInFlight)f"
                     + " cbInFlight=\(tSnap.callbackDepth.minimum)/\(tSnap.callbackDepth.last)/\(tSnap.callbackDepth.maximum)f"
                     + " cbDelay=\(tSnap.callbackDepth.delayFrames)f cbTimeCost=\(tSnap.callbackDepth.timeCostUs)us"
