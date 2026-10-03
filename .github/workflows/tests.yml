@@ -72,13 +72,61 @@ jobs:
         run: swift --version
 
       - name: Run all tests with coverage
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           NSUnbufferedIO: "YES"
         # Warnings-as-errors keeps the package warning-free for downstream Xcode
         # consumers, which surface path-dependency warnings local build logs filter
         # out. Toolchain bumps that add new warnings must fail here.
-        run: swift test --enable-code-coverage -Xswiftc -warnings-as-errors
+        #
+        # The suite runs to a log under a stall watchdog: if no test output lands for
+        # 60 s, the step names the tests still in flight, stack-samples the testing
+        # helper, and fails, so a wedged run leaves a diagnosis instead of a timeout.
+        run: |
+          set -o pipefail
+          swift test --enable-code-coverage -Xswiftc -warnings-as-errors > test-output.log 2>&1 &
+          suite=$!
+          quiet=0; last=-1
+          while kill -0 "$suite" 2>/dev/null; do
+            sleep 5
+            size=$(stat -f %z test-output.log 2>/dev/null || echo 0)
+            if [ "$size" = "$last" ]; then quiet=$((quiet + 5)); else quiet=0; last=$size; fi
+            if [ "$quiet" -ge 60 ] && grep -q '◇ Test ' test-output.log; then
+              echo "::error::No test output for ${quiet}s; the run is wedged."
+              grep -E '◇ Test .* started' test-output.log | sed -E 's/^◇ Test (.*) started\.$/\1/' | sort -u > started.txt
+              { grep -E '✔ Test .* passed after' test-output.log | sed -E 's/^✔ Test (.*) passed after.*/\1/'
+                grep -E '✘ Test .* failed after' test-output.log | sed -E 's/^✘ Test (.*) failed after.*/\1/'
+                grep -E '➜ Test .* skipped' test-output.log | sed -E 's/^➜ Test (.*) skipped.*/\1/'; } | sort -u > finished.txt
+              echo "Tests still in flight:"; comm -23 started.txt finished.txt
+              helper=$(pgrep -f swiftpm-testing-helper | head -1)
+              ps -o pid,ppid,stat,wchan,command -p "$suite" ${helper:+-p "$helper"} || true
+              if [ -n "$helper" ]; then sample "$helper" 10 -file hang.sample; echo "Helper stack written to hang.sample"; fi
+              # The parent pumps the helper's output; if it stops draining, the helper blocks on write().
+              sample "$suite" 10 -file hang-parent.sample || true
+              pump=$(pgrep -fn 'swift-test' | head -1)
+              if [ -n "$pump" ] && [ "$pump" != "$suite" ]; then sample "$pump" 10 -file hang-pump.sample || true; fi
+              pkill -9 -f swiftpm-testing-helper || true
+              kill -9 "$suite" || true
+              cat test-output.log
+              exit 1
+            fi
+          done
+          wait "$suite"; rc=$?
+          cat test-output.log
+          exit $rc
+
+      - name: Upload hang diagnosis
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hang-diagnosis
+          path: |
+            hang.sample
+            hang-parent.sample
+            hang-pump.sample
+            test-output.log
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Locate test binary and profdata
         id: artifacts
