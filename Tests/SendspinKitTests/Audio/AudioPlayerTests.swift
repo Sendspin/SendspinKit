@@ -23,9 +23,10 @@ struct AudioPlayerTests {
         for rate in [44_100, 48_000] {
             let expectedFrames = Int(milliseconds) * rate / 1_000
             for codec in [AudioCodec.pcm, .flac, .opus] {
-                for bitDepth in [16, 32] {
+                for bitDepth in [16, 24, 32] {
                     let format = try AudioFormatSpec(codec: codec, channels: 2, sampleRate: rate, bitDepth: bitDepth)
                     let size = audioQueueBufferSize(for: format)
+                    // Only 16-bit PCM passes through; 24-bit PCM is unpacked and compressed codecs decode to Int32.
                     let sampleBytes = codec == .pcm && bitDepth == 16
                         ? MemoryLayout<Int16>.size : MemoryLayout<Int32>.size
                     #expect(size.frames == expectedFrames)
@@ -33,6 +34,13 @@ struct AudioPlayerTests {
                 }
             }
         }
+
+        // A rate too low for one frame per buffer duration still allocates a single frame.
+        let subFrameRate = Int(1_000 / milliseconds) / 2
+        let tiny = try AudioFormatSpec(codec: .pcm, channels: 1, sampleRate: subFrameRate, bitDepth: 16)
+        let tinySize = audioQueueBufferSize(for: tiny)
+        #expect(tinySize.frames == 1)
+        #expect(Int(tinySize.bytes) == MemoryLayout<Int16>.size)
     }
 
     @Test
