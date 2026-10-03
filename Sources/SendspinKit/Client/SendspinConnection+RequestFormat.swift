@@ -90,6 +90,18 @@ extension SendspinConnection {
         try await publishClientState()
     }
 
+    func setVisualizerPreference(_ preference: VisualizerStateObject) async throws {
+        try requireActiveRole(.visualizerV1)
+        let previousPreference = visualizerState
+        visualizerState = preference
+        do {
+            try await publishClientState()
+        } catch {
+            visualizerState = previousPreference
+            throw error
+        }
+    }
+
     /// Seed status once the session handshake is complete. The pre-hello snapshot
     /// is already normalized and remains the initial settled route.
     func activateOutputFormatNegotiation() async {
@@ -297,6 +309,14 @@ extension SendspinConnection {
         pendingOutputFormatRequest = nil
         outputRequestDeadlineTask = nil
         handledAutomaticSampleRate = settledOutputSampleRate
+        if routeInvalidationPending, playerStreamActive, let stream = announcedPlayerStream {
+            routeInvalidationPending = false
+            playerStartGeneration &+= 1
+            playerStartState = .pending(playerStartGeneration)
+            audioEngine.enqueueRouteInvalidatedFormatChange(
+                format: stream.format, codecHeader: stream.codecHeader, startGeneration: playerStartGeneration
+            )
+        }
         publishTruthfulOutputFormatStatus()
     }
 
@@ -308,7 +328,7 @@ extension SendspinConnection {
             (codec == nil || codec == format.codec)
                 && (channels == nil || channels == format.channels)
                 && (sampleRate == nil || sampleRate == format.sampleRate)
-                && (bitDepth == nil || bitDepth == format.bitDepth)
+                && (format.codec == .opus || bitDepth == nil || bitDepth == format.bitDepth)
         }) else {
             throw OutputFormatError.noMatchingFormat
         }

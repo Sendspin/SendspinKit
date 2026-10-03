@@ -4,6 +4,8 @@ A Swift client library for the Sendspin Protocol — synchronized multi-room aud
 
 ## Overview
 
+The Sendspin spec requires every player catalog to include FLAC or PCM; Opus is optional.
+
 SendspinKit handles the full Sendspin protocol lifecycle: server discovery via mDNS/Bonjour, WebSocket transport, NTP-style clock synchronization, and timestamp-based audio scheduling with microsecond precision.
 
 The library supports multiple client roles (player, controller, metadata, artwork, visualizer, and color) and audio codecs (PCM, Opus, FLAC) including hi-res formats up to 192kHz/24-bit.
@@ -22,7 +24,8 @@ let client = try SendspinClient(
     playerConfig: try PlayerConfiguration(
         bufferCapacity: 1_048_576,
         supportedFormats: [
-            try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16)
+            try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48000, bitDepth: 16),
+            try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48000, bitDepth: 16)
         ]
     ),
     access: .allowUnpaired
@@ -38,6 +41,18 @@ for await servers in discovery.servers {
     }
 }
 ```
+
+## API behavior
+
+- `SendspinClientError.connectionRefused(ServerErrorReason)` exposes unauthenticated setup refusal reasons for diagnostics only.
+- Player catalogs require FLAC or PCM, otherwise `ConfigurationError.missingLosslessFormat` is thrown.
+- `requireCurrentOutput` requires FLAC or PCM in the output-filtered catalog, otherwise `OutputFormatError.noMatchingLosslessFormat` is thrown.
+- `setVisualizerPreference(_:)` publishes dynamic preferences, including empty visualizer `types` to request no data.
+- Controller commands require the latest controller state and its `supported_commands`, otherwise `controllerStateUnavailable` or `controllerCommandUnsupported` is thrown.
+- Parameterless `PairingPresentation.speaker` and `.displayAndSpeaker` use host-provided speech selected with `PairingCodeEmission.languages`.
+- `openPairingWindow(for:)` records operator consent and resets the device-wide emitted-round budget even while a window is open.
+- `ClientEvent.pairingAttemptSuperseded` clears the previous attempt's projection without reporting a client abort.
+- `cancelPairing(attemptID:)` accepts the published window identity as well as the active attempt identity.
 
 ## Topics
 

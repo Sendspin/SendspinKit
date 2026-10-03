@@ -27,12 +27,13 @@ final class AudioRouteInvalidationGate: @unchecked Sendable {
     func enqueueStreamStart(
         format: AudioFormatSpec,
         codecHeader: Data?,
+        startGeneration: UInt64,
         to sink: DataPlaneSink
     ) {
         lock.lock()
         epoch &+= 1
         invalidated = false
-        sink.enqueue(.streamStart(format, codecHeader: codecHeader))
+        sink.enqueue(.streamStart(format, codecHeader: codecHeader, startGeneration: startGeneration))
         lock.unlock()
     }
 
@@ -54,13 +55,14 @@ final class AudioRouteInvalidationGate: @unchecked Sendable {
     func enqueueRouteInvalidatedFormatChange(
         format: AudioFormatSpec,
         codecHeader: Data?,
+        startGeneration: UInt64,
         to sink: DataPlaneSink
     ) {
         lock.lock()
         epoch &+= 1
         invalidated = false
         let routeEpoch = epoch
-        sink.enqueue(.formatChangeRouteInvalidated(format, codecHeader: codecHeader, epoch: routeEpoch))
+        sink.enqueue(.withStartGeneration(startGeneration, .formatChangeRouteInvalidated(format, codecHeader: codecHeader, epoch: routeEpoch)))
         lock.unlock()
     }
 
@@ -91,9 +93,10 @@ enum AudioFormatTransitionPolicy: Sendable {
 /// Each command represents a unit of work the engine processes: starting/stopping
 /// a stream, scheduling a chunk of audio, changing format, or adjusting settings.
 /// The `DataPlaneSink` enforces FIFO ordering and depth accounting via an `AsyncStream.Continuation`.
-enum DataPlaneCommand {
+enum DataPlaneCommand: Sendable {
     /// Start a new audio stream with the given format and optional codec header.
-    case streamStart(AudioFormatSpec, codecHeader: Data?)
+    case streamStart(AudioFormatSpec, codecHeader: Data?, startGeneration: UInt64 = 0)
+    indirect case withStartGeneration(UInt64, DataPlaneCommand)
 
     /// Schedule a chunk of PCM audio for playback at the given server timestamp (microseconds).
     case chunk(Data, ts: Int64)
@@ -110,7 +113,7 @@ enum DataPlaneCommand {
     /// End the audio stream, truncating unplayed audio for the given roles (nil = all roles).
     case streamEnd(roles: [String]?)
 
-    /// Change format mid-stream with the ordered transition policy.
+    /// Change format mid-stream; bare use is test-only, production uses withStartGeneration.
     case formatChange(AudioFormatSpec, codecHeader: Data?)
 
     /// Change format after the current output route invalidated queued PCM.
@@ -140,6 +143,8 @@ extension DataPlaneCommand {
     /// Used by tests to assert processing order without retaining audio data.
     nonisolated var kind: DataPlaneCommandKind {
         switch self {
+        case let .withStartGeneration(_, command):
+            command.kind
         case .streamStart:
             .streamStart
         case .chunk, .chunkAtRouteEpoch, .chunkAtGenerationWithSendAhead:
@@ -161,14 +166,14 @@ extension DataPlaneCommand {
 /// Report emitted by the AudioEngine upward to the client for lifecycle and state transitions.
 enum EngineReport {
     /// Audio stream started successfully with the applied format.
-    case started(AudioFormatSpec)
+    case started(AudioFormatSpec, startGeneration: UInt64 = 0)
 
     /// Format change applied mid-stream.
-    case formatApplied(AudioFormatSpec)
+    case formatApplied(AudioFormatSpec, startGeneration: UInt64 = 0)
 
     /// Operational state transition (includes full bidirectional state: synchronized, error, externalSource).
     case operationalState(EngineSyncState)
 
     /// Audio start failed; the stream could not begin.
-    case startFailed(reason: String)
+    case startFailed(reason: String, startGeneration: UInt64 = 0)
 }

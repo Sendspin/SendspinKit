@@ -494,11 +494,10 @@ struct AudioStartupReleaseTests {
         #expect(commits == 1)
     }
 
-    /// A format change during startup is a startup restart, not a seamless switch: the
-    /// prepared queue and any priming in flight belong to the old format, so the stream
-    /// must commit with the NEW format and the superseded release must not commit at all.
-    @Test("format change during startup buffering restarts startup with the new format")
-    func formatChangeDuringStartupRestartsWithNewFormat() async throws {
+    /// The prepared old-format output commits once; new PCM crosses the ordered
+    /// format boundary without replacing the startup release.
+    @Test("startup commits its prepared output once before applying the new format")
+    func formatChangeDuringStartupCommitsPreparedOutputOnce() async throws {
         let clock = StubClock(anchorToNow: true)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
@@ -531,15 +530,27 @@ struct AudioStartupReleaseTests {
             }
             return false
         }
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
+        let applied = await awaitFirstReport(from: engine, timeoutMs: 3_000) {
+            if case .formatApplied = $0 {
+                return true
+            }
+            return false
+        }
+        if case let .formatApplied(format, _) = applied {
+            #expect(format == newFormat)
+        } else {
+            #expect(Bool(false), "the new format reaches its render boundary")
+        }
         let commits = await engine.startupReleaseCommits
         await engine.shutdown()
 
-        guard case let .started(format) = report else {
+        guard case let .started(format, _) = report else {
             #expect(Bool(false), "the stream must start, got \(String(describing: report))")
             return
         }
-        #expect(format == newFormat, "the startup restart must commit the new format")
-        #expect(commits == 1, "the superseded old-format release must not commit")
+        #expect(format == oldFormat, "startup commits its prepared format before the ordered format boundary")
+        #expect(commits == 1, "an active-stream format change preserves the single startup release")
     }
 
     @Test("stream end invalidates a suspended startup release")
@@ -744,22 +755,23 @@ struct AudioStartupReleaseTests {
 
     @Test("repeated stream start uses prepared startup buffering")
     func repeatedStreamStartUsesPreparedStartupBuffering() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let startupNow = MonotonicClock.absoluteMicroseconds()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: startupNow)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true, startupNow: { startupNow })
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         for index in 0 ..< 8 {
-            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         for index in 0 ..< 8 {
-            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 1_500_000 + Int64(index) * 100_000))
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.count(where: { $0 == "startPrepared()" }) == 2 })
 

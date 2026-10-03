@@ -177,14 +177,9 @@ struct BinaryMessageTests {
         }
     }
 
-    @Test
-    func decodeDigitAudioClip() throws {
-        let frame = Data([BinaryMessageType.digitAudioClip.rawValue, 7, 0xF0, 0x0D])
-        let message = try #require(BinaryMessage(data: frame))
-        #expect(message.type == .digitAudioClip)
-        #expect(message.digit == 7)
-        #expect(message.timestamp == 0)
-        #expect(message.data == Data([0xF0, 0x0D]))
+    @Test(arguments: BinaryMessageType.reservedCoreIDs)
+    func reservedCoreIDIsUnknown(id: UInt8) {
+        #expect(BinaryMessage(data: Data([id])) == nil)
     }
 
     @Test(arguments: [UInt32(0), UInt32.max])
@@ -244,7 +239,6 @@ struct BinaryMessageTests {
         #expect(NoiseFragmentFlags.first == 0b10)
         #expect(NoiseFragmentFlags.last == 0b01)
         #expect(NoiseFragmentFlags.reservedMask == 0b1111_1100)
-        #expect(BinaryMessageType.digitAudioClip.rawValue == 2)
         #expect(BinaryMessageType.audioChunk.rawValue == 4)
         #expect(BinaryMessageType.artworkChannel0.rawValue == 8)
         #expect(BinaryMessageType.artworkChannel1.rawValue == 9)

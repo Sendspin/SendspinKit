@@ -183,7 +183,6 @@ public struct VisualizerConfiguration: Sendable {
         bufferCapacity: Int = 65_536
     ) throws(ConfigurationError) {
         guard bufferCapacity > 0 else { throw .nonPositiveBufferCapacity }
-        guard !types.isEmpty else { throw .emptyVisualizerTypes }
         guard rateMax > 0 else { throw .nonPositiveVisualizerRate }
         guard types.contains(.spectrum) == (spectrum != nil) else { throw .missingSpectrumConfiguration }
         try spectrum?.validate()
@@ -205,7 +204,6 @@ public struct VisualizerStateObject: Codable, Equatable, Sendable {
     public let spectrum: SpectrumConfiguration?
     enum CodingKeys: String, CodingKey { case types; case rateMax = "rate_max"; case spectrum }
     public init(types: [VisualizerType], rateMax: Int, spectrum: SpectrumConfiguration? = nil) throws(ConfigurationError) {
-        guard !types.isEmpty else { throw .emptyVisualizerTypes }
         guard rateMax > 0 else { throw .nonPositiveVisualizerRate }
         guard types.contains(.spectrum) == (spectrum != nil) else { throw .missingSpectrumConfiguration }
         try spectrum?.validate()

@@ -10,6 +10,7 @@ enum HandshakeDriver {
         let suite: NoiseCipherSuite
         let identityPrivateKey: Curve25519.KeyAgreement.PrivateKey
         let serverName: String
+        let serverLanguages: [String]
         let matchedCandidate: PskCandidate
         var protectionLease: PairingRecordProtectionLease?
         let pairingStore: (any PairingRecordStore)?
@@ -131,6 +132,7 @@ enum HandshakeDriver {
                         suite: outcome.suite,
                         identityPrivateKey: configuration.identity.privateKey,
                         serverName: hello.payload.name,
+                        serverLanguages: hello.payload.languages ?? [],
                         matchedCandidate: outcome.matchedCandidate,
                         protectionLease: protectionLease,
                         pairingStore: configuration.pairingStore,
@@ -160,6 +162,10 @@ enum HandshakeDriver {
                 try? await pairingStore.releaseProtection(protectionLease)
             }
             await transport.disconnect()
+            if let handshakeError = error as? HandshakeError,
+               case let .connectionRefused(reason) = handshakeError {
+                throw SendspinClientError.connectionRefused(reason)
+            }
             throw error
         }
     }
@@ -174,7 +180,7 @@ enum HandshakeDriver {
         if let protectionLease = outcome.protectionLease, let pairingStore = outcome.pairingStore {
             try? await pairingStore.releaseProtection(protectionLease)
         }
-        if outcome.activities == [.pairing], reason == .concurrentAttempt {
+        if outcome.activities.contains(.pairing), reason == .concurrentAttempt {
             try? await sendJSON(
                 PairAbortMessage(payload: PairAbortPayload(reason: .concurrentAttempt)),
                 on: transport,

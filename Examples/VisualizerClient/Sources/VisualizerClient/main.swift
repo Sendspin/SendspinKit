@@ -276,8 +276,12 @@ private final class VisualizerAppModel {
                     pairingMessage = snapshot.code.map { "\($0.format.rawValue): \($0.payload)" } ?? "Code cleared"
                 case let .pairingAttemptEnded(snapshot):
                     pairingSnapshot = snapshot
-                    pairingWindow = nil
+                    pairingWindow = client.pairingWindow
                     pairingMessage = "Attempt ended: \(snapshot.phase)"
+                case .pairingAttemptSuperseded:
+                    pairingSnapshot = client.currentPairing
+                    pairingWindow = client.pairingWindow
+                    pairingMessage = "Pairing attempt superseded"
                 case let .streamEnded(roles):
                     if roles == nil || roles?.contains(StreamRole.visualizer.rawValue) == true {
                         clearPresentedVisualizer()

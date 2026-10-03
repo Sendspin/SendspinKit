@@ -16,8 +16,8 @@ enum DeadlineObservation<Value: Sendable> {
     case timedOut
 }
 
-/// Poll `condition` until it returns `true` or the deadline passes.
-/// Returns the final evaluation so callers can assert positively or negatively.
+/// Poll `condition` until it returns `true` or an evaluation at or after the deadline returns `false`.
+/// The deadline is checked only after an evaluation, so a starved scheduler cannot expire a wait unobserved.
 func waitUntil(
     timeout: Duration = .seconds(2),
     pollInterval: Duration = .milliseconds(10),
@@ -25,13 +25,15 @@ func waitUntil(
 ) async -> Bool {
     let clock = ContinuousClock()
     let deadline = clock.now + timeout
-    while clock.now < deadline {
+    while true {
         if await condition() {
             return true
         }
+        if clock.now >= deadline {
+            return false
+        }
         try? await Task.sleep(for: pollInterval)
     }
-    return await condition()
 }
 
 /// Run an async operation with a deadline without relying on child-task cancellation.

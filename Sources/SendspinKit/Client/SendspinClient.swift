@@ -49,11 +49,14 @@ public final class SendspinClient {
     public private(set) var connectionState: ConnectionState = .disconnected
     /// Trust level established by the currently admitted Noise PSK.
     public private(set) var trustLevel: TrustLevel = .none
-    /// Latest immutable pairing projection, including the terminal snapshot until a new attempt starts.
+    /// Latest immutable pairing projection; genuine ends retain their terminal snapshot until a new
+    /// attempt starts. Server activation supersession clears it and emits `pairingAttemptSuperseded`.
     public private(set) var currentPairing: PairingAttemptSnapshot?
-    /// Operator authorization for one pairing attempt, or nil when no window is open.
+    /// Connection-scoped operator authorization, or nil when no window is open. It survives
+    /// timed-out, cancelled, and superseded attempts; its identity can cancel the surviving window.
     /// A window does not change the peer's ``TrustLevel``; that is established only after pairing.
     public private(set) var pairingWindow: PairingWindowSnapshot?
+    var pairingSideWindowID: PairingAttemptID?
     /// The audio format currently being streamed by the server, or nil if no stream is active.
     public private(set) var currentStreamFormat: AudioFormatSpec?
     /// Written both here and by the control drain's `.operationalState` case, so
@@ -159,7 +162,9 @@ public final class SendspinClient {
         let pairingScalarBOverride: Data?
     #endif
     let outputNegotiationSleep: @Sendable (Duration) async throws -> Void
-    let outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
+    var outboundTransportFactory: @Sendable (URL) -> any ClientDialingTransport
+    var audioOutputFactory: @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+        .makeProductionOutput
     let sessionNegotiationHook: @Sendable () async -> Void
     private var audioOutputCapabilityTask: Task<Void, Never>?
     var audioOutputSnapshotSequence: UInt64 = 0
@@ -287,6 +292,8 @@ public final class SendspinClient {
         outputNegotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { duration in
             try await Task.sleep(for: duration)
         },
+        audioOutputFactory: @escaping @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+            .makeProductionOutput,
         outboundTransportFactory: @escaping @Sendable (URL) -> any ClientDialingTransport = {
             NWWebSocketTransport(url: $0)
         },
@@ -307,7 +314,7 @@ public final class SendspinClient {
 
         self.identity = identity
         self.name = name
-        self.unpairedAccessEnabled = unpairedAccessEnabled
+        self.unpairedAccessEnabled = pairing?.unpairedAccessEnabled ?? unpairedAccessEnabled
         self.roles = orderedRoles
         self.roleSet = roleSet
         self.deviceInfo = deviceInfo
@@ -328,6 +335,7 @@ public final class SendspinClient {
             self.pairingScalarBOverride = pairingScalarBOverride
         #endif
         self.outputNegotiationSleep = outputNegotiationSleep
+        self.audioOutputFactory = audioOutputFactory
         self.outboundTransportFactory = outboundTransportFactory
         self.sessionNegotiationHook = sessionNegotiationHook
         outputDelayMs = playerConfig?.initialOutputDelayMs ?? 0
@@ -609,6 +617,19 @@ public final class SendspinClient {
     /// logic from the spec is applied after the handshake completes.
     @MainActor
     public func acceptConnection(_ transport: any SendspinTransport) async throws {
+        try await acceptConnection(transport, ownership: nil)
+    }
+
+    func acceptConnection(
+        _ originalTransport: any SendspinTransport,
+        ownership: AdvertisingTransportOwnership?,
+        afterAcceptance: (@Sendable () async -> Void)? = nil
+    ) async throws {
+        let transport: any SendspinTransport = if let ownership {
+            AdvertisingCandidateTransport(originalTransport, ownership: ownership)
+        } else {
+            originalTransport
+        }
         try requireOpen()
         guard !outgoingAttemptInProgress || connection != nil else {
             await transport.disconnect()
@@ -663,7 +684,9 @@ public final class SendspinClient {
                     outcome: outcome,
                     negotiation: negotiation,
                     runtimeConfiguration: runtimeConfiguration,
-                    setupEpoch: acceptEpoch
+                    setupEpoch: acceptEpoch,
+                    ownership: ownership,
+                    afterAcceptance: afterAcceptance
                 )
                 try requireOpen()
             } catch {
@@ -679,7 +702,7 @@ public final class SendspinClient {
                 throw error
             }
         } else {
-            try await handleCompetingConnection(transport)
+            try await handleCompetingConnection(transport, ownership: ownership, afterAcceptance: afterAcceptance)
         }
         try requireOpen()
     }
@@ -719,7 +742,9 @@ public final class SendspinClient {
         negotiation: SessionFormatNegotiation,
         runtimeConfiguration: PairingManagementConfiguration,
         setupEpoch: Int,
-        installAsPairingSide: Bool = false
+        installAsPairingSide: Bool = false,
+        ownership: AdvertisingTransportOwnership? = nil,
+        afterAcceptance: (@Sendable () async -> Void)? = nil
     ) async {
         guard !isTerminated, sessionEpoch == setupEpoch else {
             if let lease = outcome.protectionLease, let store = outcome.pairingStore {
@@ -754,16 +779,33 @@ public final class SendspinClient {
             }
         }
 
-        // Build the SendspinConnection with configuration from this facade
+        let initialArtworkState = makeInitialArtworkState()
+        await afterAcceptance?()
+        guard !isTerminated, sessionEpoch == setupEpoch,
+              adoptAdvertisingTransport(transport, ownership: ownership) else {
+            await transport.disconnect()
+            if let lease = outcome.protectionLease, let store = outcome.pairingStore {
+                try? await store.releaseProtection(lease)
+            }
+            if sessionEpoch == setupEpoch, connection == nil {
+                updateConnectionState(.disconnected)
+                emitEvent(.disconnected(reason: .connectionLost(nil)))
+            }
+            return
+        }
+        let sessionTransport = (transport as? AdvertisingCandidateTransport)?.underlying ?? transport
+        // Adoption and connection construction have no intervening suspension.
         let validity = SessionValidityToken()
         if !installAsPairingSide {
             sessionValidity = validity
         }
         let clockSync = ClockSynchronizer()
-        let deliveryArtworkObserver: (@Sendable (ArtworkData) -> Void) = { [weak self] artwork in
+        let deliveryArtworkObserver: (@Sendable (ArtworkData, SessionValidityToken) -> Void) = { [weak self] artwork, deliveryValidity in
             Task { @MainActor [weak self] in
-                validity.performIfValid {
-                    self?.currentArtwork = artwork.clearsArtwork ? nil : artwork
+                deliveryValidity.performIfValid {
+                    validity.performIfValid {
+                        self?.currentArtwork = artwork.clearsArtwork ? nil : artwork
+                    }
                 }
             }
         }
@@ -790,6 +832,7 @@ public final class SendspinClient {
         let outcomeActivities = outcome.activities
         let outcomePairing = outcome.pairing
         let outcomeServerName = outcome.serverName
+        let outcomeServerLanguages = outcome.serverLanguages
         let outcomeActiveRoles = outcome.activeRoles
         let outcomeCategory = outcome.matchedCandidate.category
         let outcomePskId = outcome.matchedCandidate.psk.pskId
@@ -808,10 +851,11 @@ public final class SendspinClient {
             let pairingScalarBOverride: Data? = nil
         #endif
         let newConnection = SendspinConnection(
-            transport: transport,
+            transport: sessionTransport,
             channel: sessionChannel,
             serverId: outcomeServerId,
             serverName: outcomeServerName,
+            serverLanguages: outcomeServerLanguages,
             activities: outcomeActivities,
             activeRoles: outcomeActiveRoles,
             pskCategory: outcomeCategory,
@@ -858,20 +902,7 @@ public final class SendspinClient {
             initialPreferredPlayerFormat: preferredPlayerFormat,
             initialVolume: currentVolume,
             initialMuted: currentMuted,
-            initialArtworkState: artworkConfig.map { config in
-                do {
-                    return try ArtworkStateObject(channels: config.channels.map { channel in
-                        try ArtworkStateChannel(
-                            source: channel.source,
-                            format: channel.source == .none ? nil : channel.format,
-                            width: channel.source == .none ? nil : channel.width,
-                            height: channel.source == .none ? nil : channel.height
-                        )
-                    })
-                } catch {
-                    preconditionFailure("Validated artwork configuration cannot produce state: \(error)")
-                }
-            },
+            initialArtworkState: initialArtworkState,
             initialVisualizerState: visualizerConfig?.stateObject,
             requiredLeadTimeMs: playerConfig?.requiredLeadTimeMs ?? defaultRequiredLeadTimeMs,
             minBufferMs: playerConfig?.minBufferMs ?? defaultMinBufferMs,
@@ -963,6 +994,23 @@ public final class SendspinClient {
         updateConnectionState(.connected)
     }
 
+    private func makeInitialArtworkState() -> ArtworkStateObject? {
+        artworkConfig.map { config in
+            do {
+                return try ArtworkStateObject(channels: config.channels.map { channel in
+                    try ArtworkStateChannel(
+                        source: channel.source,
+                        format: channel.source == .none ? nil : channel.format,
+                        width: channel.source == .none ? nil : channel.width,
+                        height: channel.source == .none ? nil : channel.height
+                    )
+                })
+            } catch {
+                preconditionFailure("Validated artwork configuration cannot produce state: \(error)")
+            }
+        }
+    }
+
     private func makeAudioEngine(
         clock: any ClockSyncProtocol,
         validity: SessionValidityToken
@@ -988,7 +1036,8 @@ public final class SendspinClient {
                         }
                     }
                 }
-            }
+            },
+            audioOutputFactory: audioOutputFactory
         )
     }
 
@@ -1177,8 +1226,7 @@ public final class SendspinClient {
         case let .pairingCodeChanged(snapshot):
             // A terminal nil-code projection follows the ended event so a
             // consumer can observe both lifecycle and code removal in order.
-            if case .ended = currentPairing?.phase, snapshot.code == nil,
-               snapshot.id == currentPairing?.id {
+            if case .ended = snapshot.phase {
                 emitEvent(.pairingCodeChanged(snapshot))
             } else {
                 currentPairing = snapshot
@@ -1187,8 +1235,13 @@ public final class SendspinClient {
 
         case let .pairingAttemptEnded(snapshot):
             currentPairing = snapshot
-            pairingWindow = nil
             emitEvent(.pairingAttemptEnded(snapshot))
+
+        case let .pairingAttemptSuperseded(attemptID):
+            if currentPairing?.id == attemptID {
+                currentPairing = nil
+            }
+            emitEvent(.pairingAttemptSuperseded(attemptID))
 
         case let .pairingWindowChanged(window):
             pairingWindow = window
@@ -1227,6 +1280,7 @@ public final class SendspinClient {
 
         case .metadataCleared:
             updateMetadata(nil)
+            emitEvent(.metadataReceived(.empty))
 
         case let .controllerStateUpdated(state):
             updateControllerState(state)
@@ -1278,6 +1332,7 @@ public final class SendspinClient {
             }
             if roles == nil || roles?.contains(StreamRole.artwork.rawValue) == true {
                 artworkStreamActive = false
+                currentArtwork = nil
             }
             if roles == nil || roles?.contains(StreamRole.visualizer.rawValue) == true {
                 currentVisualizerStreamConfiguration = nil
@@ -1295,6 +1350,9 @@ public final class SendspinClient {
             emitEvent(.outputDelayChanged(milliseconds: milliseconds))
 
         case let .serverActivated(activities, activeRoles):
+            if !activeRoles.contains(.artworkV1) {
+                currentArtwork = nil
+            }
             currentActivities = activities
             if activities.contains(.playback), let currentServerId {
                 Task { await persistenceProvider?.saveLastPlayedServerId(currentServerId) }

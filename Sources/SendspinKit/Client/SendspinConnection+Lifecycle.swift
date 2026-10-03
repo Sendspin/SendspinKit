@@ -45,6 +45,15 @@ extension SendspinConnection {
             do {
                 guard let plaintext = try channel.decryptFrame(ciphertext) else { continue }
                 guard let type = plaintext.first else { throw NoiseError.malformedMessage }
+                // Ordered decryption/routing and rekey's receive-transport swap make every post-swap frame new-key.
+                // Only server/activate is allowed before activation; old-key frames fail AEAD before this guard.
+                if awaitingRehandshakeActivation,
+                   type != NoiseFrameType.json
+                   || SendspinEncoding.messageType(of: Data(plaintext.dropFirst())) != ServerActivateMessage.typeString {
+                    disconnectReason = .incompatibleServer
+                    await transport.disconnect()
+                    return
+                }
                 let applicationArrival = MonotonicClock.absoluteMicroseconds()
                 if type == NoiseFrameType.json {
                     await route(text: String(bytes: plaintext.dropFirst(), encoding: .utf8) ?? "", clientReceived: clientReceived)
@@ -114,7 +123,13 @@ extension SendspinConnection {
                 // Send client/state on every operational state change
                 try? await publishClientState()
 
-            case let .started(format):
+            case let .started(format, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player start report generation=\(generation)")
+                    continue
+                }
+                // Report drain and message loop are sibling tasks; identity protects newer announcements.
+                playerStartState = .started(generation)
                 controlSink.enqueue(.streamStarted(format))
                 if clientOperationalState == .error {
                     // Successful start: restore to synchronized after an earlier error.
@@ -123,10 +138,25 @@ extension SendspinConnection {
                     try? await publishClientState()
                 }
 
-            case let .formatApplied(format):
+            case let .formatApplied(format, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player format report generation=\(generation)")
+                    continue
+                }
+                playerStartState = .started(generation)
                 controlSink.enqueue(.streamFormatChanged(format))
+                if clientOperationalState == .error {
+                    clientOperationalState = .synchronized
+                    controlSink.enqueue(.operationalState(.synchronized))
+                    try? await publishClientState()
+                }
 
-            case let .startFailed(reason):
+            case let .startFailed(reason, generation):
+                guard playerStartState == .pending(generation) else {
+                    Log.client.debug("Ignoring stale player failure report generation=\(generation)")
+                    continue
+                }
+                playerStartState = .failed(generation)
                 // Audio start failed: emit error and stay in error state
                 let error = StreamingError.audioStartFailed(reason)
                 clientOperationalState = .error
@@ -174,6 +204,7 @@ extension SendspinConnection {
     /// Runs only once (lifecycle-guarded) and only after runLoop() returns,
     /// so no frame can reach a finished engine channel.
     func finishTeardown(_ reason: DisconnectReason) async {
+        let teardownStartedAt = MonotonicClock.absoluteMicroseconds()
         guard lifecycle == .running || lifecycle == .shuttingDown else { return }
         lifecycle = .shuttingDown
 
@@ -209,9 +240,18 @@ extension SendspinConnection {
         }
 
         // Stop the engine (async cleanup: close output, finish channels)
+        let engineStartedAt = MonotonicClock.absoluteMicroseconds()
         await audioEngine.shutdown()
+        let engineUs = MonotonicClock.absoluteMicroseconds() - engineStartedAt
 
         // Emit exactly one .disconnected (terminal event)
+        let teardownUs = MonotonicClock.absoluteMicroseconds() - teardownStartedAt
+        Log.client.info(
+            """
+            teardown: engine=\(engineUs, privacy: .public)us total=\(teardownUs, privacy: .public)us \
+            reason=\(String(describing: reason), privacy: .public)
+            """
+        )
         controlSink.enqueue(.disconnected(reason: reason))
 
         // Finish the control stream

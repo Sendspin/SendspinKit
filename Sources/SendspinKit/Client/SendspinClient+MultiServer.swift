@@ -23,7 +23,11 @@ extension SendspinClient {
 
     @MainActor
     // swiftlint:disable:next function_body_length
-    func handleCompetingConnection(_ transport: any SendspinTransport) async throws {
+    func handleCompetingConnection(
+        _ transport: any SendspinTransport,
+        ownership: AdvertisingTransportOwnership? = nil,
+        afterAcceptance: (@Sendable () async -> Void)? = nil
+    ) async throws {
         guard !arbitrationInProgress else {
             await transport.disconnect()
             return
@@ -106,7 +110,8 @@ extension SendspinClient {
             // The one coexistence exception is a first incoming pairing session
             // beside an admitted playback holder. Keep it parked until a later
             // activation proves that it has become playback-capable.
-            if incomingCandidate.activities == [.pairing] {
+            if incomingCandidate.activities.contains(.pairing),
+               Activity.rank(of: incomingCandidate.activities) == Activity.pairing.rank {
                 if pairingConnection != nil {
                     await HandshakeDriver.reject(outcome, reason: .concurrentAttempt, on: transport)
                     return
@@ -118,7 +123,9 @@ extension SendspinClient {
                         negotiation: negotiation,
                         runtimeConfiguration: runtimeConfiguration,
                         setupEpoch: arbitrationEpoch,
-                        installAsPairingSide: true
+                        installAsPairingSide: true,
+                        ownership: ownership,
+                        afterAcceptance: afterAcceptance
                     )
                     return
                 }
@@ -145,6 +152,9 @@ extension SendspinClient {
                 }
                 // The incumbent teardown suspends; a disconnect may have landed.
                 guard sessionEpoch == promotionEpoch else {
+                    if let lease = outcome.protectionLease, let store = outcome.pairingStore {
+                        try? await store.releaseProtection(lease)
+                    }
                     await transport.disconnect()
                     return
                 }
@@ -154,7 +164,9 @@ extension SendspinClient {
                     outcome: outcome,
                     negotiation: negotiation,
                     runtimeConfiguration: runtimeConfiguration,
-                    setupEpoch: promotionEpoch
+                    setupEpoch: promotionEpoch,
+                    ownership: ownership,
+                    afterAcceptance: afterAcceptance
                 )
             }
         } catch {

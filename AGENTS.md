@@ -27,6 +27,11 @@ exhaustively over `ClientEvent` on purpose — add the missing case, not a `defa
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.
 
 ## Conventions
+- Run tests with `timeout` and `set -o pipefail`; check for leftover testing helpers.
+  Run `scripts/strict-pool-test.sh` before pushing changes to tests or timing.
+  Hardware-tagged suites are labels; tests that start a real `AudioQueue` are gated on `SENDSPIN_REAL_AUDIO_TESTS=1`.
+- Test doubles never block cooperative threads with semaphores or synchronous waits.
+  A double that must block owns a serial executor; async tests suspend instead.
 - No magic values in tests — import the source constant (binary type bytes, role strings, reasons,
   `highWatermark`, etc.).
 - Tautological tests are the recurring failure mode here: every behavior test must fail when the

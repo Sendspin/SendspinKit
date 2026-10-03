@@ -65,13 +65,18 @@ struct FacadeLifecycleTests {
         let replacementAccept = Task { try? await client.acceptConnection(candidate) }
         #expect(await waitUntil { await candidate.hasSentFrames })
 
-        // Park the incumbent's next send so promotion's teardown stalls.
-        await incumbent.enableGoodbyeGate()
+        // The next-frame gate must hold promotion's goodbye, not a clock sample.
+        let connection = try #require(client.connection)
+        await connection.clockSyncTask?.cancel()
+        await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
+        await incumbent.parkNextOutboundFrame()
         try await candidateServer.establishSession(activities: [.playback], activeRoles: [.playerV1])
-        #expect(await waitUntil { await incumbent.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await incumbent.isOutboundFrameParked })
+        #expect(client.connection == nil)
 
         await client.disconnect(reason: .userRequest)
-        await incumbent.releaseGoodbyeGate()
+        await incumbent.releaseOutboundFrame()
         _ = await replacementAccept.value
 
         #expect(client.connection == nil)
@@ -103,6 +108,22 @@ struct FacadeLifecycleTests {
         #expect(client.connectionState == .connected)
         #expect(await replacement.disconnectCalled == false)
         await client.disconnect()
+    }
+
+    @Test("Init refusal reaches the public connect error", arguments: ServerErrorReason.allCases)
+    func initRefusalReachesApp(reason: ServerErrorReason) async throws {
+        let client = try makeTestClient()
+        let transport = MockTransport()
+        await transport.injectText(
+            "{\"type\":\"\(ServerErrorMessage.typeString)\",\"payload\":{\"reason\":\"\(reason.rawValue)\"}}"
+        )
+        await #expect(throws: SendspinClientError.connectionRefused(reason)) {
+            try await client.acceptConnection(transport)
+        }
+        #expect(client.connection == nil)
+        #expect(client.connectionState == .disconnected)
+        #expect(await transport.disconnectCalled)
+        await client.close()
     }
 
     @Test("close() during a paused accept terminates without installing")

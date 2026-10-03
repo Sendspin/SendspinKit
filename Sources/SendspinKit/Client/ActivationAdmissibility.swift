@@ -24,12 +24,10 @@ enum ActivationAdmissibility {
         switch category {
         case .longTerm:
             activities.isEmpty || activities == [.playback]
-        case .pairing:
-            activities == [.pairing]
-        case .sentinel:
+        case .pairing, .sentinel:
             activities.isEmpty
                 || activities == [.pairing]
-                || (activities == [.playback] && unpairedAccessEnabled)
+                || (activities.contains(.playback) && unpairedAccessEnabled)
         }
     }
 
@@ -124,9 +122,9 @@ enum ActivationAdmissibility {
         }
 
         // Response selection, first rule that applies:
-        // 1. Sentinel session where enabling unpaired access would make this
-        //    admissible → the operator's fix is pairing.
-        if category == .sentinel, !unpairedAccessEnabled, admissible(unpairedAccess: true) {
+        // An unpaired session requests pairing only when enabling access admits
+        // the entire activation, including its pairing directive.
+        if category != .longTerm, !unpairedAccessEnabled, admissible(unpairedAccess: true) {
             return .close(.pairingRequired)
         }
         // 2. Disallowed activity set, or roles on a non-playback-capable connection.

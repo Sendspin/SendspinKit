@@ -172,7 +172,8 @@ struct SendspinConnectionTests {
             config: PlayerConfiguration(
                 bufferCapacity: 100_000,
                 supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-            )
+            ),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let fixture = try await makeEstablishedConnection(
             transport: transport,
@@ -343,22 +344,34 @@ struct SendspinConnectionTests {
         await connection.start()
         try await transport.injectText(serverHelloJSON())
 
-        // Enable goodbye gate so disconnect can run to its await
-        await transport.enableGoodbyeGate()
+        try #require(await waitUntil { await connection.clockSyncTask != nil })
+        await connection.clockSyncTask?.cancel()
+        await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
+        let server = try #require(await connectionReadbacks.server(for: transport))
+        let sentFrameCount = await transport.sentBinaryMessages.count
+        try #require(await waitUntil { await server.decryptedMessages.count == sentFrameCount })
+
+        // Park the goodbye before the competing loss.
+        await transport.parkNextOutboundFrame()
 
         // Start disconnect (will park on the next outbound frame).
         async let disconnectTask = connection.disconnect(reason: .userRequest)
 
-        #expect(
-            await waitUntil { await transport.isGoodbyeGateWaiting },
+        try #require(
+            await waitUntil { await transport.isOutboundFrameParked },
             "disconnect must reach the outbound gate before the competing loss"
         )
+        let parkedFrame = try #require(await transport.parkedOutboundBinaryFrame)
+        await server.observeClientFrame(parkedFrame)
+        let parkedMessage = try #require(await server.decryptedMessages.last)
+        try #require(SendspinEncoding.messageType(of: Data(parkedMessage.dropFirst())) == ClientGoodbyeMessage.typeString)
 
-        // Now inject loss while the goodbye is parked
+        // Closing the streams also prevents readback from decrypting the captured frame twice.
         await transport.finishStreams()
 
         // Release the gate to let disconnect complete
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         await disconnectTask
 
@@ -1113,7 +1126,8 @@ struct SendspinConnectionTests {
                 config: PlayerConfiguration(
                     bufferCapacity: 100_000,
                     supportedFormats: [AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)]
-                )
+                ),
+                audioOutputFactory: { _, _ in NoOpAudioOutput() }
             )
             engineRef = engine
 
@@ -1270,10 +1284,134 @@ struct SendspinConnectionSessionTests {
         await connection.shutdown()
     }
 
-    /// The complement guard: an identical re-announce (same format, same header) must
-    /// stay `.streamStart` — the player's early-return preserves buffered audio, and a
-    /// spurious `.formatChange` would needlessly tear down the decoder.
-    @Test("same-format same-header re-announce stays a stream start")
+    @Test("audio routing records the captured application arrival")
+    func audioRoutingUsesCapturedArrival() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
+        try await connection.sendClientState()
+        await connection.establishTestClockSync()
+        let timestamp: Int64 = 1_000_000
+        let sendAhead: UInt32 = 100_000
+        let arrival = timestamp - Int64(sendAhead) + 12_345
+        var frame = Data([BinaryMessageType.audioChunk.rawValue])
+        var encodedTimestamp = timestamp.bigEndian
+        var encodedAhead = sendAhead.bigEndian
+        frame.append(Data(bytes: &encodedTimestamp, count: MemoryLayout<Int64>.size))
+        frame.append(Data(bytes: &encodedAhead, count: MemoryLayout<UInt32>.size))
+        frame.append(Data(repeating: 0, count: 4))
+        await connection.route(binary: frame, arrival: arrival)
+        #expect(await connection.arrivalDelaySamples.last == 12_345, "the delay sample uses the captured application arrival")
+        await connection.shutdown()
+    }
+
+    @Test("identical announcements reopen invalidated audio ingress")
+    func identicalAnnouncementReopensInvalidatedIngress() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
+        await connection.armRouteInvalidationForTesting()
+        #expect(await engine.isRouteInvalidatedForTesting())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.routeInvalidatedFormatChange) })
+        #expect(await engine.isRouteInvalidatedForTesting() == false, "identical announcements reopen the invalidated route gate")
+        await connection.shutdown()
+    }
+
+    @Test("pending format boundaries survive stream clear")
+    func formatBoundarySurvivesStreamClear() async throws {
+        let transport = MockTransport()
+        let clock = StubClock(anchorToNow: true)
+        // Boundary attribution does not depend on real-time scheduler lateness under suite load.
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(clock, transport, playbackWindow: 30)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .started(1) })
+        let header = Data("new-header".utf8).base64EncodedString()
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.formatChange) })
+        #expect(await connection.playerStartState == .pending(2))
+        await connection.handleStreamClear(StreamClearMessage(payload: .init(roles: ["player"])))
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamClear) })
+        let chunk = Data([0xA5, 0x05])
+        await output.setDecodeOutput(chunk, pcm: Data([0xB7, 0x05]))
+        engine.commands.enqueue(.chunk(chunk, ts: 100_000))
+        #expect(await waitUntil { await connection.playerStartState == .started(2) })
+        #expect(await output.recordedCalls.filter { $0 == "switchHardwareFormat(pcm)" }.count == 1)
+        #expect(await connection.announcedPlayerStream?.codecHeader == Data("new-header".utf8))
+        await connection.shutdown()
+    }
+
+    @Test("slow start failures cannot overwrite newer player announcements")
+    func staleStartFailurePreservesNewerAnnouncement() async throws {
+        let transport = MockTransport()
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await output.setForcedStartThrow(StreamingError.audioStartFailed("slow failure"))
+        await output.blockNextStart()
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .pending(1) })
+        let header = Data("new-header".utf8).base64EncodedString()
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        #expect(await waitUntil { await connection.playerStartState == .pending(2) })
+        output.releaseBlockedStart()
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.formatChange) })
+        // The ordered .started(2) report follows .startFailed(1) on the engine report channel;
+        // observing it through the connection proves the stale failure has drained.
+        #expect(await waitUntil { await connection.playerStartState == .started(2) })
+        #expect(await connection.clientOperationalState == .synchronized)
+        #expect(await connection.announcedPlayerStream?.codecHeader == Data("new-header".utf8))
+        try await transport.injectText(streamStartJSON(codecHeader: header))
+        try await transport.injectText(streamEndJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamEnd) })
+        #expect(await engine.appliedCommandKinds().filter { $0 == .streamStart }.count == 1)
+        await connection.shutdown()
+    }
+
+    @Test("identical healthy announcements repair corrupt-announcement errors")
+    func identicalAnnouncementRepairsStaleError() async throws {
+        let transport = MockTransport()
+        let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.playerStartState == .started(1) })
+        try await transport.injectText(streamStartJSON(codecHeader: "not-base64!"))
+        #expect(await waitUntil { await connection.clientOperationalState == .error })
+        let count = await engine.appliedCommandKinds().count
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.clientOperationalState == .synchronized })
+        #expect(await engine.appliedCommandKinds().count == count)
+        await connection.shutdown()
+    }
+
+    @Test("identical announcements retry a failed audio start")
+    func identicalAnnouncementRetriesFailedStart() async throws {
+        let transport = MockTransport()
+        let (connection, output, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
+        await output.setForcedStartThrow(StreamingError.audioStartFailed("test failure"))
+        await connection.start()
+        try await transport.injectText(serverHelloJSON())
+        try await transport.injectText(streamStartJSON())
+        #expect(await waitUntil { await connection.clientOperationalState == .error })
+        await output.setForcedStartThrow(nil)
+        try await transport.injectText(streamStartJSON())
+        #expect(
+            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 2 },
+            "a failed start is retried even when its announcement is identical"
+        )
+        await connection.shutdown()
+    }
+
+    @Test("same-format same-header re-announce preserves the active stream")
     func sameFormatSameHeaderReannounceStaysStreamStart() async throws {
         let transport = MockTransport()
         let (connection, _, engine, _, _) = try await makeConnectionWithSpyEngine(StubClock(), transport)
@@ -1283,9 +1421,11 @@ struct SendspinConnectionSessionTests {
         try await transport.injectText(serverHelloJSON())
         try await transport.injectText(streamStartJSON(codecHeader: header))
         try await transport.injectText(streamStartJSON(codecHeader: header))
+        try await transport.injectText(streamEndJSON())
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamEnd) })
         #expect(
-            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 2 },
-            "an identical re-announce must route .streamStart again (player early-return keeps buffers)"
+            await engine.appliedCommandKinds().count(where: { $0 == .streamStart }) == 1,
+            "an identical active announcement must not enqueue a destructive fresh start"
         )
         #expect(
             await !engine.appliedCommandKinds().contains(.formatChange),
@@ -1452,7 +1592,7 @@ struct SendspinConnectionSessionTests {
 
         await connection.admitPairingAttempt()
         let oldAttemptID = try #require(await connection.pairingAttemptID)
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let blocker = Task { () -> Result<Void, Error> in
             do {
                 try await connection.send(clientMessage: OutboundTestMessage(
@@ -1462,7 +1602,7 @@ struct SendspinConnectionSessionTests {
                 return .success(())
             } catch { return .failure(error) }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         let stale = Task { () -> Result<Void, Error> in
             do {
@@ -1478,7 +1618,7 @@ struct SendspinConnectionSessionTests {
         await connection.admitPairingAttempt()
         let replacementID = try #require(await connection.pairingAttemptID)
         #expect(replacementID != oldAttemptID)
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         #expect(await (try? blocker.value.get()) != nil)
         guard case let .failure(error) = await stale.value else {
@@ -1536,7 +1676,7 @@ struct SendspinConnectionSessionTests {
         // Drain any residual in-flight send so no unrelated sender races the test.
         #expect(await waitUntil { await !(connection.outboundInFlight) }, "initial clock samples must drain")
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let big = OutboundTestMessage(
             type: OutboundTestMessageType.padded,
             note: String(repeating: "a", count: NoiseChannel.maxSinglePayload + 2_000)
@@ -1545,7 +1685,7 @@ struct SendspinConnectionSessionTests {
 
         // The first fragment of the fragmented message parks mid-send; every
         // fragment's nonces are already consumed by encryptMessage.
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting }, "the first fragment must park on the transport gate")
+        #expect(await waitUntil { await transport.isOutboundFrameParked }, "the first fragment must park on the transport gate")
 
         let small = OutboundTestMessage(type: OutboundTestMessageType.small, note: "after")
         async let smallSend: Void = connection.send(clientMessage: small)
@@ -1557,7 +1697,7 @@ struct SendspinConnectionSessionTests {
             "the second sender must park on the outbound slot"
         )
 
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
         try await bigSend
         try await smallSend
 
@@ -1592,15 +1732,15 @@ struct SendspinConnectionSessionTests {
         await connection.clockSyncTask?.value
         #expect(await waitUntil { await !(connection.outboundInFlight) })
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let big = OutboundTestMessage(
             type: OutboundTestMessageType.padded,
             note: String(repeating: "b", count: NoiseChannel.maxSinglePayload + 2_000)
         )
         async let first: Void = connection.send(clientMessage: big)
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        try #require(await waitUntil { await transport.isOutboundFrameParked })
 
-        // Sequence: wait for the FIRST queued sender before launching the second,
+        // Sequence: wait for the first queued sender before launching the second,
         // so both are deterministically in the queue when the gate opens.
         let second = Task { () -> Result<Void, Error> in
             do {
@@ -1610,7 +1750,7 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await connection.outboundWaiters.count == 1 }, "the first single-frame sender must queue")
+        try await connection.requireOutboundWaiters(1)
 
         let third = Task { () -> Result<Void, Error> in
             do {
@@ -1620,20 +1760,20 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await connection.outboundWaiters.count == 2 }, "both single-frame senders must queue")
+        try await connection.requireOutboundWaiters(2)
 
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
         try await first
         let secondResult = await second.value
-        _ = try? secondResult.get()
+        try secondResult.get()
         let thirdResult = await third.value
-        _ = try? thirdResult.get()
+        try thirdResult.get()
 
         // Wait for the peer readback of all three before snapshotting order.
         let server = try #require(await connectionReadbacks.server(for: transport))
-        #expect(
+        try #require(
             await waitUntil(timeout: .seconds(3)) {
-                await server.decryptedMessages.count >= 3
+                await server.decryptedMessages.compactMap(typeOfDecryptedJSON).filter { OutboundTestMessageType.all.contains($0) }.count == 3
             },
             "the peer must read all three messages"
         )
@@ -1660,7 +1800,7 @@ struct SendspinConnectionSessionTests {
         await connection.clockSyncTask?.value
         #expect(await waitUntil { await !(connection.outboundInFlight) })
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let big = OutboundTestMessage(
             type: OutboundTestMessageType.padded,
             note: String(repeating: "c", count: NoiseChannel.maxSinglePayload + 2_000)
@@ -1673,7 +1813,7 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         let smallTask = Task { () -> Result<Void, Error> in
             do {
@@ -1689,7 +1829,7 @@ struct SendspinConnectionSessionTests {
         #expect(await waitUntil { await connection.outboundWaiters.count == 1 }, "the small sender must queue")
 
         smallTask.cancel()
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         let bigResult = await bigTask.value
         #expect((try? bigResult.get()) != nil, "the fragmented message must still send")
@@ -1732,7 +1872,7 @@ struct SendspinConnectionSessionTests {
         await connection.clockSyncTask?.value
         #expect(await waitUntil { await !(connection.outboundInFlight) })
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         // Make the mock transport mirror the real one: a pre-cancelled sender that
         // somehow reached the transport must also be rejected, not delivered.
         await transport.setHonorCancellationSends(true)
@@ -1748,7 +1888,7 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         // The task cancels ITSELF before sending; with the uniform policy the
         // send must fail without encrypting, and the chain must stay live.
@@ -1764,7 +1904,7 @@ struct SendspinConnectionSessionTests {
         #expect(await waitUntil { await connection.outboundWaiters.count == 1 }, "the pre-cancelled sender must queue")
 
         // Release the parked first sender; the pre-cancelled sender wakes and must be rejected.
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
         let bigResult = await bigTask.value
         #expect((try? bigResult.get()) != nil, "the fragmented message must still send")
         let smallResult = await cancelledAtEntryTask.value
@@ -1804,7 +1944,7 @@ struct SendspinConnectionSessionTests {
         await connection.clockSyncTask?.value
         #expect(await waitUntil { await !(connection.outboundInFlight) })
 
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let big = OutboundTestMessage(
             type: OutboundTestMessageType.padded,
             note: String(repeating: "d", count: NoiseChannel.maxSinglePayload + 2_000)
@@ -1817,7 +1957,7 @@ struct SendspinConnectionSessionTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         let queuedTask = Task { () -> Result<Void, Error> in
             do {
@@ -1833,7 +1973,7 @@ struct SendspinConnectionSessionTests {
         // first fragment already passed the fail check, so it sends once.
         let framesBeforeRelease = await transport.sentBinaryMessages.count
         await transport.setShouldFailOnSend(true)
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         let bigResult = await bigTask.value
         guard case .failure = bigResult else {
@@ -1930,7 +2070,8 @@ private func makeConnectionWithSpyEngine(
     _ transport: MockTransport,
     initialVolume: Int = 100,
     initialMuted: Bool = false,
-    advertisedCommands: Set<PlayerCommand> = [.setOutputDelay]
+    advertisedCommands: Set<PlayerCommand> = [.setOutputDelay],
+    playbackWindow: TimeInterval = 0.05
 ) async throws -> ( // swiftlint:disable:this large_tuple
     connection: SendspinConnection,
     output: SpyAudioOutput,
@@ -1939,7 +2080,7 @@ private func makeConnectionWithSpyEngine(
     server: MockNoiseServer
 ) {
     let output = SpyAudioOutput()
-    let scheduler = AudioScheduler(clockSync: clock)
+    let scheduler = AudioScheduler(clockSync: clock, playbackWindow: playbackWindow)
     let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
     let (binaryStream, _) = AsyncStream<ClientEvent>.makeStream()
     let result = try await makeEstablishedConnection(

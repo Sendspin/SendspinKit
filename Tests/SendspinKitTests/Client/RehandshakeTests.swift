@@ -60,7 +60,8 @@ struct RehandshakeTests {
             playerConfig: playerConfig,
             pairing: PairingConfiguration(pairingPsk: pairingPsk, store: store, enabled: pairingEnabled),
             audioOutputCapabilityProvider: AudioOutputCapabilityService(),
-            pairingAttemptTimeout: pairingAttemptTimeout
+            pairingAttemptTimeout: pairingAttemptTimeout,
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let transport = MockTransport()
         let server = MockNoiseServer(transport: transport, staticKey: serverStaticKey, psk: initialPsk)
@@ -77,8 +78,7 @@ struct RehandshakeTests {
         return Session(client: client, server: server, store: store, pairingPsk: pairingPsk, runtime: runtime)
     }
 
-    /// Drive one re-handshake and the post-swap `server/hello`, returning once the
-    /// client's fresh `client/hello` is on the wire.
+    /// Drive one re-handshake to the new-key activation boundary.
     private func rehandshake(
         _ server: MockNoiseServer,
         to psk: Psk,
@@ -92,17 +92,7 @@ struct RehandshakeTests {
             mintStaleFrame: mintStaleFrame
         )
         #expect(await waitUntil { await server.rehandshakeComplete })
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
-        #expect(await waitUntil {
-            await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCountBefore + 1
-        })
-    }
-
-    private func supportedPairMethods(inHello hello: Data) throws -> [String] {
-        let object = try #require(JSONSerialization.jsonObject(with: hello) as? [String: Any])
-        let payload = try #require(object["payload"] as? [String: Any])
-        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
-        return methods.keys.sorted()
+        #expect(await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCountBefore)
     }
 
     @Test("Re-handshake omits a pairing method disabled at runtime")
@@ -117,8 +107,9 @@ struct RehandshakeTests {
         ))
 
         try await rehandshake(session.server, to: .sentinel)
-        let hello = try #require(await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).last)
-        #expect(try supportedPairMethods(inHello: hello).isEmpty)
+        let connection = try #require(await session.client.connection)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        #expect(await connection.sessionContext.offeredPairMethods.isEmpty)
         try await session.server.sendActivation(activities: [], activeRoles: [])
         await session.client.disconnect()
     }
@@ -135,8 +126,9 @@ struct RehandshakeTests {
         ))
 
         try await rehandshake(session.server, to: session.pairingPsk)
-        let hello = try #require(await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).last)
-        #expect(try supportedPairMethods(inHello: hello) == [PairMethod.pairingPsk])
+        let connection = try #require(await session.client.connection)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        #expect(await connection.sessionContext.offeredPairMethods == [PairMethod.pairingPsk])
         try await session.server.sendJSON(
             #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
         )
@@ -160,6 +152,18 @@ struct RehandshakeTests {
         #expect(await waitUntil {
             await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString).count == 1
         })
+        let types = await server.decryptedMessages.compactMap { message -> String? in
+            guard message.first == NoiseFrameType.json else { return nil }
+            return SendspinEncoding.messageType(of: Data(message.dropFirst()))
+        }
+        let initIndex = try #require(types.firstIndex(of: ClientPairInitMessage.typeString), "Outbound types: \(types)")
+        let finalizeIndex = try #require(types.firstIndex(of: ClientPairFinalizeMessage.typeString), "Outbound types: \(types)")
+        #expect(finalizeIndex == initIndex + 1, "Outbound types: \(types)")
+        let initData = try #require(await server.clientJSONMessages(ofType: ClientPairInitMessage.typeString).first)
+        let pairInit = try JSONDecoder().decode(ClientPairInitMessage.self, from: initData)
+        let expectedPairingIndex: UInt32 = 1
+        #expect(pairInit.payload.pairingIndex == expectedPairingIndex)
+        #expect(pairInit.payload.commitB == nil)
         let finalizeData = await server.clientJSONMessages(ofType: ClientPairFinalizeMessage.typeString)[0]
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
         let longTermPsk = try #require(Psk(base64URL: finalize.payload.longTermPsk))
@@ -321,7 +325,7 @@ struct RehandshakeTests {
         await session.client.disconnect()
     }
 
-    @Test("Post-swap wire order: hello first, client traffic only after activation")
+    @Test("Post-swap wire order: client traffic only after activation")
     func postSwapSequencing() async throws {
         let longTermPsk = Psk.generate()
         let session = try await makePairableSession(seededLongTermPsk: longTermPsk)
@@ -338,8 +342,8 @@ struct RehandshakeTests {
         let replyIndex = try #require(messages.lastIndex(of: NoiseHandshakeMessage.typeString))
         let tail = Array(messages[(replyIndex + 1)...])
         #expect(
-            tail == [ClientHelloMessage.typeString],
-            "between the key swap and the post-swap activate, only client/hello may flow"
+            tail.isEmpty,
+            "between the key swap and the post-swap activate, no application messages may flow"
         )
 
         try await server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
@@ -367,9 +371,10 @@ struct RehandshakeTests {
         #expect(await waitUntil { await connection.clockSyncTask != nil }, "clock-sync task handle must appear before cancel")
         await connection.clockSyncTask?.cancel()
         await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
 
         // #1 takes the outbound slot and parks mid-fragment on the gate.
-        await transport.enableGoodbyeGate()
+        await transport.parkNextOutboundFrame()
         let first = Task { () -> Result<Void, Error> in
             do {
                 try await connection.send(clientMessage:
@@ -383,7 +388,7 @@ struct RehandshakeTests {
                 return .failure(error)
             }
         }
-        #expect(await waitUntil { await transport.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await transport.isOutboundFrameParked })
 
         // #2 queues behind #1 (it has NOT acquired the slot, so it has not checked
         // the gate — it will only do so once woken).
@@ -402,7 +407,7 @@ struct RehandshakeTests {
         // release unconditionally so failure cannot wedge the parked send.
         try await server.beginRehandshake(to: longTermPsk, pskCategoryOverride: .longTerm)
         #expect(await waitUntil { await connection.isRehandshakeInProgress })
-        await transport.releaseGoodbyeGate()
+        await transport.releaseOutboundFrame()
 
         let firstResult = await first.value
         #expect((try? firstResult.get()) != nil, "the first send must complete")
@@ -424,34 +429,184 @@ struct RehandshakeTests {
         let wireTypes = await server.decryptedMessages.compactMap(typeOfDecryptedJSON)
         #expect(!wireTypes.contains(OutboundTestMessageType.small), "a gate-rejected send must not reach the wire at all")
 
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
-        #expect(await waitUntil { await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == 1 })
         await session.client.disconnect()
     }
 
-    @Test("Post-swap activate publishes the full client/state under the new keys")
-    func postSwapActivationPublishesClientState() async throws {
+    @Test("Omitted roles persist across promotion without forced state publication")
+    func postSwapActivationPreservesRoles() async throws {
         let longTermPsk = Psk.generate()
         let session = try await makePairableSession(seededLongTermPsk: longTermPsk)
-        let server = session.server
-
-        try await rehandshake(server, to: longTermPsk, pskCategory: .longTerm)
-
-        // Between the swap and the post-swap activate, publishClientState must be
-        // rejected by the gate (the rehandshakeInProgress bypass is not yet set).
-        #expect(await server.clientJSONMessages(ofType: ClientStateMessage.typeString).isEmpty)
-
-        try await server.sendActivation(activities: [], activeRoles: [])
-        #expect(
-            await waitUntil(timeout: .seconds(3)) {
-                await server.clientJSONMessages(ofType: ClientStateMessage.typeString).count == 1
-            },
-            "the completed rehandshake must publish the post-swap full client/state under the new keys"
+        let connection = try #require(await session.client.connection)
+        try await rehandshake(session.server, to: longTermPsk, pskCategory: .longTerm)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        let statesBefore = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count
+        try await session.server.sendJSON(
+            #require(String(
+                data: JSONEncoder().encode(ServerActivateMessage(payload: ServerActivatePayload(activities: [], activeRoles: nil))),
+                encoding: .utf8
+            ))
         )
+        #expect(await waitUntil { await connection.isRehandshakeInProgress == false })
+        #expect(await connection.activeRoles == [.playerV1])
+        #expect(await connection.sessionContext.category == .longTerm)
+        #expect(await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count == statesBefore)
         await session.client.disconnect()
     }
 
-    @Test("Cancelling pairing discards the attempt and ignores a late finalize")
+    @Test("Re-handshake preserves open stream state and resets pairing index")
+    func rehandshakePreservesStreamState() async throws {
+        let session = try await makePairableSession()
+        let connection = try #require(await session.client.connection)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await connection.seedRehandshakeStreamState(format: format)
+        let engine = await connection.audioEngine
+        let artworkValidity = await connection.artworkDeliveryValidity
+        let visualizerValidity = await connection.visualizerFrameValidity
+        await connection.clock.processServerTime(clientTransmitted: 0, serverReceived: 100, serverTransmitted: 100, clientReceived: 200)
+        let clockBefore = try #require(await connection.clock.diagnosticSnapshot())
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        #expect(await connection.playerStreamActive)
+        #expect(await connection.announcedPlayerStream?.format == format)
+        #expect(await connection.artworkTransfer?.data == Data([BinaryMessageType.audioChunk.rawValue]))
+        #expect(await connection.artworkTransfer?.received == 1)
+        #expect(await connection.artworkDeliveryValidity === artworkValidity)
+        #expect(await connection.visualizerFrameValidity === visualizerValidity)
+        #expect(await connection.audioEngine === engine)
+        #expect(await connection.pairingActivateCounter == 0)
+        #expect(await connection.clock.diagnosticSnapshot()?.offset == clockBefore.offset)
+        try await session.server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
+        #expect(await waitUntil { await connection.isRehandshakeInProgress == false })
+        #expect(await connection.artworkTransfer != nil)
+        await session.client.disconnect()
+    }
+
+    @Test("An omitted role set becomes empty when new credentials disallow playback")
+    func postSwapPlaybackCapabilityClearsPersistedRoles() async throws {
+        let longTermPsk = Psk.generate()
+        let session = try await makePairableSession(seededLongTermPsk: longTermPsk, initialPsk: longTermPsk)
+        let connection = try #require(await session.client.connection)
+        let current = await session.runtime.snapshot()
+        await session.runtime.update(PairingManagementConfiguration(
+            pairingPsk: current.pairingPsk,
+            pairingPskEnabled: true,
+            unpairedAccessEnabled: false
+        ))
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        #expect(await connection.activeRoles == [.playerV1])
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(activities: [], activeRoles: nil))
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(activation), encoding: .utf8)))
+        #expect(await waitUntil { await connection.isRehandshakeInProgress == false })
+        #expect(await connection.activeRoles.isEmpty)
+        #expect(await MainActor.run { session.client.connectionState == .connected })
+        await session.client.disconnect()
+    }
+
+    @Test("Rejected new-key activations send exactly one goodbye", arguments: [GoodbyeReason.unauthorized, .pairingRequired])
+    func postSwapRejectedActivationSendsGoodbye(reason: GoodbyeReason) async throws {
+        let longTermPsk = Psk.generate()
+        let session = try await makePairableSession(seededLongTermPsk: longTermPsk)
+        let connection = try #require(await session.client.connection)
+        if reason == .pairingRequired {
+            let current = await session.runtime.snapshot()
+            await session.runtime.update(PairingManagementConfiguration(
+                pairingPsk: current.pairingPsk, pairingPskEnabled: true, unpairedAccessEnabled: false
+            ))
+            try await rehandshake(session.server, to: session.pairingPsk)
+        } else {
+            try await rehandshake(session.server, to: longTermPsk, pskCategory: .longTerm)
+        }
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        let activities: [Activity] = reason == .pairingRequired ? [.playback] : [.pairing]
+        let directive = reason == .unauthorized ? PairingDirective(method: PairMethod.pairingPsk) : nil
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(
+            activities: activities, activeRoles: [], pairing: directive
+        ))
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(activation), encoding: .utf8)))
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        let messages = await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString)
+        #expect(messages.count == 1)
+        let goodbye = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: #require(messages.first))
+        #expect(goodbye.payload.reason == reason)
+        await session.client.disconnect()
+    }
+
+    @Test("New-key audio before activation closes without engine enqueue")
+    func postSwapAudioClosesWithoutEnqueue() async throws {
+        let session = try await makePairableSession()
+        let connection = try #require(await session.client.connection)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        await connection.seedRehandshakeStreamState(format: format)
+        let engine = await connection.audioEngine
+        await connection.prepareRehandshakeAudioIngress(format: format)
+        #expect(await waitUntil { await engine.appliedCommandKinds().contains(.streamStart) })
+        let chunksBefore = await engine.appliedCommandKinds().filter { $0 == .chunk }.count
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        var audio = Data(repeating: 0, count: BinaryMessage.audioChunkHeaderSize)
+        audio[0] = BinaryMessageType.audioChunk.rawValue
+        try await session.server.sendEncrypted(audio)
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await engine.appliedCommandKinds().filter { $0 == .chunk }.count == chunksBefore)
+        await session.client.disconnect()
+    }
+
+    @Test("Changed roles publish the retained player preference under new keys")
+    func postSwapChangedRolesPublishPlayerState() async throws {
+        let session = try await makePairableSession()
+        let connection = try #require(await session.client.connection)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        try await session.client.setPlayerFormatPreference(format)
+        try await session.server.sendActivation(activities: [], activeRoles: [])
+        #expect(await waitUntil { await connection.activeRoles.isEmpty })
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        let before = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count
+        try await session.server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
+        #expect(await waitUntil { await connection.isRehandshakeInProgress == false })
+        let states = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).dropFirst(before)
+        #expect(states.count == 1)
+        let state = try JSONDecoder().decode(ClientStateMessage.self, from: #require(states.first))
+        #expect(state.payload.player?.format == format)
+        await session.client.disconnect()
+    }
+
+    @Test("Post-swap player removal runs cleanup exactly once")
+    func postSwapRoleRemovalClearsPlayerOnce() async throws {
+        let session = try await makePairableSession()
+        let connection = try #require(await session.client.connection)
+        let engine = await connection.audioEngine
+        let before = await engine.appliedCommandKinds().filter { $0 == .streamEnd }.count
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        #expect(await connection.activeRoles == [.playerV1])
+        try await session.server.sendActivation(activities: [], activeRoles: [])
+        #expect(await waitUntil { await engine.appliedCommandKinds().filter { $0 == .streamEnd }.count == before + 1 })
+        let statesBefore = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count
+        try await session.server.sendActivation(activities: [], activeRoles: [])
+        #expect(await waitUntil { await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count > statesBefore })
+        #expect(await engine.appliedCommandKinds().filter { $0 == .streamEnd }.count == before + 1)
+        await session.client.disconnect()
+    }
+
+    @Test("A new-key hello silently closes without a client hello")
+    func newKeyHelloClosesWithoutReply() async throws {
+        let session = try await makePairableSession()
+        let connection = try #require(await session.client.connection)
+        let hellosBefore = await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
+        try await rehandshake(session.server, to: .sentinel)
+        #expect(await waitUntil { await connection.awaitingRehandshakeActivation })
+        try await session.server.sendJSON(
+            #require(String(data: JSONEncoder().encode(ServerHelloMessage(payload: ServerHelloPayload(name: "Forbidden"))), encoding: .utf8))
+        )
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == hellosBefore)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("Cancelling pairing discards the attempt and silently closes on late finalize")
     func cancellingPairingDiscardsLateFinalize() async throws {
         // On a Pairing PSK session the only admissible activity set is ['pairing'],
         // so a server cancels by re-handshaking away — which discards all pairing
@@ -477,7 +632,8 @@ struct RehandshakeTests {
         #expect(await !waitUntil(timeout: .milliseconds(300)) {
             await pairingRecords(session.store).contains { $0.serverId != nil }
         })
-        #expect(await MainActor.run { session.client.connectionState == .connected })
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
         await session.client.disconnect()
     }
 

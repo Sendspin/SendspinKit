@@ -123,15 +123,29 @@ struct NoiseChannelTests {
         }
     }
 
-    @Test("A digit clip type passes through as a normal unfragmented message")
-    func digitClipTypeIsNotFragmentation() throws {
+    @Test("A reserved core ID passes through as a normal unfragmented message", arguments: BinaryMessageType.reservedCoreIDs)
+    func reservedCoreIDIsNotFragmentation(id: UInt8) throws {
         var (rogueServer, clientTransport) = try makeTransportPair()
         var client = NoiseChannel(transport: clientTransport)
-        let digitClip = try rogueServer.send.encrypt(
+        let payload = Data([id, 7, 0xA5])
+        let frame = try rogueServer.send.encrypt(associatedData: Data(), plaintext: payload)
+        #expect(try client.decryptFrame(frame) == payload)
+    }
+
+    @Test("Fragmented reserved core IDs reassemble and follow the unknown-ID path", arguments: BinaryMessageType.reservedCoreIDs)
+    func fragmentedReservedCoreIDIsIgnored(id: UInt8) throws {
+        var (server, clientTransport) = try makeTransportPair()
+        var client = NoiseChannel(transport: clientTransport)
+        let opening = try server.send.encrypt(
             associatedData: Data(),
-            plaintext: Data([2, 7, 0xA5])
+            plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.first, id, 0xA5])
         )
-        #expect(try client.decryptFrame(digitClip) == Data([2, 7, 0xA5]))
+        let ending = try server.send.encrypt(associatedData: Data(), plaintext: Data([NoiseFrameType.fragment, NoiseFragmentFlags.last, 0x5A]))
+        #expect(try client.decryptFrame(opening) == nil)
+        let reassembled = try client.decryptFrame(ending)
+        let message = try #require(reassembled)
+        #expect(message == Data([id, 0xA5, 0x5A]))
+        #expect(BinaryMessage(data: message) == nil)
     }
 
     @Test("Sender envelope bytes use the independent fragmentation dialect")

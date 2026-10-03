@@ -121,20 +121,25 @@ struct ConcurrentPairingTests {
         let session = try await makeSession()
         let side = try await admitPairingSide(to: session.client)
         let primary = session.primary
-        await primary.enableGoodbyeGate()
+        let connection = try #require(session.client.connection)
+        try #require(await waitUntil { await connection.clockSyncTask != nil })
+        await connection.clockSyncTask?.cancel()
+        await connection.clockSyncTask?.value
+        try #require(await waitUntil { await !connection.outboundInFlight })
+        await primary.parkNextOutboundFrame()
         let promotion = Task {
             try await sideTransportActivation(from: side)
         }
 
-        #expect(await waitUntil { await primary.isGoodbyeGateWaiting })
+        #expect(await waitUntil { await primary.isOutboundFrameParked })
         await session.client.disconnect(reason: .userRequest)
-        await primary.releaseGoodbyeGate()
+        await primary.releaseOutboundFrame()
         _ = try await promotion.value
 
         #expect(session.client.connection == nil)
         #expect(session.client.pairingConnection == nil)
         #expect(session.client.connectionState == .disconnected)
-        #expect(await side.disconnectCalled)
+        #expect(await waitUntil { await side.disconnectCalled })
     }
 
     @Test("empty activation is rejected by the pairing side without affecting playback")
@@ -165,12 +170,16 @@ struct ConcurrentPairingTests {
     func cancelTargetsPairingSide() async throws {
         let session = try await makeSession()
         let side = try await admitPairingSide(to: session.client)
-        _ = await collectClientEvent(from: session.events) {
+        _ = try await waitForClientJSON(side, type: ClientPairInitMessage.typeString)
+        let pairInit = ServerPairInitMessage(payload: ServerPairInitPayload(nonceA: Base64URL.encode(Data(repeating: 0, count: 32))))
+        try await side.sendJSON(#require(String(data: JSONEncoder().encode(pairInit), encoding: .utf8)))
+        let code = await collectClientEvent(from: session.events) {
             if case let .pairingCodeChanged(snapshot) = $0, snapshot.code != nil {
                 return true
             }
             return false
         }
+        _ = try #require(code)
 
         try await session.client.cancelPairing(attemptID: #require(await MainActor.run { session.client.currentPairing?.id }))
 
@@ -246,7 +255,8 @@ struct ConcurrentPairingTests {
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
             handshakeTimeout: .seconds(3),
             pairingAttemptTimeout: .seconds(30),
-            pairingWindowLifetime: .seconds(30)
+            pairingWindowLifetime: .seconds(30),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
         let events = client.events()
         let primary = try await connectClient(client, activeRoles: [.playerV1, .controllerV1], activities: [.playback])

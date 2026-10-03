@@ -1,16 +1,11 @@
 import Foundation
 import os
 
-/// Binary message type ID allocation per Sendspin spec:
-/// - 0: JSON, 1: fragmentation, 2: pairing digit audio clip, 3: reserved
-/// - 4-7: Player role (audio chunks)
-/// - 8-11: Artwork role (channels 0-3)
-/// - 16-23: Visualizer role
-/// - 24-191: Reserved for future roles
-/// - 192-255: Application-specific roles
+/// Sendspin allocates 0 to JSON, 1 to fragmentation, 4–7 to player, 8–11 to artwork, and 16–23 to visualizer.
+/// IDs 2–3 and 24–191 remain reserved; 192–255 belong to application-specific roles.
 enum BinaryMessageType: UInt8 {
-    /// Pairing digit audio clip.
-    case digitAudioClip = 2
+    /// IDs 2–3 are reserved by the spec and follow the unknown-ID ignore path.
+    static let reservedCoreIDs: ClosedRange<UInt8> = 2 ... 3
 
     /// Player role (4-7).
     case audioChunk = 4
@@ -44,7 +39,7 @@ enum BinaryMessageType: UInt8 {
         case .visualizerFPeak: .fPeak
         case .visualizerSpectrum: .spectrum
         case .visualizerPeak: .peak
-        default: nil
+        case .audioChunk, .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3: nil
         }
     }
 
@@ -53,7 +48,7 @@ enum BinaryMessageType: UInt8 {
         switch self {
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
             Int(rawValue - BinaryMessageType.artworkChannel0.rawValue)
-        default:
+        case .audioChunk, .visualizerLoudness, .visualizerBeat, .visualizerFPeak, .visualizerSpectrum, .visualizerPeak:
             nil
         }
     }
@@ -64,7 +59,7 @@ struct ArtworkTransfer: Sendable {
     let channel: Int
     let timestamp: Int64
     let totalSize: UInt32
-    let deliver: Bool
+    var deliver: Bool
     var received: UInt32 = 0
     var data = Data()
 
@@ -187,9 +182,7 @@ struct BinaryMessage {
     /// Lead time reported by a player chunk in microseconds. This is measurement-only and
     /// never participates in scheduling.
     let sendAhead: UInt32
-    /// Digit selector for a pairing audio clip; nil for other message types.
-    let digit: UInt8?
-    /// Message payload (audio data, image data, digit clip, or role-specific raw bytes).
+    /// Message payload (audio data, image data, or role-specific raw bytes).
     let data: Data
 
     /// Decode binary message from WebSocket data using the layout assigned to its type.
@@ -206,7 +199,6 @@ struct BinaryMessage {
         self.type = type
         switch type {
         case .audioChunk:
-            digit = nil
             guard data.count >= Self.audioChunkHeaderSize else { return nil }
             let extractedTimestamp = Self.readInt64(data, offset: 1)
             guard extractedTimestamp >= 0 else { return nil }
@@ -214,23 +206,13 @@ struct BinaryMessage {
             sendAhead = Self.readUInt32(data, offset: 9)
             self.data = data.subdata(in: Self.audioChunkHeaderSize ..< data.count)
 
-        case .digitAudioClip:
-            // Phase 3 pairing state machine owns digit range validation (0-9).
-            guard data.count >= 2 else { return nil }
-            timestamp = 0
-            sendAhead = 0
-            digit = data[1]
-            self.data = data.subdata(in: 2 ..< data.count)
-
         case .artworkChannel0, .artworkChannel1, .artworkChannel2, .artworkChannel3:
             // Artwork announce/part/cancel decoding owns every byte after the type.
             timestamp = 0
             sendAhead = 0
-            digit = nil
             self.data = data.subdata(in: 1 ..< data.count)
 
         case .visualizerLoudness, .visualizerBeat, .visualizerFPeak, .visualizerSpectrum, .visualizerPeak:
-            digit = nil
             guard data.count >= Self.headerSize else { return nil }
             let extractedTimestamp = Self.readInt64(data, offset: 1)
             guard extractedTimestamp >= 0 else { return nil }

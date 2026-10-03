@@ -53,6 +53,29 @@ struct ServerInitPayload: Codable, Equatable {
     }
 }
 
+/// The server's unauthenticated diagnostic for refusing `client/init`.
+/// These values are hints for operator display, not authenticated peer claims.
+public enum ServerErrorReason: String, Codable, Sendable, Equatable, CaseIterable {
+    case unsupportedVersion = "unsupported_version"
+    case unsupportedSuite = "unsupported_suite"
+    case malformed
+}
+
+/// `server/error` replaces `server/init`; the server closes after sending it.
+struct ServerErrorMessage: SendspinMessage, Equatable {
+    static let typeString = "server/error"
+    let type = Self.typeString
+    let payload: ServerErrorPayload
+
+    private enum CodingKeys: String, CodingKey { case type, payload }
+}
+
+struct ServerErrorPayload: Codable, Equatable {
+    let reason: ServerErrorReason
+
+    private enum CodingKeys: String, CodingKey { case reason }
+}
+
 /// `noise/handshake` — carries one Noise handshake message, base64url-encoded.
 /// Travels as a cleartext text frame during initial establishment, and as an
 /// encrypted JSON message (binary frame, message type 0) during a re-handshake.

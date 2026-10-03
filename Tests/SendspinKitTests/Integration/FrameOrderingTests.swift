@@ -122,12 +122,13 @@ struct FrameOrderingTests {
                 supportedFormats: [
                     AudioFormatSpec(codec: .pcm, channels: 1, sampleRate: 8_000, bitDepth: 16)
                 ],
-                volumeMode: .none, // headless — skip real audio-output setup
+                volumeMode: .none,
                 emitRawAudioEvents: true
             ),
             artworkConfig: artworkConfig,
             visualizerConfig: visualizerConfig,
-            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
+            audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider(),
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
     }
 
@@ -147,6 +148,7 @@ struct FrameOrderingTests {
             ),
             audioOutputCapabilityProvider: makeInertAudioOutputCapabilityProvider()
         )
+        client.audioOutputFactory = { _, _ in NoOpAudioOutput() }
         let mock = try await connectClient(client)
         let chunks = CollectedValues<AudioChunk>()
         let collectTask = Task {

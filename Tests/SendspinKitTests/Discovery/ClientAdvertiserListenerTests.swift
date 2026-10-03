@@ -141,9 +141,8 @@ struct ClientAdvertiserListenerTests {
 
         let pending = try makeNWConnection()
         fake.emit(pending)
-        pending.start(queue: DispatchQueue(label: "advertiser.pending.timeout"))
 
-        #expect(await waitUntil { pending.state == .cancelled })
+        try #require(await waitUntil(timeout: .seconds(2)) { pending.state == .cancelled })
         await advertiser.stop()
         pending.cancel()
     }

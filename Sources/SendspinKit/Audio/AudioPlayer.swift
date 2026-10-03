@@ -37,6 +37,10 @@ private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
 /// milliseconds, while multi-second starts can leave CoreAudio consuming inaudible audio.
 let audioQueueStartSlowThresholdUs: Int64 = 2_000_000
 
+/// Report teardown calls that hold the output actor for half a second so slow
+/// disconnects remain visible in user-collected diagnostics.
+let audioQueueTeardownSlowThresholdUs: Int64 = 500_000
+
 /// Leave the queue stopped until the release instant.
 ///
 /// This diagnostic mode allows startup behavior to be compared with pre-warming when
@@ -117,6 +121,15 @@ private struct LockedState: @unchecked Sendable {
     /// device's played-frame count this gives the frames still in flight, and so when a frame
     /// written to the ring now will be audible.
     var totalFramesEnqueued: Int64 = 0
+    var callbackDepth = CallbackDepthTelemetry()
+    var lastMeasuredDepthFrames: Int64?
+    var startupLateUs: Int64 = 0
+
+    mutating func resetDepthTelemetry() {
+        callbackDepth = CallbackDepthTelemetry()
+        lastMeasuredDepthFrames = nil
+        startupLateUs = 0
+    }
 
     /// Number of buffers currently owned by AudioQueue. Unlike the cumulative frame count this
     /// reaches zero when a finite drain stops re-enqueuing buffers.
@@ -230,6 +243,7 @@ actor AudioPlayer {
     private var volumeRampID = 0
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
+    private let volumeRampSleep: @Sendable (Duration) async throws -> Void
 
     /// Process callback for local visualization / audio effects.
     /// Set once at init, never mutated — `@Sendable` and safe to read from any context.
@@ -258,8 +272,10 @@ actor AudioPlayer {
         pcmBufferCapacity: Int = 524_288,
         volumeControl: VolumeControl = SoftwareVolumeControl(),
         processCallback: AudioProcessCallback? = nil,
-        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil,
+        volumeRampSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
+        self.volumeRampSleep = volumeRampSleep
         self.volumeControl = volumeControl
         self.processCallback = processCallback
         self.outputTransitionCallback = outputTransitionCallback
@@ -398,6 +414,7 @@ actor AudioPlayer {
             state.spinUpUs = -1
             state.prewarming = true
             state.totalFramesEnqueued = 0
+            state.resetDepthTelemetry()
             state.enqueuedBufferCount = 0
             state.draining = false
             state.drainComplete = false
@@ -496,15 +513,8 @@ actor AudioPlayer {
         outputTransitionCallback?(.didStart)
     }
 
-    /// Delay between handing a frame to the output and hearing it: the depth of the AudioQueue
-    /// buffers this player primes, plus the device path beyond them.
-    ///
-    /// Single source for both consumers of that quantity — the engine, deciding when to hand
-    /// the first chunk over, and the sync corrector, deciding how far the cursor should lead
-    /// the speaker. They describe the same physical span, and two formulas for it drift.
-    ///
-    /// Zero before `prepare()`, which is the only point at which the format and the device are
-    /// both known.
+    /// Modelled depth supplies the startup lead, pad ceiling and engine deferred-play lead.
+    /// Correction reads the device; this conservative estimate is zero before `prepare()`.
     func pipelineLatencyMicroseconds() -> Int64 {
         guard let format = currentFormat else { return 0 }
         let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
@@ -605,8 +615,28 @@ actor AudioPlayer {
         outputDeviceLiveContinuation = nil
         guard let queue = audioQueue else { return }
 
+        let stopStartedAt = MonotonicClock.absoluteMicroseconds()
         AudioQueueStop(queue, true)
+        let stopUs = MonotonicClock.absoluteMicroseconds() - stopStartedAt
+        let disposeStartedAt = MonotonicClock.absoluteMicroseconds()
         AudioQueueDispose(queue, true)
+        let disposeUs = MonotonicClock.absoluteMicroseconds() - disposeStartedAt
+        let device = OutputDeviceLatency.currentDeviceDescription()
+        Log.audio.info(
+            """
+            AudioQueueStop returned in \(stopUs, privacy: .public)us; \
+            AudioQueueDispose returned in \(disposeUs, privacy: .public)us; \
+            wasPlaying=\(currentlyPlaying, privacy: .public); device \(device, privacy: .public)
+            """
+        )
+        if stopUs > audioQueueTeardownSlowThresholdUs || disposeUs > audioQueueTeardownSlowThresholdUs {
+            Log.audio.notice(
+                """
+                Slow AudioQueue teardown: stop=\(stopUs, privacy: .public)us \
+                dispose=\(disposeUs, privacy: .public)us; device \(device, privacy: .public)
+                """
+            )
+        }
 
         audioQueue = nil
         queueIdentity &+= 1
@@ -807,8 +837,7 @@ actor AudioPlayer {
     /// callback cadence: the next frame written becomes audible once the frames still in
     /// flight have played, plus the device path.
     ///
-    /// A negative pad means the release instant has already passed; those frames can never be
-    /// audible on time, so they are dropped rather than played late.
+    /// A negative pad clamps to zero; the first frame plays late rather than being dropped.
     private static func placeFirstFrame(state: inout LockedState, placement: FirstFramePlacement) {
         let serverTimestamp = placement.serverTimestamp
         let localPlayTime = placement.localPlayTime
@@ -826,14 +855,18 @@ actor AudioPlayer {
         let padCapacityFrames = Int64(silence.count / state.frameSize)
         let padFrames: Int64
         if let localPlayTime {
+            let gapUs = localPlayTime - nowAbsolute - pipelineDelayUs
+            state.startupLateUs = max(0, -gapUs)
             padFrames = min(
-                max((localPlayTime - nowAbsolute - pipelineDelayUs) * sampleRate / 1_000_000, 0),
+                max(gapUs * sampleRate / 1_000_000, 0),
                 padCapacityFrames
             )
         } else if let snapshot = state.timeSnapshot {
             let audibleServerTime = snapshot.localTimeToServer(nowAbsolute) + pipelineDelayUs
+            let gapUs = serverTimestamp - audibleServerTime
+            state.startupLateUs = max(0, -gapUs)
             padFrames = min(
-                max((serverTimestamp - audibleServerTime) * sampleRate / 1_000_000, 0),
+                max(gapUs * sampleRate / 1_000_000, 0),
                 padCapacityFrames
             )
         } else {
@@ -895,7 +928,8 @@ actor AudioPlayer {
         let correctionSchedule: CorrectionSchedule
         let underrunCount: Int64
         let pcmBytesDropped: Int64
-        /// Sync error at grace expiry, before the rebaseline froze it. `nil` until then.
+        /// Sync error at grace expiry, before the rebaseline absorbs it. `nil` until then.
+        /// The measured device depth makes this placement error rather than model error.
         let startupOffsetUs: Int64?
         /// `AudioQueueStart` to first device callback. -1 until that callback lands.
         let spinUpUs: Int64
@@ -923,11 +957,51 @@ actor AudioPlayer {
         /// Frames handed to the queue but not yet played — the real pipeline depth, against
         /// the modelled one of every allocated buffer.
         let framesInFlight: Int64
+        let callbackDepth: CallbackDepthTelemetry
+        let queueTimeline: QueueTimelineTelemetry
+        /// Lateness of the first frame when its silence pad clamps to zero.
+        let startupLateUs: Int64
+
+        init(
+            cursorMicroseconds: Int64, sampleRate: Int, syncErrorUs: Int64, correctionSchedule: CorrectionSchedule,
+            underrunCount: Int64, pcmBytesDropped: Int64, startupOffsetUs: Int64?, spinUpUs: Int64,
+            startupPadFrames: Int64, framesConsumed: Int64, silentBuffers: Int64, enqueueFailures: Int64,
+            peakOutputLevel: Float, appliedVolume: Float, queueGain: Float, deviceVolume: Float,
+            deviceMuted: Bool, framesInFlight: Int64, callbackDepth: CallbackDepthTelemetry = .init(),
+            queueTimeline: QueueTimelineTelemetry = .init(), startupLateUs: Int64 = 0
+        ) {
+            self.cursorMicroseconds = cursorMicroseconds
+            self.sampleRate = sampleRate
+            self.syncErrorUs = syncErrorUs
+            self.correctionSchedule = correctionSchedule
+            self.underrunCount = underrunCount
+            self.pcmBytesDropped = pcmBytesDropped
+            self.startupOffsetUs = startupOffsetUs
+            self.spinUpUs = spinUpUs
+            self.startupPadFrames = startupPadFrames
+            self.framesConsumed = framesConsumed
+            self.silentBuffers = silentBuffers
+            self.enqueueFailures = enqueueFailures
+            self.peakOutputLevel = peakOutputLevel
+            self.appliedVolume = appliedVolume
+            self.queueGain = queueGain
+            self.deviceVolume = deviceVolume
+            self.deviceMuted = deviceMuted
+            self.framesInFlight = framesInFlight
+            self.callbackDepth = callbackDepth
+            self.queueTimeline = queueTimeline
+            self.startupLateUs = startupLateUs
+        }
+    }
+
+    var totalFramesEnqueued: Int64 {
+        lockedState.withLock { $0.totalFramesEnqueued }
     }
 
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
+        let timeline = audioQueue.map { QueueTimelineTelemetry.read(queue: $0) } ?? QueueTimelineTelemetry()
         let appliedVolume = appliedVolume
         // Read back rather than trusted. `appliedVolume` is what this process believes it set;
         // these are what the queue and the device report, and the span between them is the only
@@ -948,7 +1022,9 @@ actor AudioPlayer {
             return values
         }
         return lockedState.withLock { state in
-            TelemetrySnapshot(
+            let callbackDepth = state.callbackDepth
+            state.callbackDepth = CallbackDepthTelemetry()
+            return TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
                 sampleRate: state.sampleRate,
                 syncErrorUs: state.lastSyncErrorUs,
@@ -966,7 +1042,10 @@ actor AudioPlayer {
                 queueGain: queueGain,
                 deviceVolume: deviceGain.volume ?? -1,
                 deviceMuted: deviceGain.muted ?? false,
-                framesInFlight: max(0, state.totalFramesEnqueued - played)
+                framesInFlight: max(0, state.totalFramesEnqueued - played),
+                callbackDepth: callbackDepth,
+                queueTimeline: timeline,
+                startupLateUs: state.startupLateUs
             )
         }
     }
@@ -985,6 +1064,7 @@ actor AudioPlayer {
         let cb: AudioProcessCallback?
         let cbFormat: AudioFormatSpec?
         let enqueue: Bool
+        var deviceBecameLive = false
     }
 
     /// Server-time cursor target for a frame handed to hardware at `localNow`.
@@ -1006,18 +1086,21 @@ actor AudioPlayer {
         state: inout LockedState,
         capacity: Int,
         frameSize: Int,
-        sampleRate: Int
+        sampleRate: Int,
+        inFlightAtCallback: Int64?
     ) {
         guard state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot else { return }
         let nowAbsolute = MonotonicClock.absoluteMicroseconds()
 
-        // Everything between pulling a frame here and hearing it: every primed buffer — so this
-        // must use the same count `prepare()` primes — plus the device path beyond them.
         let queueDepthUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
+        let pipelineLatencyUs = correctionPipelineLatencyUs(
+            inFlightFrames: inFlightAtCallback, sampleRate: sampleRate,
+            modelledQueueDepthUs: queueDepthUs, deviceLatencyUs: state.deviceLatencyUs
+        )
         let equilibriumServerTime = correctionEquilibriumServerTime(
             snapshot: snapshot,
             localNow: nowAbsolute,
-            pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+            pipelineLatencyUs: pipelineLatencyUs,
             outputDelayUs: state.outputDelayUs
         )
 
@@ -1044,7 +1127,7 @@ actor AudioPlayer {
                 state.cursorMicroseconds = graceExpiryRebaselineCursor(
                     snapshot: snapshot,
                     localNow: nowAbsolute,
-                    pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+                    pipelineLatencyUs: pipelineLatencyUs,
                     outputDelayUs: state.outputDelayUs
                 )
                 state.cursorRemainder = 0
@@ -1074,7 +1157,7 @@ actor AudioPlayer {
             state.pendingReanchorServerTime = graceExpiryRebaselineCursor(
                 snapshot: snapshot,
                 localNow: nowAbsolute,
-                pipelineLatencyUs: queueDepthUs + state.deviceLatencyUs,
+                pipelineLatencyUs: pipelineLatencyUs,
                 outputDelayUs: state.outputDelayUs
             )
             state.reanchorRequested = true
@@ -1092,6 +1175,28 @@ actor AudioPlayer {
                 state.insertCounter = newSchedule.insertEveryNFrames
             }
         }
+    }
+
+    static func correctionPipelineLatencyUs(
+        inFlightFrames: Int64?, sampleRate: Int, modelledQueueDepthUs: Int64, deviceLatencyUs: Int64
+    ) -> Int64 {
+        // Correction and placement describe the same physical span, so both read the device.
+        // The model stands in before the first position; missed reads then hold the last measured depth.
+        let queueDepthUs = inFlightFrames.map { $0 * 1_000_000 / Int64(sampleRate) } ?? modelledQueueDepthUs
+        return queueDepthUs + deviceLatencyUs
+    }
+
+    private static func measureCallbackDepth(state: inout LockedState, queue: AudioQueueRef, bufferFrames: Int64) -> Int64? {
+        let start = MonotonicClock.absoluteMicroseconds()
+        let played = framesPlayed(queue: queue)
+        let cost = MonotonicClock.absoluteMicroseconds() - start
+        state.callbackDepth.record(
+            total: state.totalFramesEnqueued, played: played, bufferFrames: bufferFrames,
+            costUs: cost, prewarming: state.prewarming
+        )
+        return CallbackDepthTelemetry.measuredDepth(
+            total: state.totalFramesEnqueued, played: played, previous: &state.lastMeasuredDepthFrames
+        )
     }
 
     fileprivate nonisolated func fillBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef) {
@@ -1121,21 +1226,22 @@ actor AudioPlayer {
                 return FillResult(outOffset: 0, cb: nil, cbFormat: nil, enqueue: false)
             }
 
-            let sr = state.sampleRate
             let cb = processCallback // nonisolated let, not in locked state
             let cbFormat = state.processCallbackFormat
             let channels = cbFormat?.channels ?? 2
 
+            let inFlightAtCallback = Self.measureCallbackDepth(state: &state, queue: queue, bufferFrames: Int64(capacity / fs))
+
             // `prepare()` fills every buffer through this path before the queue is started,
             // so the first callback with a start time recorded is the device's own.
-            if state.spinUpUs < 0, state.queueStartAbsoluteUs > 0 {
+            let deviceBecameLive = state.spinUpUs < 0 && state.queueStartAbsoluteUs > 0
+            if deviceBecameLive {
                 state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
-                Task { [weak self] in
-                    await self?.resumeOutputDeviceLiveWaiter()
-                }
             }
 
-            Self.updateCorrectionSchedule(state: &state, capacity: capacity, frameSize: fs, sampleRate: sr)
+            Self.updateCorrectionSchedule(
+                state: &state, capacity: capacity, frameSize: fs, sampleRate: state.sampleRate, inFlightAtCallback: inFlightAtCallback
+            )
 
             // --- Fill the buffer with PCM frames, applying drop/insert correction ---
             var outOffset = 0
@@ -1182,7 +1288,6 @@ actor AudioPlayer {
                 }
             }
 
-            state.totalFramesEnqueued += Int64(capacity / fs)
             if outOffset == 0 {
                 state.silentBufferCount += 1
             }
@@ -1203,12 +1308,14 @@ actor AudioPlayer {
                     enqueue = false
                 }
             }
-            return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat, enqueue: enqueue)
+            return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat, enqueue: enqueue, deviceBecameLive: deviceBecameLive)
+        }
+
+        if result.deviceBecameLive {
+            scheduleOutputDeviceLiveResume()
         }
 
         // --- Post-lock: silence fill, process callback, enqueue ---
-        // None of this touches shared state.
-
         guard result.enqueue else { return }
         if result.outOffset < capacity {
             memset(dest + result.outOffset, 0, capacity - result.outOffset)
@@ -1226,11 +1333,21 @@ actor AudioPlayer {
         enqueueFilledBuffer(queue: queue, buffer: buffer, capacity: capacity)
     }
 
+    private nonisolated func scheduleOutputDeviceLiveResume() {
+        Task { [weak self] in
+            await self?.resumeOutputDeviceLiveWaiter()
+        }
+    }
+
     private nonisolated func enqueueFilledBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef, capacity: Int) {
         buffer.pointee.mAudioDataByteSize = UInt32(capacity)
         let enqueueStatus = AudioQueueEnqueueBuffer(queue, buffer, 0, nil)
         if enqueueStatus == noErr {
-            lockedState.withLock { $0.enqueuedBufferCount += 1 }
+            lockedState.withLock { state in
+                // Depth counts frames the device will play; refused or withheld buffers never enter it.
+                state.totalFramesEnqueued += Int64(capacity / state.frameSize)
+                state.enqueuedBufferCount += 1
+            }
         } else {
             lockedState.withLock { $0.enqueueFailures += 1 }
         }
@@ -1275,13 +1392,14 @@ actor AudioPlayer {
         let startVolume = appliedVolume
         guard startVolume != targetVolume else { return }
 
+        let sleep = volumeRampSleep
         volumeRampTask = Task { [weak self] in
             for step in 1 ... volumeRampStepCount {
                 if Task.isCancelled {
                     return
                 }
                 if step > 1 {
-                    try? await Task.sleep(for: volumeRampStepDuration)
+                    try? await sleep(volumeRampStepDuration)
                     if Task.isCancelled {
                         return
                     }

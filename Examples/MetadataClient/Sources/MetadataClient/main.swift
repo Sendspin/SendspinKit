@@ -179,7 +179,7 @@ struct MetadataClient: AsyncParsableCommand {
             // Explicit cases keep this example current as events evolve; apps may use `default: break` to ignore other events.
             case .paired,
                  .pairingCodeChanged,
-                 .pairingAttemptEnded,
+                 .pairingAttemptEnded, .pairingAttemptSuperseded,
                  .pairingWindowChanged,
                  .audioOutputChanged,
                  .outputFormatStatusChanged,

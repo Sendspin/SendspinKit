@@ -9,6 +9,10 @@ private actor NoiseReadbackRegistry {
         servers[ObjectIdentifier(transport)] = server
     }
 
+    func server(for transport: MockTransport) -> MockNoiseServer? {
+        servers[ObjectIdentifier(transport)]
+    }
+
     func messages(for transport: MockTransport) async -> [Data] {
         guard let server = servers[ObjectIdentifier(transport)] else { return [] }
         return await server.sentTextMessages
@@ -411,7 +415,7 @@ struct SendspinClientTests {
         await client.close()
         await negotiationGate.release()
         let result = await outcomeOfUnstructuredOperation(
-            timeout: .seconds(1),
+            timeout: .seconds(10),
             onTimeout: { connecting.cancel() },
             operation: { try await connecting.value }
         )
@@ -780,14 +784,19 @@ struct SendspinClientTests {
         let fallback = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
         let native = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
         let provider = FakeAudioOutputCapabilityProvider(initialSnapshot: output(44_100, "Initial"))
-        let client = try makePlayerClient(formats: [fallback, native], capabilityProvider: provider, settle: .zero)
+        let deadline = HeldOutputRequestDeadline()
+        let client = try makePlayerClient(formats: [fallback, native], capabilityProvider: provider, settle: .zero, negotiationSleep: deadline.sleep)
         let transport = try await connectOutputClient(client)
         try await transport.injectText(streamStartJSON(fallback))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
+        let connection = try #require(client.connection)
+        try await requireOutputCondition("coalescing initial stream command") {
+            await connection.audioEngineForTesting.appliedCommandKinds().contains(.streamStart)
+        }
 
         await provider.publish(output(48_000, "USB A", bitDepth: 16))
+        try await requireOutputCondition("first route request") { await stateSnapshots(transport).count == 1 }
         await provider.publish(output(48_000, "USB B", bitDepth: 32))
-        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
+        try await requireOutputCondition("same-rate snapshot applied") { await connection.outputSnapshot?.diagnosticDescription == "USB B" }
         let request = try #require(await stateSnapshots(transport).first?.payload.player)
         #expect(request.format == native)
         #expect(client.currentOutputFormatStatus?.state == .requesting(native))
@@ -824,20 +833,34 @@ struct SendspinClientTests {
         let fallback = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
         let native = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
         let provider = FakeAudioOutputCapabilityProvider(initialSnapshot: output(44_100, "Initial"))
-        let client = try makePlayerClient(formats: [fallback, native], capabilityProvider: provider, settle: .zero)
+        let deadline = HeldOutputRequestDeadline()
+        let client = try makePlayerClient(formats: [fallback, native], capabilityProvider: provider, settle: .zero, negotiationSleep: deadline.sleep)
         let transport = try await connectOutputClient(client)
+        let connection = try #require(client.connection)
         try await transport.injectText(streamStartJSON(fallback))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == fallback })
+        try await requireOutputCondition("initial stream command") {
+            await connection.audioEngineForTesting.appliedCommandKinds().contains(.streamStart)
+        }
         await provider.publish(output(48_000, "New route"))
-        #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
+        try await requireOutputCondition("native request publication") { await stateSnapshots(transport).count == 1 }
 
         try await transport.injectText(streamStartJSON(native))
-        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeNative(native) } })
+        try await requireOutputCondition("native answer status") {
+            await MainActor.run { client.currentOutputFormatStatus?.state == .activeNative(native) }
+        }
 
         await provider.publish(output(44_100, "Back"))
-        #expect(await waitUntil { await stateSnapshots(transport).count == 2 })
+        try await requireOutputCondition("fallback request publication") { await stateSnapshots(transport).count == 2 }
+        #expect(await stateSnapshots(transport).last?.payload.player?.format == fallback)
+        try await requireOutputCondition("held fallback request status") {
+            await MainActor.run { client.currentOutputFormatStatus?.state == .requesting(fallback) }
+        }
         try await transport.injectText(streamStartJSON(native))
-        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(native) } })
+        try await requireOutputCondition("fallback answer applied") { await connection.pendingOutputFormatRequest == nil }
+        try await transport.injectText(streamStartJSON(fallback))
+        try await requireOutputCondition("final native fallback status") {
+            await MainActor.run { client.currentOutputFormatStatus?.state == .activeNative(fallback) }
+        }
         let retried = await waitUntil(timeout: .milliseconds(200)) { await stateSnapshots(transport).count > 2 }
         #expect(!retried)
         await client.disconnect()
@@ -874,14 +897,16 @@ struct SendspinClientTests {
         let automatic = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
         let application = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let provider = FakeAudioOutputCapabilityProvider(initialSnapshot: output(44_100, "Initial"))
+        let deadline = HeldOutputRequestDeadline()
         let client = try makePlayerClient(
             formats: [initial, automatic, application],
             capabilityProvider: provider,
-            settle: .zero
+            settle: .zero,
+            negotiationSleep: deadline.sleep
         )
         let transport = try await connectOutputClient(client)
         try await transport.injectText(streamStartJSON(initial))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
+        try #require(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
         await provider.publish(output(48_000, "Route A"))
         #expect(await waitUntil { await stateSnapshots(transport).count == 1 })
 
@@ -889,8 +914,11 @@ struct SendspinClientTests {
         #expect(await waitUntil { await stateSnapshots(transport).count == 2 })
         #expect(client.currentOutputFormatStatus?.state == .requesting(application))
         await provider.publish(output(44_100, "Route B"))
+        try await requireOutputCondition("application route B applied") { await client.connection?.outputSnapshot?.diagnosticDescription == "Route B"
+        }
         await provider.publish(output(48_000, "Route C"))
-        #expect(await waitUntil { await client.connection?.settledOutputSampleRate == 48_000 })
+        try await requireOutputCondition("application route C applied") { await client.connection?.outputSnapshot?.diagnosticDescription == "Route C"
+        }
         #expect(await client.connection?.automaticRequestsSuppressed == true)
         #expect(await client.connection?.pendingOutputFormatRequest?.origin == .application)
         #expect(await stateSnapshots(transport).count == 2)
@@ -904,7 +932,7 @@ struct SendspinClientTests {
 
         try await transport.injectText(streamEndJSON())
         try await transport.injectText(streamStartJSON(initial))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
+        try #require(await waitUntil { await client.connection?.announcedPlayerStream?.format == initial })
         #expect(await waitUntil { await client.connection?.automaticRequestsSuppressed == false })
         await provider.publish(output(44_100, "Boundary route"))
         #expect(await waitUntil { await stateSnapshots(transport).count == 3 })
@@ -921,7 +949,7 @@ struct SendspinClientTests {
         let client = try makePlayerClient(
             formats: [initial, automatic, application],
             capabilityProvider: provider,
-            settle: .milliseconds(50)
+            settle: .seconds(10)
         )
         let transport = try await connectOutputClient(client)
         try await transport.injectText(streamStartJSON(initial))
@@ -929,14 +957,20 @@ struct SendspinClientTests {
         #expect(await waitUntil { await client.connection?.playerStreamActive == true })
         await provider.publish(output(48_000, "Automatic route"))
         #expect(await waitUntil { await client.connection?.outputSnapshot?.sampleRate == 48_000 })
+        let connection = try #require(client.connection)
+        try #require(await waitUntil { await connection.clockSyncTask != nil })
+        await connection.clockSyncTask?.cancel()
+        await connection.clockSyncTask?.value
+        #expect(await connection.pendingOutputFormatRequest == nil)
+        try #require(await waitUntil { await !connection.outboundInFlight })
         await transport.setShouldFailOnSend(true)
 
         await #expect(throws: MockTransportError.simulatedFailure) {
             try await client.setPlayerFormatPreference(application)
         }
-        // The failed request rolls back its optimistic negotiation state...
-        #expect(await client.connection?.automaticRequestsSuppressed ?? false == false)
-        #expect(await client.connection?.pendingOutputFormatRequest == nil)
+        // The retained connection exposes rollback even if the facade already detached it.
+        #expect(await connection.automaticRequestsSuppressed == false)
+        #expect(await connection.pendingOutputFormatRequest == nil)
 
         // ...and the session ends: the failed send already consumed AEAD nonces,
         // so no later frame could decrypt at the server. Retrying on the same
@@ -958,11 +992,14 @@ struct SendspinClientTests {
             settle: .zero
         )
         let transport = try await connectOutputClient(client)
+        let server = try #require(await noiseReadbackRegistry.server(for: transport))
+        try await establishClockSync(client, via: server)
         try await transport.injectText(streamStartJSON(streamFormat))
-        #expect(await waitUntil { await client.connection?.announcedPlayerStream?.format == streamFormat })
+        let connection = try #require(client.connection)
+        try #require(await waitUntil { await connection.audioEngineForTesting.appliedCommandKinds().contains(.streamStart) })
         await provider.publish(output(48_000, "New route"))
 
-        #expect(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(streamFormat) } })
+        try #require(await waitUntil { await MainActor.run { client.currentOutputFormatStatus?.state == .activeFallback(streamFormat) } })
         #expect(await stateSnapshots(transport).isEmpty)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
@@ -981,11 +1018,12 @@ struct SendspinClientTests {
         let transport = try await connectOutputClient(client)
         let connection = try #require(client.connection)
         let sequence = await connection.latestOutputSnapshotSequence
-        await connection.receiveAudioOutputSnapshot(output(44_100, "Unsettled"), sequence: sequence + 1)
+        await provider.publish(output(44_100, "Unsettled"))
+        try #require(await waitUntil { await connection.latestOutputSnapshotSequence > sequence })
 
         try await transport.injectText(streamStartJSON(native))
 
-        #expect(await waitUntil { await connection.announcedPlayerStream?.format == native })
+        try #require(await waitUntil { await connection.announcedPlayerStream?.format == native })
         #expect(await transport.isConnected)
         await client.disconnect()
         await client.finishAudioOutputCapabilityMonitoring()
@@ -1036,7 +1074,8 @@ struct SendspinClientTests {
         policy: OutputSampleRatePolicy = .preferCurrentOutput,
         capabilityProvider: any AudioOutputCapabilityProviding,
         settle: Duration = .milliseconds(250),
-        requestTimeout: Duration = .seconds(3)
+        requestTimeout: Duration = .seconds(3),
+        negotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) throws -> SendspinClient {
         let formats = try formats ?? [
             AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
@@ -1052,7 +1091,9 @@ struct SendspinClientTests {
             ),
             audioOutputCapabilityProvider: capabilityProvider,
             outputSettleInterval: settle,
-            outputRequestTimeout: requestTimeout
+            outputRequestTimeout: requestTimeout,
+            outputNegotiationSleep: negotiationSleep,
+            audioOutputFactory: { _, _ in NoOpAudioOutput() }
         )
     }
 

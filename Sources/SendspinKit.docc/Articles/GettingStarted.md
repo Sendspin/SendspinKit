@@ -147,9 +147,17 @@ for await event in client.events() {
 }
 ```
 
+## Handle protocol API constraints
+
+- `SendspinClientError.connectionRefused(ServerErrorReason)` carries an unauthenticated setup refusal reason for diagnostics only.
+- `PlayerConfiguration` requires FLAC or PCM and throws `ConfigurationError.missingLosslessFormat` for an Opus-only catalog.
+- `requireCurrentOutput` throws `OutputFormatError.noMatchingLosslessFormat` if output filtering removes every FLAC and PCM format.
+- `setVisualizerPreference(_:)` publishes a new visualizer request, including empty `types` to request no visualizer data.
+- Controller commands throw `controllerStateUnavailable` before the first state or `controllerCommandUnsupported` when absent from the latest `supported_commands`.
+
 ## Pair with a code
 
-Code-based pairing is coordinated by the host app. Declare the presentation your device can actually provide via the client's `pairing` argument (``PairingPresentation``): `.display`, `.digitDisplay`, `.speaker(audio:)`, `.displayAndSpeaker(audio:)`, or `.staticCode` — the default `.tokenOnly` presents no dynamic code. Then start consuming ``SendspinClient/events`` and retain the complete ``PairingAttemptSnapshot`` that drives the operator UI:
+Code-based pairing is coordinated by the host app. Declare the presentation your device can actually provide via the client's `pairing` argument (``PairingPresentation``): `.display`, `.digitDisplay`, `.speaker`, `.displayAndSpeaker`, or `.staticCode` — the default `.tokenOnly` presents no dynamic code. Then start consuming ``SendspinClient/events`` and retain the complete ``PairingAttemptSnapshot`` that drives the operator UI:
 
 ```swift
 for await event in client.events() {
@@ -167,16 +175,24 @@ for await event in client.events() {
 
 Call ``SendspinClient/openPairingWindow(for:)`` with the ID captured by the rendered snapshot when
 the app receives its physical-gesture or other operator-confirmation signal. It returns after
-recording or consuming the connection-owned window; it does not wait for the attempt. To cancel,
+recording operator consent and resetting the emitted-round budget, including an already-open window;
+it does not wait for the attempt. To cancel,
 call ``SendspinClient/cancelPairing(attemptID:)`` with that same captured ID. A stale ID throws
 ``SendspinClientError/stalePairingAttempt(_:)`` and never retargets a newer attempt. The observable
-``SendspinClient/currentPairing`` retains the latest terminal snapshot until a new attempt starts;
-``SendspinClient/pairingWindow`` becomes `nil` when its authorization window expires or closes, and
-its `expiresAt` is not a trust assertion. The peer ID is unverified while
+``SendspinClient/currentPairing`` retains the latest genuine terminal snapshot until a new attempt
+starts. A server activation that supersedes or abandons an attempt instead emits
+`ClientEvent.pairingAttemptSuperseded` with its ID and clears that attempt's projection.
+``SendspinClient/pairingWindow`` is connection-scoped and survives timed-out, cancelled, and
+superseded attempts. It becomes `nil` only when the window expires or closes; pass its published
+`attemptID` to ``SendspinClient/cancelPairing(attemptID:)`` to close a surviving window. Its
+`expiresAt` is not a trust assertion. The peer ID is unverified while
 ``PairingPeer/trustLevel`` is `.none`; the authorization window is not proof of server trust. Dynamic
 codes are six contiguous digits or a complete version-one `SP:1` token. If
-the dynamic method includes a speaker output capability, the code emission also includes a validated
-``DigitAudioPack``; the host app decodes and plays its clips. Static pairing instead requires the
+the presentation includes a speaker, the host app speaks single digits using its own bundled
+recordings or synthesizer; the server supplies no audio. Use ``PairingCodeEmission/languages`` as
+the language priority list for RFC 4647 Lookup matching against the languages the app supports,
+falling back to the app's default. Present dynamic digits in two groups of three, with a short gap
+between digits and a longer gap between groups; separators are presentation-only. Static pairing instead requires the
 host to provision a device-unique eight-digit ASCII decimal code when opening the device —
 ``SendspinDevice/open(storage:staticCode:capacity:)`` — and to declare `pairing: .staticCode` when
 creating the client; the library never supplies a fixed default or emits that secret. Declare

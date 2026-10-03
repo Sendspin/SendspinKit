@@ -16,9 +16,9 @@ public enum PairingPresentation: Sendable, Equatable {
     /// A display that can show decimal digits but cannot render QR codes.
     case digitDisplay
     /// A speaker with no display. Audio is presented by the host application.
-    case speaker(audio: DigitAudioDescriptor)
+    case speaker
     /// A display and speaker, with QR support on the display.
-    case displayAndSpeaker(audio: DigitAudioDescriptor)
+    case displayAndSpeaker
     /// Use the static code already provisioned in the persistent device.
     case staticCode
 
@@ -26,13 +26,6 @@ public enum PairingPresentation: Sendable, Equatable {
         switch self {
         case .tokenOnly, .staticCode: false
         case .display, .digitDisplay, .speaker, .displayAndSpeaker: true
-        }
-    }
-
-    var digitAudio: DigitAudioDescriptor? {
-        switch self {
-        case let .speaker(audio), let .displayAndSpeaker(audio): audio
-        case .tokenOnly, .display, .digitDisplay, .staticCode: nil
         }
     }
 

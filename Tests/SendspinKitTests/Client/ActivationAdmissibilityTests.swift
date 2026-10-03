@@ -34,23 +34,51 @@ struct ActivationAdmissibilityTests {
         #expect(verdict([.playback, .pairing], category: .longTerm) == .close(.unauthorized))
     }
 
-    @Test("Pairing PSK allows exactly ['pairing']")
+    @Test("All PSK categories implement the activity table with access on and off")
     func pairingPskAllowedSets() {
-        let directive = PairingDirective(method: PairMethod.pairingPsk)
-        #expect(
-            verdict([.pairing], pairing: directive, category: .pairing, offered: [PairMethod.pairingPsk])
-                == .admit
-        )
-        #expect(verdict([], category: .pairing) == .close(.unauthorized))
-        #expect(verdict([.playback], category: .pairing) == .close(.unauthorized))
-        #expect(verdict([.pairing, .playback], pairing: directive, category: .pairing) == .close(.unauthorized))
+        let rows: [(PskCategory, Bool, Set<Activity>, ActivationVerdict)] = [
+            (.longTerm, false, [], .admit),
+            (.longTerm, false, [.playback], .admit),
+            (.longTerm, false, [.pairing], .close(.unauthorized)),
+            (.longTerm, false, [.playback, .pairing], .close(.unauthorized)),
+            (.longTerm, true, [], .admit),
+            (.longTerm, true, [.playback], .admit),
+            (.longTerm, true, [.pairing], .close(.unauthorized)),
+            (.longTerm, true, [.playback, .pairing], .close(.unauthorized)),
+            (.pairing, false, [], .admit),
+            (.pairing, false, [.playback], .close(.pairingRequired)),
+            (.pairing, false, [.pairing], .admit),
+            (.pairing, false, [.playback, .pairing], .close(.pairingRequired)),
+            (.pairing, true, [], .admit),
+            (.pairing, true, [.playback], .admit),
+            (.pairing, true, [.pairing], .admit),
+            (.pairing, true, [.playback, .pairing], .admit),
+            (.sentinel, false, [], .admit),
+            (.sentinel, false, [.playback], .close(.pairingRequired)),
+            (.sentinel, false, [.pairing], .admit),
+            (.sentinel, false, [.playback, .pairing], .close(.pairingRequired)),
+            (.sentinel, true, [], .admit),
+            (.sentinel, true, [.playback], .admit),
+            (.sentinel, true, [.pairing], .admit),
+            (.sentinel, true, [.playback, .pairing], .admit)
+        ]
+        for (category, enabled, activities, expected) in rows {
+            let method = category == .pairing ? PairMethod.pairingPsk : PairMethod.staticPairingCode
+            #expect(verdict(
+                activities,
+                pairing: PairingDirective(method: method),
+                category: category,
+                unpairedAccess: enabled,
+                offered: [method]
+            ) == expected)
+        }
     }
 
-    @Test("Sentinel allows empty, pairing, and — only with unpaired access — playback")
-    func sentinelAllowedSets() {
+    @Test("Sentinel admits empty/playback and aborts combined activities without a pairing directive")
+    func sentinelCombinedWithoutDirectiveAborts() {
         #expect(verdict([], category: .sentinel, unpairedAccess: false) == .admit)
         #expect(verdict([.playback], category: .sentinel, unpairedAccess: true) == .admit)
-        #expect(verdict([.playback, .pairing], category: .sentinel) == .close(.unauthorized))
+        #expect(verdict([.playback, .pairing], category: .sentinel) == .abortPairing)
     }
 
     @Test("Sentinel admits an offered dynamic digits activation")
@@ -90,7 +118,7 @@ struct ActivationAdmissibilityTests {
                 unpairedAccess: false
             ) == .close(.pairingRequired)
         )
-        // No unpaired-access setting admits a mixed activity set on sentinel.
+        // A missing pairing directive prevents hypothetical admission.
         #expect(
             verdict(
                 [.playback, .pairing],
@@ -100,11 +128,26 @@ struct ActivationAdmissibilityTests {
         )
     }
 
+    @Test("Pairing PSK selects pairing_required before unauthorized")
+    func pairingPskRequiredSelection() {
+        #expect(verdict([.playback], roles: [.playerV1], category: .pairing, unpairedAccess: false)
+            == .close(.pairingRequired))
+        #expect(verdict(
+            [.playback, .pairing], roles: [.playerV1],
+            pairing: PairingDirective(method: PairMethod.pairingPsk), category: .pairing,
+            unpairedAccess: false, offered: [PairMethod.pairingPsk]
+        ) == .close(.pairingRequired))
+        #expect(verdict(
+            [.playback, .pairing], pairing: PairingDirective(method: PairMethod.staticPairingCode),
+            category: .pairing, unpairedAccess: false, offered: [PairMethod.staticPairingCode]
+        ) == .close(.unauthorized))
+    }
+
     @Test("Non-empty active_roles require a playback-capable connection")
     func rolesRequirePlaybackCapability() {
         // Empty activities on a long-term PSK are playback-capable → roles fine.
         #expect(verdict([], roles: [.playerV1], category: .longTerm) == .admit)
-        // A pairing activation is never playback-capable → roles are unauthorized.
+        // Pairing-only connections can carry roles when unpaired access is enabled.
         let directive = PairingDirective(method: PairMethod.pairingPsk)
         #expect(
             verdict(
@@ -113,7 +156,7 @@ struct ActivationAdmissibilityTests {
                 pairing: directive,
                 category: .pairing,
                 offered: [PairMethod.pairingPsk]
-            ) == .close(.unauthorized)
+            ) == .admit
         )
     }
 

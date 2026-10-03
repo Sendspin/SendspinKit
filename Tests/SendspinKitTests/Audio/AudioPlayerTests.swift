@@ -10,6 +10,11 @@ enum RealAudioTestGate {
     static let reason: Comment = "Set SENDSPIN_REAL_AUDIO_TESTS=1 to run real AudioQueue hardware tests"
 }
 
+extension Tag {
+    @Tag static var hardware: Self
+}
+
+@Suite(.tags(.hardware))
 struct AudioPlayerTests {
     @Test
     func initializeAudioPlayerWithDependencies() async {
@@ -17,6 +22,18 @@ struct AudioPlayerTests {
 
         let isPlaying = await player.isPlaying
         #expect(isPlaying == false)
+    }
+
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
+    func prepareCountsEachPrimedBufferOnce() async throws {
+        let player = AudioPlayer()
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        try await player.prepare(format: format, codecHeader: nil)
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        let expected = Int64(audioQueueBufferCount) * (Int64(audioQueueBufferByteSize) / Int64(bytesPerFrame))
+        let primedFrames = await player.totalFramesEnqueued
+        await player.stop()
+        #expect(primedFrames == expected)
     }
 
     @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))

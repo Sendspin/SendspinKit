@@ -24,28 +24,46 @@ for SwiftUI.
 - **Facade → engine:** the message loop enqueues `DataPlaneCommand`s onto the engine's ordered
   `DataPlaneSink`; the engine emits `EngineReport`s, drained by the connection's `reportDrain()`
   into `ConnectionEvent`s. (Both enums are `internal`; tests use `@testable import`.)
-- **Outbound sends:** the connection is the transport's single writer. Facade APIs
-  (player/artwork state-preference setters and controller commands) route through connection
-  methods that publish full `client/state` snapshots or send `client/command`. The facade stores no transport,
-  channel, or CryptoKit reference. `HandshakeDriver` owns each candidate
-  through raw init, Noise establishment, encrypted `server/hello`/`client/hello`, pairing setup,
-  and the first admitted activation, then transfers the channel to the connection.
+- **Outbound sends:** the connection is the admitted transport's single writer; state preferences,
+  availability, controller commands, group leave, pairing, clock sync, and goodbye use its FIFO slot.
+  Pairing PSK `client/pair-init` and `client/pair-finalize` share one acquisition and remain adjacent.
+  The facade stores no transport, channel, or CryptoKit reference; `HandshakeDriver` owns candidates
+  through raw init, Noise establishment, encrypted hello, pairing setup, and activation admission,
+  then transfers the channel to the connection.
 - **Expects:** a `SendspinTransport` (pull interface — `nextFrame()`, `sendRawText`,
   `sendBinary`, `disconnect`; single-consumer receive, returns nil on close) and a
   `ClockSyncProtocol`. There is no `send(Codable)` transport contract.
 
 ## Key Decisions
-- **Lifetime = owned objects, not generation counters.** The old `connectionGeneration` machinery was
-  replaced by: a supervisor task (`runLoop`), run-once teardown, an identity guard, and
-  `SessionValidityToken`. Reconnect builds a *new* connection+engine+token; `shutdown()` invalidates
-  the old token so its in-flight binary events are silently dropped.
+- Internal `audioOutputFactory` injection follows the facade's setup-to-connection engine handoff;
+  the engine owns the output, and protocol fixtures substitute hardware-free output.
+- Binaries are dropped while the last successfully published `client/state` reports
+  `available: false`, without disconnecting.
+- **Activation admission:** long-term PSKs admit empty or playback activities; pairing PSKs and
+  Sentinel also admit pairing and combined playback/pairing, with playback requiring unpaired access.
+  Adding pairing does not quiesce playback; omitted roles persist subject to the session's rules.
+- **Role removal:** versioned-role differences clear metadata/color/controller state and scheduled
+  updates, stop player/artwork/visualizer output, and discard their buffers; unchanged roles retain state.
+  Artwork end/removal/configuration changes invalidate pending image delivery and clear current artwork.
+- **Re-handshake:** only keys change; roles, streams, buffers, clock filter, and unchanged artwork
+  transfers persist, neither hello repeats, and only `server/activate` is admitted under new keys first.
+- **Lifetime = owned objects.** A supervisor task (`runLoop`), run-once teardown, an identity guard,
+  and `SessionValidityToken` govern ownership; reconnect builds a new connection, engine, and token.
+  `shutdown()` invalidates the retired token so its in-flight binary events are silently dropped.
+  `AdvertisingTransportOwnership` is passed through internal acceptance, arbitration, and setup;
+  the claim remains authoritative after admission returns, and `AdvertisingCandidateTransport` routes
+  pre-adoption cleanup through it; adoption removes the pending candidate and installs its original transport.
 - **Lifecycle events are render-applied, async.** `.streamStarted`/`.streamFormatChanged` derive from
   engine `EngineReport`s (`.started`/`.formatApplied`), so they are NOT wire-ordered against
   `.rawAudioChunk`. "No audio before stream/start" is enforced by the `playerStreamActive` gate at
   frame receipt, NOT by event ordering. Tests must assert within-class order + counts, not cross-class
   interleaving.
-- **Seamless-format classification is synchronous.** `announcedPlayerFormat` (set at enqueue in
-  handleStreamStart) keys `isFormatChange`; the public render-applied `currentStreamFormat` does not.
+- **Stream classification uses wire identity.** `announcedPlayerStream` stores format and codec header
+  in `handleStreamStart`; identical active announcements preserve the timeline, changed configurations
+  preserve buffered audio, and failed starts retry; render-applied `currentStreamFormat` is not the key.
+- **Start identity guards sibling tasks.** Engine start/format reports carry the start generation;
+  the connection applies only the report matching its pending generation because the message loop
+  and report drain are sibling tasks.
 - **`EngineReport.operationalState` carries the full target state** (bidirectional in/out of
   `.error`/`.synchronized`) — a one-way edge would break the single-writer claim.
 - **Stream-active mirrors are observational.** The facade's
@@ -57,9 +75,14 @@ for SwiftUI.
   the snapshot shared by handshake candidates and active sessions; updates do not rely on
   stale copies held by individual connections.
 - **Pairing state is connection-owned and serialized.** `SendspinConnection` holds the single active
-  code attempt, pairing window primitive, timeout/lifetime tasks, and pairing-activate counter. The
-  app gesture uses the connection-owned window primitive; a re-handshake clears attempt state and
-  resets the activate counter before the next activation.
+  attempt, connection-scoped pairing window and failed-confirmation count, timeout/lifetime tasks,
+  pairing-activate counter, and client-abort discard state. Only a client-sent abort opens the
+  discard interval. Window identity cancellation closes authorization even without an active attempt.
+  Activations emit `pairingAttemptSuperseded` and replace attempt state without consuming the window
+  or resetting the device-wide budget; the next activation ends the discard interval.
+  `openPairingWindow` resets the emitted-round budget, including an already-open window.
+  Success, five failed static confirmations, cancellation, expiry, or disconnect closes the window;
+  re-handshake clears attempt state and resets the activate counter without clearing connection state.
 - **The encoder has no key strategy.** Every outbound `Codable` model declares explicit `CodingKeys`,
   including keys whose wire spelling differs from Swift naming; never rely on encoder key-strategy
   configuration for protocol output.
@@ -76,7 +99,13 @@ for SwiftUI.
 - `SendspinClient.swift` — MainActor facade; connection lifecycle, observable state, events, and state-preference APIs.
 - `HandshakeDriver.swift` — candidate Noise establishment, pairing setup, encrypted hello/activate admission, channel handoff.
 - `SendspinConnection.swift` — encrypted message loop, state snapshots, gates, supervisor, `reportDrain`, binary emission.
-- `SendspinClient+Commands.swift` — player/artwork state preferences and controller commands.
+- `SendspinClient+Commands.swift` — player/artwork/visualizer preferences, availability, pairing, group leave, and controller commands.
+- `SendspinConnection+Outbound.swift` — FIFO encrypted sends, adjacent PSK pair, and controller validation.
+- `SendspinConnection+MessageHandling.swift` — activation cleanup, re-handshake, pairing lifecycle, and stream configuration.
+- `SendspinConnection+RequestFormat.swift` — output-route negotiation, preference snapshots, and fallback status.
+- `ActivationAdmissibility.swift` / `SendspinPersistenceProvider.swift` — activity admission and shared pairing policy runtime.
+- `SendspinConnection.artworkDeliveryValidity` — `SessionValidityToken` for pending artwork delivery invalidation.
+- `../../../Tests/SendspinKitTests/Client/PlayerStreamConfigurationTests.swift` — active-stream identity and retry coverage.
 - `ConnectionEvent.swift` — control-plane event enum + `ConnectionLifecycle`.
 - `SessionValidityToken.swift` — atomic check-and-yield guard for stale binary events.
 - `PlayerConfiguration.swift` — adds `requiredLeadTimeMs` / `minBufferMs` (player role, `client/state` player object).
@@ -85,5 +114,5 @@ for SwiftUI.
 ## Gotchas
 - Do not add MainActor-observable production surface just to make a test observable — it violates the
   off-main goal. Assert via the engine command/report channels instead.
-- A new stream can set `playerStreamActive=true` before a stale prior-stream report drains; the
-  synchronous `announcedPlayerFormat` narrows this but a small residual window is known/accepted.
+- A new stream can set `playerStreamActive=true` before a stale prior-stream report drains;
+  start/format reports require the matching pending start generation, not the stream-active flag.

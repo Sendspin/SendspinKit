@@ -92,6 +92,7 @@ actor SendspinConnection {
     var visualizerTimestampFloor: Int64?
     var artworkStateSent = false
     var artworkStreamChannels: [StreamArtworkChannelConfig] = []
+    var artworkDeliveryValidity = SessionValidityToken()
     var artworkTransfer: ArtworkTransfer?
     var artworkPending: [Int: ScheduledArtwork] = [:]
     var artworkScheduleTasks: [Int: Task<Void, Never>] = [:]
@@ -101,6 +102,15 @@ actor SendspinConnection {
     var colorScheduleTask: Task<Void, Never>?
     var isClockSynced = false
     var announcedPlayerStream: (format: AudioFormatSpec, codecHeader: Data?)?
+    enum PlayerStartState: Equatable {
+        case none
+        case pending(UInt64)
+        case started(UInt64)
+        case failed(UInt64)
+    }
+
+    var playerStartState: PlayerStartState = .none
+    var playerStartGeneration: UInt64 = 0
     /// Written from several places (this method, the engine report drain, stream-start
     /// validation). `operationalStateEpoch` stamps every one of them so a rollback can
     /// tell "nothing moved" from "something moved to the same value".
@@ -113,6 +123,8 @@ actor SendspinConnection {
     /// State publication is serialized by the actor; every publication is a full snapshot.
     var clientStateSendInFlight = false
     var clientStateDirty = false
+    // Availability opens only after a successful client/state publication.
+    var publishedAvailability = false
 
     /// Outbound whole-message fence: nonces burn per fragment up front and the
     /// fragments must reach the transport with nothing interleaved, so one
@@ -128,6 +140,7 @@ actor SendspinConnection {
     /// Server info
     var currentServerId: String?
     var serverName: String
+    let serverLanguages: [String]
     var activities: Set<Activity>
     var pskCategory: PskCategory
     var matchedPskId: String
@@ -168,13 +181,12 @@ actor SendspinConnection {
         let pairingIndex: UInt32
         let nonceB: Data
         let commitB: Data
-        let digitAudioDescriptor: DigitAudioDescriptor?
-        var digitAudioValidator: DigitAudioPackValidator?
         var nonceA: Data?
         var prs: Data?
         var emission: PairingCodeEmission?
-        /// The atomically reserved global round. Zero means the attempt is held pending
-        /// until an explicit dynamic-budget reset action makes a reservation possible.
+        /// The attempt-local round fed into the CPace sid: 1 on the first validated
+        /// server/pair-init, incremented once per round. The device store owns the
+        /// 20-round budget and charges each valid round immediately before emission.
         var round: UInt32
         var sid: Data?
         var pairInitSent: Bool
@@ -198,6 +210,8 @@ actor SendspinConnection {
     var staticPairingAttempt: StaticPairingAttempt?
     var pairingActivateCounter: UInt32 = 0
     var pairingWindowOpen = false
+    var pairingWindowFailedConfirmations = 0
+    var discardingPairingMessages = false
     var pairingWindowAttemptID: PairingAttemptID?
     var pairingWindowExpiresAt: PresentationInstant?
     var pairingWindowTask: Task<Void, Never>?
@@ -260,6 +274,7 @@ actor SendspinConnection {
         channel: consuming NoiseChannel,
         serverId: String,
         serverName: String,
+        serverLanguages: [String] = [],
         activities: Set<Activity>,
         activeRoles: Set<VersionedRole>,
         pskCategory: PskCategory,
@@ -317,11 +332,12 @@ actor SendspinConnection {
         self.channel = channel
         currentServerId = serverId
         self.serverName = serverName
+        self.serverLanguages = serverLanguages
         self.activities = activities
         self.activeRoles = activeRoles
         let preallocatedPairing = pairingConfigurationRuntime != nil
-            && (activities.isEmpty || activities == [.pairing])
-        pairingAttemptActive = activities == [.pairing]
+            && (activities.isEmpty || activities.contains(.pairing))
+        pairingAttemptActive = activities.contains(.pairing)
         pairingAttemptID = preallocatedPairing ? PairingAttemptID() : nil
         pairingAttemptPeer = preallocatedPairing
             ? PairingPeer(id: serverId, name: serverName)
@@ -554,6 +570,7 @@ actor SendspinConnection {
     /// Graceful disconnect: send goodbye and close.
     /// Idempotent after lifecycle leaves `.running`.
     func disconnect(reason: GoodbyeReason) async {
+        let disconnectStartedAt = MonotonicClock.absoluteMicroseconds()
         // Record the reason BEFORE the first await (wins a race with loss)
         shuttingDown = true
         disconnectReason = .explicit(reason)
@@ -576,12 +593,18 @@ actor SendspinConnection {
         lifecycle = .shuttingDown
 
         // Send exactly one goodbye (best-effort; ignore send failures)
+        let goodbyeStartedAt = MonotonicClock.absoluteMicroseconds()
         do {
             try await sendWrapped(ClientGoodbyeMessage(payload: GoodbyePayload(reason: reason)))
         } catch {
             Log.client.warning("Failed to send goodbye: \(error)")
         }
 
+        let goodbyeUs = MonotonicClock.absoluteMicroseconds() - goodbyeStartedAt
+
+        // This phase includes all of finishTeardown; its timings are nested,
+        // not additional durations to add to close+teardown.
+        let closeStartedAt = MonotonicClock.absoluteMicroseconds()
         // Close transport to trigger runLoop() return
         await transport.disconnect()
 
@@ -589,6 +612,14 @@ actor SendspinConnection {
         if let supervisor = supervisorTask {
             await supervisor.value
         }
+        let closeUs = MonotonicClock.absoluteMicroseconds() - closeStartedAt
+        let disconnectUs = MonotonicClock.absoluteMicroseconds() - disconnectStartedAt
+        Log.client.info(
+            """
+            disconnect: goodbye=\(goodbyeUs, privacy: .public)us \
+            close+teardown=\(closeUs, privacy: .public)us total=\(disconnectUs, privacy: .public)us
+            """
+        )
     }
 
     /// Hard shutdown: no goodbye, kill transport, wait for supervisor.

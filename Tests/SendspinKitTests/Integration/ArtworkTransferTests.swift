@@ -2,6 +2,66 @@ import Foundation
 @testable import SendspinKit
 import Testing
 
+private final class ArtworkConversionEntry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var entered = false
+    var value: Bool {
+        lock.withLock { entered }
+    }
+
+    func mark() {
+        lock.withLock { entered = true }
+    }
+}
+
+private actor HeldArtworkClock: ClockSyncProtocol {
+    // A blocking test double owns its executor so it never blocks the cooperative pool.
+    private let queue = DispatchSerialQueue(label: "SendspinKitTests.HeldArtworkClock")
+    nonisolated var unownedExecutor: UnownedSerialExecutor {
+        queue.asUnownedSerialExecutor()
+    }
+
+    nonisolated let entered = ArtworkConversionEntry()
+    nonisolated let release = DispatchSemaphore(value: 0)
+    nonisolated func waitForConversion() async -> Bool {
+        await waitUntil { self.entered.value }
+    }
+
+    let hasSynced = true
+    func serverTimeToLocal(_ serverTime: Int64) -> Int64 {
+        if serverTime == 10 {
+            entered.mark()
+            #expect(release.wait(timeout: .now() + 5) == .success)
+        }
+        return serverTime
+    }
+
+    func localTimeToServer(_ localTime: Int64) -> Int64 {
+        localTime
+    }
+
+    func processServerTime(clientTransmitted _: Int64, serverReceived _: Int64, serverTransmitted _: Int64, clientReceived _: Int64) {}
+    func snapshot() -> TimeFilterSnapshot? {
+        nil
+    }
+
+    func diagnosticSnapshot() -> ClockSynchronizer.DiagnosticSnapshot? {
+        nil
+    }
+}
+
+private final class ArtworkApplicationCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    func record() {
+        lock.withLock { count += 1 }
+    }
+
+    var value: Int {
+        lock.withLock { count }
+    }
+}
+
 struct ArtworkTransferTests {
     private func announce(
         channel: Int = 0,
@@ -59,6 +119,7 @@ struct ArtworkTransferTests {
             scheduleSleep: scheduleSleep,
             artworkObserver: observer
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.sendClientState()
         await fixture.connection.handleStreamStart(artworkStart())
         return fixture
@@ -91,6 +152,99 @@ struct ArtworkTransferTests {
         #expect(artwork.channel == 0)
         #expect(artwork.data == Data([0xA, 0xB, 0xC, 0xD, 0xE]))
         #expect(artwork.localDisplayTime == 123)
+        await fixture.connection.shutdown()
+    }
+
+    @Test
+    func completionSuspendedAcrossRemovalDoesNotDeliver() async throws {
+        let clock = HeldArtworkClock()
+        let (stream, sink) = AsyncStream<ArtworkData>.makeStream()
+        let fixture = try await makeEstablishedConnection(
+            clock: clock, activeRoles: [.artworkV1], artworkSink: sink, roles: [.artworkV1],
+            initialArtworkState: activeArtworkState(), scheduleNow: { 1_000_000 }
+        )
+        await fixture.connection.establishTestClockSync()
+        try await fixture.connection.sendClientState()
+        await fixture.connection.handleStreamStart(artworkStart())
+        try await fixture.connection.handleArtworkBinary(announce())
+        let completion = Task { try await fixture.connection.handleArtworkBinary(part()) }
+        let entered = await clock.waitForConversion()
+        #expect(entered)
+        await fixture.connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
+            activities: [.playback], activeRoles: []
+        )))
+        clock.release.signal()
+        try await completion.value
+        sink.finish()
+        var iterator = stream.makeAsyncIterator()
+        #expect(await iterator.next() == nil)
+        await fixture.connection.shutdown()
+    }
+
+    private func completionAcrossConfigurationStart(changed: Bool) async throws {
+        let clock = HeldArtworkClock()
+        let applied = ArtworkApplicationCount()
+        let (stream, sink) = AsyncStream<ArtworkData>.makeStream()
+        let fixture = try await makeEstablishedConnection(
+            clock: clock, activeRoles: [.artworkV1], artworkSink: sink, roles: [.artworkV1],
+            initialArtworkState: activeArtworkState(), scheduleNow: { 1_000_000 },
+            artworkObserver: { _ in applied.record() }
+        )
+        await fixture.connection.establishTestClockSync()
+        try await fixture.connection.sendClientState()
+        await fixture.connection.handleStreamStart(artworkStart())
+        try await fixture.connection.handleArtworkBinary(announce())
+        let completion = Task { try await fixture.connection.handleArtworkBinary(part()) }
+        let entered = await clock.waitForConversion()
+        #expect(entered)
+        await fixture.connection.handleStreamStart(artworkStart(source: changed ? .artist : .album))
+        clock.release.signal()
+        try await completion.value
+        sink.finish()
+        var delivered: [ArtworkData] = []
+        for await artwork in stream {
+            delivered.append(artwork)
+        }
+        #expect(delivered.count == (changed ? 0 : 1))
+        #expect(applied.value == (changed ? 0 : 1))
+        await fixture.connection.shutdown()
+    }
+
+    @Test
+    func changedConfigurationDropsSuspendedCompletion() async throws {
+        try await completionAcrossConfigurationStart(changed: true)
+    }
+
+    @Test
+    func unchangedConfigurationPreservesSuspendedCompletion() async throws {
+        try await completionAcrossConfigurationStart(changed: false)
+    }
+
+    @Test
+    func multipartCompletionSurvivesUnrelatedRoleRemoval() async throws {
+        let (stream, sink) = AsyncStream<ArtworkData>.makeStream()
+        let fixture = try await makeEstablishedConnection(
+            clock: MockClockSynchronizer(offset: 0, drift: 0),
+            activeRoles: [.artworkV1, .metadataV1], artworkSink: sink,
+            roles: [.artworkV1, .metadataV1], initialArtworkState: activeArtworkState(),
+            scheduleNow: { 1_000_000 }
+        )
+        await fixture.connection.establishTestClockSync()
+        try await fixture.connection.sendClientState()
+        await fixture.connection.handleStreamStart(artworkStart())
+        let bytes = Data([0xA, 0xB, 0xC])
+        try await fixture.connection.handleArtworkBinary(announce(totalSize: UInt32(bytes.count)))
+        try await fixture.connection.handleArtworkBinary(part(data: bytes.prefix(1)))
+        await fixture.connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
+            activities: [.playback], activeRoles: [.artworkV1]
+        )))
+        try await fixture.connection.handleArtworkBinary(part(data: bytes.dropFirst()))
+        let result = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
+            var iterator = stream.makeAsyncIterator()
+            return await iterator.next()
+        }
+        let artwork = try #require(try? result?.get())
+        #expect(artwork.data == bytes)
         await fixture.connection.shutdown()
     }
 
@@ -180,8 +334,8 @@ struct ArtworkTransferTests {
         try await future.connection.handleArtworkBinary(announce(timestamp: 100, totalSize: 0))
         let futureConnection = future.connection
         #expect(await waitUntil(timeout: .seconds(2)) { await futureConnection.artworkPending.count == 1 })
+        try #require(await waitUntil { await sleeper.isWaiting })
         schedule.now = 100
-        await Task.yield()
         await sleeper.fireAll()
         let futureResult = await outcomeOfUnstructuredOperation(timeout: .seconds(2)) {
             var iterator = futureStream.makeAsyncIterator(); return await iterator.next()
@@ -271,6 +425,10 @@ private final class ManualTestClock: @unchecked Sendable {
 
 private actor ManualTestSleeper {
     private var continuations: [CheckedContinuation<Void, Error>] = []
+
+    var isWaiting: Bool {
+        !continuations.isEmpty
+    }
 
     func sleep(_: Duration) async throws {
         try await withCheckedThrowingContinuation { continuations.append($0) }

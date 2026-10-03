@@ -26,7 +26,7 @@ struct BinaryGateIntegrationTests {
     @Test("player binary requires the player state send")
     func playerBinaryIsDroppedBeforeStateAndDeliveredAfter() async throws {
         let audio = AsyncStream<AudioChunk>.makeStream()
-        let fixture = try await makeEstablishedConnection(audioSink: audio.1)
+        let fixture = try await makeEstablishedConnection(clock: StubClock(), audioSink: audio.1)
         let values = BinaryGateValues<AudioChunk>()
         let consumer = Task {
             for await value in audio.0 {
@@ -42,6 +42,7 @@ struct BinaryGateIntegrationTests {
         try await Task.sleep(for: .milliseconds(50))
         #expect(await values.count == 0)
 
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.publishClientState()
         await fixture.connection.handleAudioChunk(frame)
         #expect(await waitUntil(timeout: .seconds(3)) { await values.count == 1 })
@@ -56,7 +57,7 @@ struct BinaryGateIntegrationTests {
         let visualizer = AsyncStream<VisualizerFrame>.makeStream()
         let visualizerState = try VisualizerStateObject(types: [.loudness], rateMax: 30)
         let fixture = try await makeEstablishedConnection(
-            activeRoles: [.playerV1, .visualizerV1],
+            clock: StubClock(), activeRoles: [.playerV1, .visualizerV1],
             audioSink: audio.1,
             visualizerSink: visualizer.1,
             roles: [.playerV1, .visualizerV1],
@@ -95,6 +96,7 @@ struct BinaryGateIntegrationTests {
             },
             "A valid player payload must still reach the engine when visualizer setup is invalid"
         )
+        await fixture.connection.establishTestClockSync()
         try await fixture.connection.publishClientState()
         let frame = try #require(BinaryMessage(data: visualizerFrame()))
         await fixture.connection.handleVisualizerBinary(frame, arrival: 0)
@@ -331,7 +333,7 @@ struct BinaryGateIntegrationTests {
     @Test("role-changing activation resets the player binary gate")
     func roleChangingActivationRequiresFreshPlayerState() async throws {
         let audio = AsyncStream<AudioChunk>.makeStream()
-        let fixture = try await makeEstablishedConnection(audioSink: audio.1)
+        let fixture = try await makeEstablishedConnection(clock: StubClock(), audioSink: audio.1)
         let values = BinaryGateValues<AudioChunk>()
         let consumer = Task {
             for await value in audio.0 {
@@ -343,6 +345,7 @@ struct BinaryGateIntegrationTests {
             player: StreamStartPlayer(codec: AudioCodec.pcm.rawValue, sampleRate: 44_100, channels: 2, bitDepth: 16, codecHeader: nil),
             artwork: nil, visualizer: nil
         )))
+        await fixture.connection.establishTestClockSync()
         let active = ServerActivateMessage(payload: ServerActivatePayload(activities: [.playback], activeRoles: [.playerV1]))
         await fixture.connection.handleServerActivate(active)
         #expect(await fixture.connection.playerStateSent)

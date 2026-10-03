@@ -29,12 +29,15 @@ actor AudioEngine {
     private struct FormatBoundary: Sendable {
         let format: AudioFormatSpec
         let codecHeader: Data?
+        let startGeneration: UInt64
     }
 
     /// Formats are retained by generation because several wire-ordered changes may be
     /// announced before the scheduler reaches the corresponding render boundaries.
     private var formatBoundaries: [UInt64: FormatBoundary] = [:]
     private var streamGeneration: UInt64 = 0
+    private var playerStartGeneration: UInt64 = 0
+    private var playerStartFailed = false
     /// Generation floor for lifecycle clears/ends. Format changes intentionally do not advance it,
     /// because old generations remain valid until their natural render boundary.
     private var discardBeforeGeneration: UInt64 = 0
@@ -74,6 +77,7 @@ actor AudioEngine {
     private var startupCoordinatorTask: Task<Void, Never>?
     private var schedulerOutputTask: Task<Void, Never>?
     private var telemetryTask: Task<Void, Never>?
+    private let telemetrySleep: @Sendable (Duration) async throws -> Void
 
     // Running state
     private var running = false
@@ -204,6 +208,7 @@ actor AudioEngine {
     private let engineID = UUID().uuidString
 
     private struct StartupBuffer {
+        let startGeneration: UInt64
         let sequence: UInt64
         let format: AudioFormatSpec
         let startupLeadUs: Int64
@@ -358,12 +363,14 @@ actor AudioEngine {
         clock: any ClockSyncProtocol,
         enableStartupBuffering: Bool = false,
         startupMinBufferMs: Int = 0,
-        startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() }
+        startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
+        telemetrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.output = output
         audioScheduler = scheduler
         self.clock = clock
         self.startupNow = startupNow
+        self.telemetrySleep = telemetrySleep
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
@@ -379,26 +386,20 @@ actor AudioEngine {
     init(
         clock: any ClockSyncProtocol,
         config: PlayerConfiguration,
-        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)? = nil,
+        audioOutputFactory: @Sendable (PlayerConfiguration, (@Sendable (AudioOutputTransition) -> Void)?) -> any AudioOutput = AudioEngine
+            .makeProductionOutput
     ) {
         let audioScheduler = AudioScheduler(
             clockSync: clock,
             releaseLeadTime: TimeInterval(config.minBufferMs) / 1_000.0
         )
 
-        // Build AudioPlayer with the same configuration the client used to construct it.
-        let pcmBufferCapacity = max(config.bufferCapacity / 2, 131_072) // min 128KB
-        let audioPlayer = AudioPlayer(
-            pcmBufferCapacity: pcmBufferCapacity,
-            volumeControl: VolumeControlFactory.resolve(mode: config.volumeMode).control,
-            processCallback: config.processCallback,
-            outputTransitionCallback: outputTransitionCallback
-        )
-
-        output = audioPlayer
+        output = audioOutputFactory(config, outputTransitionCallback)
         self.audioScheduler = audioScheduler
         self.clock = clock
         startupNow = { MonotonicClock.absoluteMicroseconds() }
+        telemetrySleep = { try await Task.sleep(for: $0) }
         let sink = DataPlaneSink()
         _commandsSink = sink
         _commandStream = sink.commands
@@ -409,6 +410,18 @@ actor AudioEngine {
         startupMinBufferUs = Int64(config.minBufferMs) * 1_000
         outputDelayMs = config.initialOutputDelayMs
         _commandsSink.enqueue(.setOutputDelay(config.initialOutputDelayMs))
+    }
+
+    nonisolated static func makeProductionOutput(
+        config: PlayerConfiguration,
+        outputTransitionCallback: (@Sendable (AudioOutputTransition) -> Void)?
+    ) -> any AudioOutput {
+        AudioPlayer(
+            pcmBufferCapacity: max(config.bufferCapacity / 2, 131_072),
+            volumeControl: VolumeControlFactory.resolve(mode: config.volumeMode).control,
+            processCallback: config.processCallback,
+            outputTransitionCallback: outputTransitionCallback
+        )
     }
 
     // MARK: - Public interface
@@ -424,8 +437,13 @@ actor AudioEngine {
     }
 
     /// Enqueue a new stream boundary and reopen its route epoch atomically.
-    nonisolated func enqueueStreamStart(format: AudioFormatSpec, codecHeader: Data?) {
-        routeInvalidationGate.enqueueStreamStart(format: format, codecHeader: codecHeader, to: _commandsSink)
+    nonisolated func enqueueStreamStart(format: AudioFormatSpec, codecHeader: Data?, startGeneration: UInt64 = 0) {
+        routeInvalidationGate.enqueueStreamStart(
+            format: format,
+            codecHeader: codecHeader,
+            startGeneration: startGeneration,
+            to: _commandsSink
+        )
     }
 
     /// Enqueue a player end boundary and close its route epoch atomically.
@@ -438,7 +456,7 @@ actor AudioEngine {
         routeInvalidationGate.enqueueStreamEnd(roles: roles, to: _commandsSink)
     }
 
-    /// Enqueue an ordered format change. Existing PCM remains valid until its render boundary.
+    /// Test-only unstamped enqueue; production wraps format changes with their start generation.
     nonisolated func enqueueFormatChange(format: AudioFormatSpec, codecHeader: Data?) {
         _commandsSink.enqueue(.formatChange(format, codecHeader: codecHeader))
     }
@@ -454,10 +472,11 @@ actor AudioEngine {
     }
 
     /// Atomically open a new ingress epoch and enqueue the route transition.
-    nonisolated func enqueueRouteInvalidatedFormatChange(format: AudioFormatSpec, codecHeader: Data?) {
+    nonisolated func enqueueRouteInvalidatedFormatChange(format: AudioFormatSpec, codecHeader: Data?, startGeneration: UInt64 = 0) {
         routeInvalidationGate.enqueueRouteInvalidatedFormatChange(
             format: format,
             codecHeader: codecHeader,
+            startGeneration: startGeneration,
             to: _commandsSink
         )
     }
@@ -502,12 +521,12 @@ actor AudioEngine {
         // Drain task consumes commands and applies them
         drainTask = Task {
             for await command in _commandStream {
+                await apply(command)
                 appliedKinds.append(command.kind)
                 if appliedKinds.count > Self.appliedKindsRetentionLimit {
                     // Trim in batches; removeFirst(1) on an Array is O(n).
                     appliedKinds.removeFirst(appliedKinds.count - Self.appliedKindsRetentionLimit / 2)
                 }
-                await apply(command)
                 _commandsSink.decrementDepth()
             }
         }
@@ -531,6 +550,7 @@ actor AudioEngine {
     /// Shutdown the engine and terminate all three tasks.
     /// Must be called to clean up resources. Idempotent.
     func shutdown() async {
+        let shutdownStartedAt = MonotonicClock.absoluteMicroseconds()
         guard running else { return }
         running = false
 
@@ -553,7 +573,9 @@ actor AudioEngine {
         startupReleaseInProgress = false
         startupSequence &+= 1
         outputHasStarted = false
+        let outputStopStartedAt = MonotonicClock.absoluteMicroseconds()
         await output.stop()
+        let outputStopUs = MonotonicClock.absoluteMicroseconds() - outputStopStartedAt
 
         // 5. Finish the scheduler and clear its queue
         await audioScheduler.finish()
@@ -575,6 +597,10 @@ actor AudioEngine {
 
         // 8. Finish the reports stream
         reportContinuation.finish()
+        let shutdownUs = MonotonicClock.absoluteMicroseconds() - shutdownStartedAt
+        Log.audio.info(
+            "AudioEngine shutdown: outputStop=\(outputStopUs, privacy: .public)us total=\(shutdownUs, privacy: .public)us"
+        )
     }
 
     private func signalStartupCoordinator(_ signal: StartupSignal) {
@@ -702,7 +728,12 @@ actor AudioEngine {
         guard !shuttingDown else { return }
 
         switch command {
-        case let .streamStart(format, codecHeader):
+        case let .withStartGeneration(generation, command):
+            playerStartGeneration = generation
+            await apply(command)
+
+        case let .streamStart(format, codecHeader, generation):
+            playerStartGeneration = generation
             await applyStreamStart(format: format, codecHeader: codecHeader)
 
         case let .chunk(data, ts):
@@ -750,6 +781,8 @@ actor AudioEngine {
     /// Start a new stream: init decoder, then either start immediately (test path)
     /// or prepare the backend and wait for startup lead-time/min-buffer priming.
     private func applyStreamStart(format: AudioFormatSpec, codecHeader: Data?) async {
+        let startGeneration = playerStartGeneration
+        playerStartFailed = false
         cancelStartupDeadline()
         startupBuffer = nil
         startupFormat = nil
@@ -779,6 +812,7 @@ actor AudioEngine {
                 startupFormat = format
                 startupLeadUs = await output.startupLeadMicroseconds()
                 startupBuffer = StartupBuffer(
+                    startGeneration: startGeneration,
                     sequence: startupSequence,
                     format: format,
                     startupLeadUs: startupLeadUs
@@ -790,7 +824,7 @@ actor AudioEngine {
                 outputHasStarted = true
                 armUnderrunGrace()
                 await audioScheduler.startScheduling()
-                yield(.started(format))
+                yield(.started(format, startGeneration: startGeneration))
             }
         } catch {
             startupBuffer = nil
@@ -798,7 +832,8 @@ actor AudioEngine {
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupReleaseInProgress = false
             signalStartupCoordinator(.stateChanged)
-            yield(.startFailed(reason: error.localizedDescription))
+            playerStartFailed = true
+            yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
         }
     }
 
@@ -938,6 +973,7 @@ actor AudioEngine {
         }
 
         let sequence = buffer.sequence
+        let startGeneration = buffer.startGeneration
         startupReleaseInvocation &+= 1
         let invocation = startupReleaseInvocation
         startupReleaseInProgress = true
@@ -954,7 +990,7 @@ actor AudioEngine {
         } catch {
             guard startupReleaseInProgress, startupSequence == sequence else { return }
             startupReleaseInProgress = false
-            yield(.startFailed(reason: error.localizedDescription))
+            yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
             return
         }
         guard startupReleaseInProgress, startupSequence == sequence else {
@@ -1059,11 +1095,13 @@ actor AudioEngine {
         startupTelemetry += " lateness=\(latenessUs)us"
         Log.audio.debug("\(startupTelemetry, privacy: .public)")
         var deferred: [StartupBufferedChunk] = []
+        let primingGeneration = discardBeforeGeneration
 
         do {
             Self.rebase(&buffer.chunks, from: bufferDelayUs, to: Self.outputDelayMicroseconds(outputDelayMs))
             bufferDelayUs = Self.outputDelayMicroseconds(outputDelayMs)
-            for chunk in buffer.chunks where chunk.playTimeMicroseconds <= releaseHorizon {
+            for chunk in buffer.chunks where chunk.playTimeMicroseconds <= releaseHorizon
+                && chunk.generation == primingGeneration {
                 guard startupReleaseInProgress, startupSequence == sequence else {
                     let invalidatedLog = "startup priming invalidated engine=\(engineID) sequence=\(sequence) invocation=\(invocation) stage=pcm"
                     Log.audio.debug("\(invalidatedLog, privacy: .public)")
@@ -1098,17 +1136,18 @@ actor AudioEngine {
             armUnderrunGrace()
             await audioScheduler.startScheduling()
             guard startupSequence == sequence else { return }
-            yield(.started(buffer.format))
+            yield(.started(buffer.format, startGeneration: startGeneration))
         } catch {
             guard startupSequence == sequence else { return }
             startupReleaseInProgress = false
             await output.stop()
             outputHasStarted = false
-            yield(.startFailed(reason: error.localizedDescription))
+            yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
             return
         }
 
-        for chunk in buffer.chunks where chunk.playTimeMicroseconds > releaseHorizon {
+        for chunk in buffer.chunks where chunk.playTimeMicroseconds > releaseHorizon
+            || chunk.generation != primingGeneration {
             await audioScheduler.schedule(
                 pcm: chunk.pcmData,
                 serverTimestamp: chunk.originalTimestamp,
@@ -1160,21 +1199,20 @@ actor AudioEngine {
         codecHeader: Data?,
         generation: UInt64
     ) async {
+        let startGeneration = playerStartGeneration
+        if playerStartFailed, !outputHasStarted, startupFormat == nil {
+            await applyStreamStart(format: format, codecHeader: codecHeader)
+            return
+        }
         streamGeneration = generation
-        formatBoundaries[generation] = FormatBoundary(format: format, codecHeader: codecHeader)
+        formatBoundaries[generation] = FormatBoundary(format: format, codecHeader: codecHeader, startGeneration: startGeneration)
         chunkTimingFormat = format
         chunkTimingDiagnostics = ChunkTimingDiagnostics()
         playbackTimeline = AudioChunkPlaybackTimeline()
         playbackTimelineTransitionEnabled = true
 
-        // During startup the prepared queue is not audible yet. Replacing it is cancellation,
-        // not a seamless render transition; retain the one startup lead calculation and restart
-        // priming with the new decoder/format.
-        if !outputHasStarted, startupFormat != nil {
-            await applyStreamStart(format: format, codecHeader: codecHeader)
-            return
-        }
-
+        // Startup PCM retains its generation and prepared output format; later generations
+        // cross the same render boundary as a format change during steady playback.
         do {
             try await output.swapDecoder(format: format, codecHeader: codecHeader)
         } catch {
@@ -1182,7 +1220,7 @@ actor AudioEngine {
             // old decoder, and stopping here would truncate already-scheduled old PCM.
             failedDecoderGeneration = generation
             Log.audio.error("Decoder swap failed; quarantining generation \(generation): \(error.localizedDescription)")
-            yield(.startFailed(reason: error.localizedDescription))
+            yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
         }
     }
 
@@ -1190,6 +1228,7 @@ actor AudioEngine {
     private func applyStreamClear(roles: [String]?) async {
         let shouldClear = roles == nil || roles?.contains("player") ?? false
         if shouldClear {
+            let pendingBoundary = formatBoundaries[streamGeneration]
             cancelStartupDeadline()
             startupReleaseInProgress = false
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
@@ -1200,9 +1239,14 @@ actor AudioEngine {
             failedDecoderGeneration = nil
             discardBeforeGeneration = streamGeneration
             formatBoundaries.removeAll(keepingCapacity: true)
+            // Clear retires PCM, not the announced configuration awaiting its render boundary.
+            if let pendingBoundary {
+                formatBoundaries[streamGeneration] = pendingBoundary
+            }
             signalStartupCoordinator(.stateChanged)
             if !outputHasStarted, let format = startupFormat {
                 startupBuffer = StartupBuffer(
+                    startGeneration: startupBuffer?.startGeneration ?? playerStartGeneration,
                     sequence: startupSequence,
                     format: format,
                     startupLeadUs: startupLeadUs
@@ -1286,7 +1330,7 @@ actor AudioEngine {
                               generation >= discardBeforeGeneration else { continue }
                         Log.audio.error("Hardware format switch failed: \(error.localizedDescription)")
                         failedTransitionGeneration = generation
-                        yield(.startFailed(reason: error.localizedDescription))
+                        yield(.startFailed(reason: error.localizedDescription, startGeneration: boundary.startGeneration))
                         continue
                     }
                     guard token == transitionToken,
@@ -1296,9 +1340,9 @@ actor AudioEngine {
                     await audioScheduler.startScheduling()
                     formatBoundaries = formatBoundaries.filter { $0.key > generation }
                     currentGeneration = generation
-                    yield(.formatApplied(boundary.format))
+                    yield(.formatApplied(boundary.format, startGeneration: boundary.startGeneration))
                 } else {
-                    guard generation == streamGeneration, generation >= discardBeforeGeneration else { continue }
+                    guard generation <= streamGeneration, generation >= discardBeforeGeneration else { continue }
                     currentGeneration = generation
                 }
             }
@@ -1319,7 +1363,7 @@ actor AudioEngine {
         var underrunMonitor = UnderrunMonitor()
 
         while !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(500))
+            try? await telemetrySleep(.milliseconds(500))
             tickCount += 1
 
             // Poll for reanchor
@@ -1430,7 +1474,16 @@ actor AudioEngine {
                     + " startOffset=\(tSnap.startupOffsetUs.map(String.init) ?? "pending")us"
                     + " spinUp=\(tSnap.spinUpUs)us"
                     + " startPad=\(tSnap.startupPadFrames)f"
+                    + " startLate=\(tSnap.startupLateUs)us"
                     + " inFlight=\(tSnap.framesInFlight)f"
+                    + " cbInFlight=\(tSnap.callbackDepth.minimum)/\(tSnap.callbackDepth.last)/\(tSnap.callbackDepth.maximum)f"
+                    + " cbDelay=\(tSnap.callbackDepth.delayFrames)f cbTimeCost=\(tSnap.callbackDepth.timeCostUs)us"
+                    + " cbSamples=\(tSnap.callbackDepth.samples)"
+                    + " cbSkipPrewarm=\(tSnap.callbackDepth.prewarmSkipped) cbSkipZero=\(tSnap.callbackDepth.zeroPlayedSkipped)"
+                    + " aqDevDelta=\(tSnap.queueTimeline.deviceDeltaFrames.map { String(format: "%.2f", $0) } ?? "unavailable")f"
+                    + " aqHostLag=\(tSnap.queueTimeline.hostLagUs.map { String(format: "%.2f", $0) } ?? "unavailable")us"
+                    + " aqStatus=\(tSnap.queueTimeline.deviceStatus)/\(tSnap.queueTimeline.queueStatus)/\(tSnap.queueTimeline.translateStatus)"
+                    + " aqFlags=\(tSnap.queueTimeline.deviceFlags)/\(tSnap.queueTimeline.translatedFlags)"
                     // The one question no other counter answers: is anything audible at all.
                     + " peak=\(String(format: "%.4f", tSnap.peakOutputLevel))"
                     + " consumed=\(tSnap.framesConsumed)f silentBufs=\(tSnap.silentBuffers)"

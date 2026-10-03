@@ -104,22 +104,38 @@ struct DeviceClientIntegrationTests {
 
         #expect(descriptor.outChannels == ["display"])
         #expect(descriptor.formats == ["digits"])
-        #expect(descriptor.digitAudio == nil)
+    }
+
+    @Test("display presentations encode only channels and formats", arguments: [PairingPresentation.display, .displayAndSpeaker])
+    func displayDescriptor(presentation: PairingPresentation) async throws {
+        let hello = try await hello(device: SendspinDevice.ephemeral(), pairing: presentation, access: .allowUnpaired)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(hello)) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
+        let encoded = try #require(methods[PairMethod.dynamicPairingCode] as? [String: Any])
+        #expect(Set(encoded.keys) == ["out_channels", "formats"])
+        #expect(encoded["out_channels"] as? [String] == (presentation == .display ? ["display"] : ["display", "speaker"]))
+        #expect(encoded["formats"] as? [String] == ["digits", "qr_code"])
     }
 
     @Test("speaker presentation advertises digits on the speaker")
     func speakerDescriptor() async throws {
-        let audio = DigitAudioDescriptor(codec: .pcm, sampleRate: 8_000, bitDepth: 16, maxBytes: 20)
         let hello = try await hello(
             device: SendspinDevice.ephemeral(),
-            pairing: .speaker(audio: audio),
+            pairing: .speaker,
             access: .allowUnpaired
         )
         let descriptor = try #require(hello.payload.supportedPairMethods[PairMethod.dynamicPairingCode])
 
         #expect(descriptor.outChannels == ["speaker"])
         #expect(descriptor.formats == ["digits"])
-        #expect(descriptor.digitAudio == audio)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(hello)) as? [String: Any])
+        let payload = try #require(object["payload"] as? [String: Any])
+        let methods = try #require(payload["supported_pair_methods"] as? [String: Any])
+        let encoded = try #require(methods[PairMethod.dynamicPairingCode] as? [String: Any])
+        #expect(Set(encoded.keys) == ["out_channels", "formats"])
+        #expect(encoded["out_channels"] as? [String] == ["speaker"])
+        #expect(encoded["digit_audio"] == nil)
     }
 
     @Test("changing to paired-only closes sentinel playback")
@@ -179,10 +195,7 @@ struct DeviceClientIntegrationTests {
         try await accepted
         try await server.beginRehandshake(to: firstDevice.pairingPsk, pskCategoryOverride: .pairing)
         #expect(await waitUntil { await server.rehandshakeComplete })
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Durable Pairing Server"}}"#)
-        #expect(await waitUntil {
-            await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == 2
-        })
+        #expect(await server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == 1)
         try await server.sendJSON(
             #"{"type":"server/activate","payload":{"activities":["pairing"],"active_roles":[],"pairing":{"method":"pairing_psk"}}}"#
         )
@@ -244,6 +257,87 @@ struct DeviceClientIntegrationTests {
         #expect(client.accessPolicy == .pairedOnly)
     }
 
+    @Test("device policy reaches subsequent Sentinel activations", arguments: [false, true])
+    func unpairedPlaybackActivationRetainsRoles(outbound: Bool) async throws {
+        let client = try makePlayerClient(device: .ephemeral(), access: .allowUnpaired)
+        let transport = MockTransport()
+        client.outboundTransportFactory = { _ in transport }
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        let admission = Task {
+            if outbound {
+                try await client.connect(to: URL(string: "ws://localhost/sendspin")!)
+            } else {
+                try await client.acceptConnection(transport)
+            }
+        }
+        try await server.establishSession(activities: [], activeRoles: [.playerV1])
+        try await admission.value
+        let connection = try #require(client.connection)
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(activities: [.playback], activeRoles: nil))
+        let text = try #require(String(data: JSONEncoder().encode(activation), encoding: .utf8))
+        try await server.sendJSON(text)
+        #expect(await waitUntil { await connection.activities == [.playback] })
+        #expect(await connection.activeRoles == [.playerV1])
+        #expect(client.connectionState == .connected)
+        #expect(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        #expect(await server.disconnectCalled == false)
+        await client.close()
+    }
+
+    @Test("paired-only policy rejects subsequent Sentinel playback")
+    func pairedOnlyRejectsSubsequentPlayback() async throws {
+        let client = try makeClient(device: .ephemeral(), access: .allowUnpaired)
+        let runtime = try #require(client.pairingConfiguration?.runtime)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.pairedOnly)
+        let transport = MockTransport()
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let admission: Void = client.acceptConnection(transport)
+        try await server.establishSession(activities: [], activeRoles: [])
+        try await admission
+        let activation = ServerActivateMessage(payload: ServerActivatePayload(activities: [.playback], activeRoles: nil))
+        let text = try #require(String(data: JSONEncoder().encode(activation), encoding: .utf8))
+        try await server.sendJSON(text)
+        #expect(await waitUntil { await server.disconnectCalled })
+        #expect(await waitUntil {
+            await !server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty
+        })
+        let data = try #require(await server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).last)
+        let goodbye = try JSONDecoder().decode(ClientGoodbyeMessage.self, from: data)
+        #expect(goodbye.payload.reason == .pairingRequired)
+        await client.close()
+    }
+
+    @Test("runtime policy reflects construction and each policy toggle")
+    func runtimeAccessPolicyMatchesClient() async throws {
+        let client = try makeClient(device: .ephemeral(), access: .allowUnpaired)
+        let configuration = try #require(client.pairingConfiguration)
+        let runtime = configuration.runtime
+        #expect(configuration.unpairedAccessEnabled)
+        #expect(client.accessPolicy == .allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        try await client.setAccessPolicy(.pairedOnly)
+        #expect(await runtime.snapshot().unpairedAccessEnabled == false)
+        try await client.setAccessPolicy(.allowUnpaired)
+        #expect(await runtime.snapshot().unpairedAccessEnabled)
+        await client.close()
+
+        let legacy = PairingConfiguration()
+        let legacyClient = try SendspinClient(
+            identity: .generate(),
+            name: "Legacy Policy Client",
+            roles: [],
+            unpairedAccessEnabled: false,
+            pairing: legacy
+        )
+        #expect(legacy.unpairedAccessEnabled)
+        #expect(legacyClient.accessPolicy == .allowUnpaired)
+        #expect(await legacy.runtime.snapshot().unpairedAccessEnabled)
+        await legacyClient.close()
+    }
+
     private func makeClient(
         device: SendspinDevice,
         pairing: PairingPresentation = .tokenOnly,
@@ -268,13 +362,15 @@ struct DeviceClientIntegrationTests {
                 AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
             ]
         )
-        return try SendspinClient(
+        let client = try SendspinClient(
             device: device,
             name: "Device Player Client",
             roles: [.playerV1],
             playerConfig: playerConfig,
             access: access
         )
+        client.audioOutputFactory = { _, _ in NoOpAudioOutput() }
+        return client
     }
 
     private func hello(

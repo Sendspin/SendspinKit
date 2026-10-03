@@ -102,7 +102,8 @@ private func makeStaticTestSession(
         pairingAttemptTimeout: attemptTimeout,
         pairingWindowLifetime: windowLifetime,
         pairingHandshakeHashOverride: pairingHandshakeHashOverride,
-        pairingScalarBOverride: pairingScalarBOverride
+        pairingScalarBOverride: pairingScalarBOverride,
+        audioOutputFactory: { _, _ in NoOpAudioOutput() }
     )
     let transport = MockTransport()
     let server = MockNoiseServer(transport: transport, psk: .sentinel)
@@ -149,6 +150,15 @@ private func waitForStaticClientMessage(
         throw StaticTestError.missingMessage(type)
     }
     return message
+}
+
+@MainActor
+private func pairingWireBarrier(_ session: StaticTestSession) async throws {
+    let marker = UUID().uuidString
+    try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(GroupUpdateMessage(
+        payload: GroupUpdatePayload(playbackState: .stopped, groupId: marker, groupName: marker)
+    )), encoding: .utf8)))
+    #expect(await waitUntil { await MainActor.run { session.client.currentGroup?.groupId == marker } })
 }
 
 private func pairingTypes(_ server: MockNoiseServer) async -> [String] {
@@ -207,6 +217,310 @@ private func staticServerTranscript(_ session: StaticTestSession, operatorOpen: 
 @MainActor
 @Suite("Static pairing windows", .timeLimit(.minutes(1)))
 struct StaticPairingWindowTests {
+    @Test("malformed pairing payload is ignored during client abort discard")
+    func malformedPairingFrameDuringDiscardIsIgnored() async throws {
+        let session = try await makeStaticTestSession()
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        let id = try #require(session.client.currentPairing?.id)
+        try await session.client.cancelPairing(attemptID: id)
+        _ = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        try await session.server.sendJSON("{\"type\":\"\(ServerPairAuthMessage.typeString)\",\"payload\":\"garbage\"}")
+        try await pairingWireBarrier(session)
+        #expect(session.client.connectionState == .connected)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).count == 1)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString, count: 2)
+        #expect(session.client.connectionState == .connected)
+        await session.client.disconnect()
+    }
+
+    @Test("idle finalize closes without an application response")
+    func idleFinalizeClosesSilently() async throws {
+        let session = try await makeStaticTestSession()
+        _ = try await waitForStaticClientMessage(session.server, type: ClientHelloMessage.typeString)
+        try await session.server.sendJSON("{\"type\":\"\(ServerPairFinalizeMessage.typeString)\",\"payload\":{}}")
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        let outboundPairingTypes: Set<String> = [
+            ClientPairPendingMessage.typeString, ClientPairInitMessage.typeString,
+            ClientPairAuthMessage.typeString, ClientPairRetryMessage.typeString,
+            ClientPairConfirmMessage.typeString, ClientPairFinalizeMessage.typeString, PairAbortMessage.typeString
+        ]
+        #expect(await pairingTypes(session.server).filter { outboundPairingTypes.contains($0) }.isEmpty)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("server abort does not authorize later pairing messages")
+    func serverAbortThenAuthClosesSilently() async throws {
+        let fixture = try staticFixture()
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(PairAbortMessage(
+            payload: PairAbortPayload(reason: .userCancelled)
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await connection.pairingAttemptID == nil })
+        let responseTypes: Set<String> = [
+            ClientPairPendingMessage.typeString, ClientPairInitMessage.typeString,
+            ClientPairAuthMessage.typeString, ClientPairRetryMessage.typeString,
+            ClientPairConfirmMessage.typeString, ClientPairFinalizeMessage.typeString, PairAbortMessage.typeString
+        ]
+        let before = await pairingTypes(session.server).filter { responseTypes.contains($0) }
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairAuthMessage(
+            payload: ServerPairAuthPayload(pakeMsg1: Base64URL.encode(dataFromHex(fixture.pakeMsg1)))
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await pairingTypes(session.server).filter { responseTypes.contains($0) } == before)
+        await session.client.disconnect()
+    }
+
+    @Test("method rejection discards in-flight messages until activation")
+    func methodNotSupportedAbortDiscardsLateServerMessages() async throws {
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerActivateMessage(
+            payload: ServerActivatePayload(
+                activities: [.pairing],
+                activeRoles: [],
+                pairing: PairingDirective(method: PairMethod.dynamicPairingCode, format: PairingCodeFormat.digits.rawValue)
+            )
+        )), encoding: .utf8)))
+        _ = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairInitMessage(
+            payload: ServerPairInitPayload(nonceA: Base64URL.encode(Psk.generate().bytes))
+        )), encoding: .utf8)))
+        try await pairingWireBarrier(session)
+        #expect(await connection.discardingPairingMessages)
+        #expect(session.client.connectionState == .connected)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).count == 1)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        #expect(await !(connection.discardingPairingMessages))
+        await session.client.disconnect()
+    }
+
+    @Test("late abort after client cancellation has no effect")
+    func lateAbortAfterClientEndedIsNoOp() async throws {
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        let id = try #require(await connection.pairingAttemptID)
+        try await session.client.cancelPairing(attemptID: id)
+        _ = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(PairAbortMessage(
+            payload: PairAbortPayload(reason: .userCancelled)
+        )), encoding: .utf8)))
+        try await pairingWireBarrier(session)
+        #expect(await connection.pairingAttemptID == nil)
+        #expect(await connection.discardingPairingMessages)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).count == 1)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        #expect(session.client.connectionState == .connected)
+        await session.client.disconnect()
+    }
+
+    @Test("operator can close a surviving window by its published identity")
+    func cancelSurvivingWindowAfterTimeout() async throws {
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        let id = try #require(session.client.currentPairing?.id)
+        try await session.client.openPairingWindow(for: id)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
+        await connection.pairingAttemptTimedOut(attemptID: connection.pairingAttemptID)
+        #expect(await connection.pairingWindowOpen)
+        let windowID = try #require(session.client.pairingWindow?.attemptID)
+        try await session.client.cancelPairing(attemptID: windowID)
+        #expect(await !(connection.pairingWindowOpen))
+        #expect(await waitUntil { await MainActor.run { session.client.pairingWindow == nil } })
+        await session.client.disconnect()
+    }
+
+    @Test("side drop clears only the side-owned window", arguments: [false, true])
+    func pairingSideDropClearsWindow(primaryWindow: Bool) async throws {
+        let session = try await makeStaticTestSession(primary: true)
+        let side = try #require(session.client.pairingConnection)
+        let owner = try #require(primaryWindow ? session.client.connection : side)
+        if primaryWindow {
+            await owner.admitPairingAttempt()
+        }
+        let id = try #require(await owner.pairingAttemptID)
+        try await session.client.openPairingWindow(for: id)
+        #expect(await waitUntil { await MainActor.run { session.client.pairingWindow?.attemptID == id } })
+        let window = session.client.pairingWindow
+        session.client.dropPairingConnection(side)
+        #expect(session.client.pairingWindow == (primaryWindow ? window : nil))
+        #expect(session.client.connectionState == .connected)
+        await session.client.disconnect()
+    }
+
+    @Test("valid auth on a fresh idle session closes silently")
+    func freshIdleAuthClosesSilently() async throws {
+        let fixture = try staticFixture()
+        let session = try await makeStaticTestSession()
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairAuthMessage(
+            payload: ServerPairAuthPayload(pakeMsg1: Base64URL.encode(dataFromHex(fixture.pakeMsg1)))
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).isEmpty)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("window expiry leaves its active attempt running")
+    func lifetimeExpiryPreservesActiveAttempt() async throws {
+        let session = try await makeStaticTestSession(windowLifetime: .milliseconds(100))
+        let connection = try #require(session.client.connection)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        let id = try #require(await connection.pairingAttemptID)
+        try await session.client.openPairingWindow(for: id)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
+        #expect(await waitUntil { await !(connection.pairingWindowOpen) })
+        #expect(await connection.pairingAttemptID == id)
+        #expect(await connection.staticPairingAttempt?.cpace != nil)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
+    @Test("timeout and server cancellation preserve the connection window")
+    func windowSurvivesTimeoutAndServerCancellation() async throws {
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        let reservedID = try #require(session.client.currentPairing?.id)
+        try await session.client.openPairingWindow(for: reservedID)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString)
+        let firstID = try #require(await connection.pairingAttemptID)
+        await connection.pairingAttemptTimedOut(attemptID: firstID)
+        #expect(await connection.pairingWindowOpen)
+        #expect(session.client.pairingWindow != nil)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString, count: 2)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(PairAbortMessage(
+            payload: PairAbortPayload(reason: .userCancelled)
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await connection.staticPairingAttempt == nil })
+        #expect(await connection.pairingWindowOpen)
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString, count: 3)
+        let currentID = try #require(await connection.pairingAttemptID)
+        try await session.client.cancelPairing(attemptID: currentID)
+        #expect(await !(connection.pairingWindowOpen))
+        await session.client.disconnect()
+    }
+
+    @Test("supersession replaces CPace and pending PSK while preserving the window")
+    func supersedingActivationStartsFreshAttempt() async throws {
+        let fixture = try staticFixture()
+        let session = try await makeStaticTestSession(
+            pairingHandshakeHashOverride: dataFromHex(fixture.handshakeHash),
+            pairingScalarBOverride: dataFromHex(fixture.scalarB)
+        )
+        let connection = try #require(session.client.connection)
+        let reservedID = try #require(session.client.currentPairing?.id)
+        try await session.client.openPairingWindow(for: reservedID)
+        try await activateStatic(session.server)
+        _ = try await staticServerTranscript(session)
+        #expect(await connection.pendingPairingPsk != nil)
+        _ = try await session.store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
+        let budget = try await session.store.dynamicPairingRoundCount()
+        let oldID = try #require(await connection.pairingAttemptID)
+        let oldTask = try #require(await connection.pairingAttemptTask)
+        try await activateStatic(session.server)
+        let data = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString, count: 2)
+        let message = try JSONDecoder().decode(ClientPairInitMessage.self, from: data)
+        #expect(message.payload.pairingIndex == fixture.counter + 1)
+        #expect(await connection.pairingAttemptID != oldID)
+        #expect(oldTask.isCancelled)
+        #expect(await connection.staticPairingAttempt?.sid == CPaceSessionIdentifier.make(
+            handshakeHash: dataFromHex(fixture.handshakeHash), counter: fixture.counter + 1, round: 1
+        ))
+        #expect(await connection.staticPairingAttempt?.serverShare == nil)
+        #expect(await connection.pendingPairingPsk == nil)
+        #expect(await pairingRecords(session.store).isEmpty)
+        #expect(try await session.store.dynamicPairingRoundCount() == budget)
+        #expect(await connection.pairingWindowOpen)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).isEmpty)
+        #expect(session.client.connectionState == .connected)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerActivateMessage(
+            payload: ServerActivatePayload(activities: [], activeRoles: [])
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await connection.staticPairingAttempt == nil })
+        #expect(await connection.pairingWindowOpen)
+        #expect(await connection.pairingAttemptID == nil)
+        #expect(await waitUntil { await MainActor.run { session.client.currentPairing == nil } })
+        #expect(await collectClientEvent(from: session.events) {
+            if case let .pairingAttemptSuperseded(id) = $0 {
+                return id == oldID
+            }
+            return false
+        } != nil)
+        await session.client.disconnect()
+    }
+
+    @Test("the fifth failed confirmation closes the static window")
+    func fifthFailedConfirmationClosesWindow() async throws {
+        let fixture = try staticFixture()
+        let hash = dataFromHex(fixture.handshakeHash)
+        let session = try await makeStaticTestSession(pairingHandshakeHashOverride: hash)
+        let connection = try #require(session.client.connection)
+        let reservedID = try #require(session.client.currentPairing?.id)
+        try await session.client.openPairingWindow(for: reservedID)
+        for index in 1 ... staticPairingWindowFailureLimit {
+            try await activateStatic(session.server)
+            _ = try await waitForStaticClientMessage(session.server, type: ClientPairInitMessage.typeString, count: index)
+            let cpace = try CPace(role: .initiator, prs: Data(fixture.code.utf8), sid: CPaceSessionIdentifier.make(
+                handshakeHash: hash, counter: UInt32(index), round: 1
+            ))
+            try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairAuthMessage(
+                payload: ServerPairAuthPayload(pakeMsg1: Base64URL.encode(cpace.publicShare))
+            )), encoding: .utf8)))
+            _ = try await waitForStaticClientMessage(session.server, type: ClientPairAuthMessage.typeString, count: index)
+            try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerPairConfirmMessage(
+                payload: ServerPairConfirmPayload(serverKc: Base64URL.encode(Data(repeating: 0, count: dataFromHex(fixture.serverKc).count)))
+            )), encoding: .utf8)))
+            _ = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString, count: index)
+            #expect(await connection.pairingWindowOpen == (index < staticPairingWindowFailureLimit))
+        }
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        #expect(await session.server.clientJSONMessages(ofType: ClientPairInitMessage.typeString).count == staticPairingWindowFailureLimit)
+        await session.client.disconnect()
+    }
+
+    @Test("idle auth closes silently outside the client abort discard interval")
+    func idleAuthAndAbortDiscard() async throws {
+        let fixture = try staticFixture()
+        let session = try await makeStaticTestSession()
+        let connection = try #require(session.client.connection)
+        let auth = ServerPairAuthMessage(payload: ServerPairAuthPayload(pakeMsg1: Base64URL.encode(dataFromHex(fixture.pakeMsg1))))
+        try await activateStatic(session.server)
+        _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
+        let id = try #require(await connection.pairingAttemptID)
+        try await session.client.cancelPairing(attemptID: id)
+        _ = try await waitForStaticClientMessage(session.server, type: PairAbortMessage.typeString)
+        #expect(await waitUntil { await connection.discardingPairingMessages })
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(auth), encoding: .utf8)))
+        try await pairingWireBarrier(session)
+        #expect(session.client.connectionState == .connected)
+        #expect(await session.server.clientJSONMessages(ofType: PairAbortMessage.typeString).count == 1)
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(ServerActivateMessage(
+            payload: ServerActivatePayload(activities: [], activeRoles: [])
+        )), encoding: .utf8)))
+        #expect(await waitUntil { await !(connection.discardingPairingMessages) })
+        try await session.server.sendJSON(#require(String(data: JSONEncoder().encode(auth), encoding: .utf8)))
+        #expect(await waitUntil { await MainActor.run { session.client.connectionState == .disconnected } })
+        #expect(await session.server.clientJSONMessages(ofType: ClientGoodbyeMessage.typeString).isEmpty)
+        await session.client.disconnect()
+    }
+
     @Test("static attempt is pending until the window opens, without starting its timeout")
     func staticAttemptWaitsForWindow() async throws {
         let session = try await makeStaticTestSession(attemptTimeout: .milliseconds(100))
@@ -375,9 +689,12 @@ struct StaticPairingTranscriptTests {
             pairingHandshakeHashOverride: dataFromHex(fixture.handshakeHash),
             pairingScalarBOverride: dataFromHex(fixture.scalarB)
         )
+        _ = try await session.store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
+        _ = try await session.store.reserveDynamicPairingRound(limit: dynamicPairingRoundLimit)
         try await activateStatic(session.server)
         let (confirmData, finalizeData) = try await staticServerTranscript(session, operatorOpen: true)
-        #expect(session.client.pairingWindow == nil)
+        #expect(try await session.store.dynamicPairingRoundCount() == 0)
+        #expect(session.client.pairingWindow != nil)
         let confirm = try JSONDecoder().decode(ClientPairConfirmMessage.self, from: confirmData)
         let finalize = try JSONDecoder().decode(ClientPairFinalizeMessage.self, from: finalizeData)
         #expect(confirm.payload.clientKc == Base64URL.encode(dataFromHex(fixture.clientKc)))
@@ -403,6 +720,8 @@ struct StaticPairingTranscriptTests {
             let serverId = await session.server.serverId
             return records.contains { $0.serverId == serverId }
         })
+        let connection = try #require(session.client.connection)
+        #expect(await waitUntil { await !(connection.pairingWindowOpen) })
         await session.client.disconnect()
     }
 
@@ -599,13 +918,8 @@ struct PairingIndexSequenceTests {
         try await activateStatic(session.server)
         _ = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString)
         try await session.server.sendJSON(#"{"type":"pair/abort","payload":{"reason":"user_cancelled"}}"#)
-        let helloCount = await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count
         try await session.server.beginRehandshake(to: .sentinel)
         #expect(await waitUntil { await session.server.rehandshakeComplete })
-        try await session.server.sendJSON(#"{"type":"server/hello","payload":{"name":"Test Server"}}"#)
-        #expect(await waitUntil {
-            await session.server.clientJSONMessages(ofType: ClientHelloMessage.typeString).count == helloCount + 1
-        })
         try await activateStatic(session.server)
         let pendingData = try await waitForStaticClientMessage(session.server, type: ClientPairPendingMessage.typeString, count: 2)
         let pending = try JSONDecoder().decode(ClientPairPendingMessage.self, from: pendingData)

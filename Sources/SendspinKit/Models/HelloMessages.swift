@@ -128,4 +128,12 @@ struct ServerHelloMessage: SendspinMessage, Equatable {
 
 struct ServerHelloPayload: Codable, Equatable {
     let name: String
+    let languages: [String]?
+
+    init(name: String, languages: [String]? = nil) {
+        self.name = name
+        self.languages = languages
+    }
+
+    enum CodingKeys: String, CodingKey { case name, languages }
 }

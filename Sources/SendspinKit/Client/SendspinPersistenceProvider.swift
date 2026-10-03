@@ -39,6 +39,7 @@ struct PairingStorageAccounting: Sendable, Equatable {
 }
 
 let dynamicPairingRoundLimit: UInt32 = 20
+let staticPairingWindowFailureLimit = 5
 let minimumPairingRecordCapacity = 5
 
 /// Presentation capabilities shared by candidate handshakes and live sessions.
@@ -49,7 +50,6 @@ struct PairingManagementConfiguration: Sendable, Equatable {
     let pairingPresentation: PairingPresentation?
     let outChannels: [String]
     let formats: [String]
-    let digitAudio: DigitAudioDescriptor?
 
     // Kept for internal fixture migration. New callers should use `presentation`.
     let dynamicPairingCodeEnabled: Bool
@@ -63,7 +63,6 @@ struct PairingManagementConfiguration: Sendable, Equatable {
         presentation: PairingPresentation? = nil,
         outChannels: [String]? = nil,
         formats: [String]? = nil,
-        digitAudio: DigitAudioDescriptor? = nil,
         dynamicPairingCodeEnabled: Bool = false,
         staticPairingCodeEnabled: Bool = false,
         staticPairingCode: String? = nil
@@ -72,8 +71,7 @@ struct PairingManagementConfiguration: Sendable, Equatable {
         precondition(!(dynamicPairingCodeEnabled && staticPairingCodeEnabled), "Advertise at most one pairing-code method")
         let resolvedPresentation = presentation ?? Self.legacyPresentation(
             dynamicEnabled: dynamicPairingCodeEnabled,
-            staticEnabled: staticPairingCodeEnabled,
-            digitAudio: digitAudio
+            staticEnabled: staticPairingCodeEnabled
         )
         self.pairingPsk = pairingPsk
         self.pairingPskEnabled = pairingPskEnabled
@@ -81,7 +79,6 @@ struct PairingManagementConfiguration: Sendable, Equatable {
         pairingPresentation = resolvedPresentation
         self.outChannels = outChannels ?? resolvedPresentation?.outChannels ?? []
         self.formats = formats ?? resolvedPresentation?.formats ?? []
-        self.digitAudio = digitAudio ?? resolvedPresentation?.digitAudio
         let resolvedDynamicPairingCodeEnabled = dynamicPairingCodeEnabled || resolvedPresentation?.usesDynamicCode == true
         let resolvedStaticPairingCodeEnabled = staticPairingCodeEnabled || resolvedPresentation == .staticCode
         self.dynamicPairingCodeEnabled = resolvedDynamicPairingCodeEnabled
@@ -100,14 +97,13 @@ struct PairingManagementConfiguration: Sendable, Equatable {
 
     private static func legacyPresentation(
         dynamicEnabled: Bool,
-        staticEnabled: Bool,
-        digitAudio: DigitAudioDescriptor?
+        staticEnabled: Bool
     ) -> PairingPresentation? {
         if staticEnabled {
             return .staticCode
         }
         guard dynamicEnabled else { return nil }
-        return digitAudio.map { .speaker(audio: $0) } ?? .display
+        return .display
     }
 }
 
@@ -316,13 +312,14 @@ struct PairingConfiguration: Sendable {
     let dynamicPairingCodeEnabled: Bool
     let staticPairingCodeEnabled: Bool
     let staticPairingCode: String?
-    let digitAudio: DigitAudioDescriptor?
+    let unpairedAccessEnabled: Bool
     let runtime: PairingConfigurationRuntime
 
     init(
         presentation: PairingPresentation,
         pairingPsk: Psk,
         store: any PairingRecordStore,
+        unpairedAccessEnabled: Bool,
         staticPairingCode: String? = nil
     ) {
         precondition(presentation != .staticCode || staticPairingCode != nil)
@@ -333,15 +330,15 @@ struct PairingConfiguration: Sendable {
         dynamicPairingCodeEnabled = presentation.usesDynamicCode
         staticPairingCodeEnabled = presentation == .staticCode
         self.staticPairingCode = staticPairingCode
-        digitAudio = presentation.digitAudio
-        runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+        self.unpairedAccessEnabled = unpairedAccessEnabled
+        let initialConfiguration = PairingManagementConfiguration(
             pairingPsk: pairingPsk,
             pairingPskEnabled: true,
-            unpairedAccessEnabled: false,
+            unpairedAccessEnabled: unpairedAccessEnabled,
             presentation: presentation,
-            digitAudio: presentation.digitAudio,
             staticPairingCode: staticPairingCode
-        ))
+        )
+        runtime = PairingConfigurationRuntime(configuration: initialConfiguration)
     }
 
     init(
@@ -350,8 +347,7 @@ struct PairingConfiguration: Sendable {
         enabled: Bool = true,
         dynamicPairingCodeEnabled: Bool = false,
         staticPairingCode: String? = nil,
-        staticPairingCodeEnabled: Bool = false,
-        digitAudio: DigitAudioDescriptor? = nil
+        staticPairingCodeEnabled: Bool = false
     ) {
         precondition(!staticPairingCodeEnabled || staticPairingCode != nil)
         precondition(staticPairingCode.map(PairingManagementConfiguration.isValidStaticPairingCode) ?? true)
@@ -364,16 +360,16 @@ struct PairingConfiguration: Sendable {
         self.dynamicPairingCodeEnabled = dynamicPairingCodeEnabled
         self.staticPairingCodeEnabled = staticPairingCodeEnabled
         self.staticPairingCode = staticPairingCode
-        self.digitAudio = digitAudio
-        runtime = PairingConfigurationRuntime(configuration: PairingManagementConfiguration(
+        unpairedAccessEnabled = true
+        let initialConfiguration = PairingManagementConfiguration(
             pairingPsk: resolved,
             pairingPskEnabled: enabled,
             unpairedAccessEnabled: true,
             presentation: staticPairingCodeEnabled ? .staticCode :
-                (dynamicPairingCodeEnabled ? (digitAudio.map { .speaker(audio: $0) } ?? .display) : nil),
-            digitAudio: digitAudio,
+                (dynamicPairingCodeEnabled ? .display : nil),
             staticPairingCode: staticPairingCode
-        ))
+        )
+        runtime = PairingConfigurationRuntime(configuration: initialConfiguration)
     }
 }
 

@@ -201,6 +201,7 @@ final class CLIPlayer {
         case .paired,
              .pairingCodeChanged,
              .pairingAttemptEnded,
+             .pairingAttemptSuperseded,
              .pairingWindowChanged,
              .audioOutputChanged,
              .outputFormatStatusChanged,
@@ -239,6 +240,9 @@ final class CLIPlayer {
 
         case let .pairingAttemptEnded(snapshot):
             print("[PAIRING] Attempt ended: \(snapshot.id.rawValue) \(snapshot.phase)")
+
+        case let .pairingAttemptSuperseded(attemptID):
+            print("[PAIRING] Attempt superseded: \(attemptID.rawValue)")
 
         case let .pairingWindowChanged(window):
             let status = window == nil ? "closed" : "opened"

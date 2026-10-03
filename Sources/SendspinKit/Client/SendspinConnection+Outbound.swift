@@ -40,11 +40,29 @@ extension SendspinConnection {
         bypassRehandshakeGate: Bool = false,
         requireRunningLifecycle: Bool = false,
         expectedPairingAttemptID: PairingAttemptID? = nil,
-        allowClearedPairingAbort: Bool = false
+        allowClearedPairingAbort: Bool = false,
+        controllerCommand: ControllerCommandType? = nil
     ) async throws {
         await acquireOutboundSlot()
         defer { releaseOutboundSlot() }
+        try await sendWrappedInOutboundSlot(
+            message,
+            bypassRehandshakeGate: bypassRehandshakeGate,
+            requireRunningLifecycle: requireRunningLifecycle,
+            expectedPairingAttemptID: expectedPairingAttemptID,
+            allowClearedPairingAbort: allowClearedPairingAbort,
+            controllerCommand: controllerCommand
+        )
+    }
 
+    private func sendWrappedInOutboundSlot(
+        _ message: some Codable & Sendable,
+        bypassRehandshakeGate: Bool = false,
+        requireRunningLifecycle: Bool = false,
+        expectedPairingAttemptID: PairingAttemptID? = nil,
+        allowClearedPairingAbort: Bool = false,
+        controllerCommand: ControllerCommandType? = nil
+    ) async throws {
         guard !outboundFailed else {
             throw SendspinClientError.sendFailed("outbound channel is dead")
         }
@@ -78,6 +96,13 @@ extension SendspinConnection {
             throw CancellationError()
         }
 
+        if let controllerCommand {
+            try requireActiveRole(.controllerV1)
+            guard let currentControllerState else { throw SendspinClientError.controllerStateUnavailable }
+            guard currentControllerState.supportedCommands.contains(controllerCommand) else {
+                throw SendspinClientError.controllerCommandUnsupported(controllerCommand)
+            }
+        }
         let data = try SendspinEncoding.makeEncoder().encode(message)
         var plaintext = Data([NoiseFrameType.json])
         plaintext.append(data)
@@ -89,6 +114,18 @@ extension SendspinConnection {
             await failOutbound()
             throw error
         }
+    }
+
+    func sendPairingWrapped(
+        _ first: ClientPairInitMessage,
+        followedBy second: ClientPairFinalizeMessage,
+        attemptID: PairingAttemptID
+    ) async throws {
+        // Pairing PSK init and finalize stay adjacent while other senders wait for the slot.
+        await acquireOutboundSlot()
+        defer { releaseOutboundSlot() }
+        try await sendWrappedInOutboundSlot(first, expectedPairingAttemptID: attemptID)
+        try await sendWrappedInOutboundSlot(second, expectedPairingAttemptID: attemptID)
     }
 
     func sendPairingWrapped(
@@ -118,6 +155,20 @@ extension SendspinConnection {
         }
     }
 
+    func sendControllerCommand(_ command: ControllerCommand) async throws {
+        guard lifecycle == .running, !rehandshakeInProgress else {
+            throw SendspinClientError.handshakeIncomplete
+        }
+        let message = ClientCommandMessage(payload: ClientCommandPayload(controller: command))
+        do {
+            try await sendWrapped(message, requireRunningLifecycle: true, controllerCommand: command.command)
+        } catch let error as SendspinClientError {
+            throw error
+        } catch {
+            throw SendspinClientError.sendFailed(error.localizedDescription)
+        }
+    }
+
     func publishClientState(bypassRehandshakeGate: Bool = false) async throws {
         guard lifecycle == .running, bypassRehandshakeGate || !rehandshakeInProgress else {
             throw SendspinClientError.handshakeIncomplete
@@ -134,6 +185,7 @@ extension SendspinConnection {
             // Forward the rehandshake bypass: handleServerActivate publishes the
             // post-swap full state while rehandshakeInProgress is still true.
             try await sendWrapped(ClientStateMessage(payload: payload), bypassRehandshakeGate: bypassRehandshakeGate)
+            publishedAvailability = payload.available
             if payload.player != nil {
                 playerStateSent = true
             }

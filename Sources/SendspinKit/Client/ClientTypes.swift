@@ -296,12 +296,15 @@ public enum PairingCodeFormat: String, Codable, Sendable, Equatable {
 public struct PairingCodeEmission: Sendable, Equatable {
     public let format: PairingCodeFormat
     public let payload: String
-    public let digitAudioPack: DigitAudioPack?
+    /// Server language tags in descending operator preference; an empty list supplies no hint.
+    /// A speaking host matches this list against its supported languages using RFC 4647 Lookup and falls back to its own default when nothing
+    /// matches.
+    public let languages: [String]
 
-    public init(format: PairingCodeFormat, payload: String, digitAudioPack: DigitAudioPack? = nil) {
+    public init(format: PairingCodeFormat, payload: String, languages: [String] = []) {
         self.format = format
         self.payload = payload
-        self.digitAudioPack = digitAudioPack
+        self.languages = languages
     }
 }
 
@@ -369,6 +372,7 @@ public enum ClientEvent: Sendable, Equatable {
     case serverConnected(ServerInfo)
     case pairingCodeChanged(PairingAttemptSnapshot)
     case pairingAttemptEnded(PairingAttemptSnapshot)
+    case pairingAttemptSuperseded(PairingAttemptID)
     case pairingWindowChanged(PairingWindowSnapshot?)
     case paired(PairingAttemptSnapshot)
     /// The client observed a new advisory audio-output capability snapshot.
@@ -380,8 +384,8 @@ public enum ClientEvent: Sendable, Equatable {
     case streamStarted(AudioFormatSpec)
     /// Format changed mid-stream after the server applies a client format preference.
     case streamFormatChanged(AudioFormatSpec)
-    /// Server sent `stream/end` — one or more streams have ended and buffers
-    /// should be cleared for those roles. `roles` contains the ended roles, or
+    /// One or more streams end through `stream/end` or active-role removal.
+    /// Consumers clear output for those roles. `roles` contains the ended roles, or
     /// `nil` if all active streams ended (matching the wire format's semantics).
     case streamEnded(roles: [String]?)
     /// Server sent `stream/clear` — buffers have been flushed without ending
@@ -655,8 +659,15 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
     case modeConflict
     /// A role-specific API was called before that protocol role was active.
     case roleNotActive(VersionedRole)
+    /// No complete controller snapshot has been received for the active role.
+    case controllerStateUnavailable
+    /// The latest controller snapshot does not list the requested command.
+    case controllerCommandUnsupported(ControllerCommandType)
     /// A facade-initiated send was attempted before `server/hello` completed the handshake.
     case handshakeIncomplete
+    /// The server refused `client/init`. The reason is unauthenticated and is only
+    /// a hint for logging and operator display.
+    case connectionRefused(ServerErrorReason)
     /// A stream-specific operation was attempted for a role whose stream is not
     /// currently active.
     case streamNotActive(StreamRole)
@@ -681,8 +692,14 @@ public enum SendspinClientError: SendspinError, Equatable, LocalizedError {
             "The requested connection mode conflicts with the active listener or session"
         case let .roleNotActive(role):
             "The \(role.identifier) role is not active for this connection"
+        case .controllerStateUnavailable:
+            "No controller state has been received"
+        case let .controllerCommandUnsupported(command):
+            "The controller does not support \(command.rawValue)"
         case .handshakeIncomplete:
             "Handshake is not complete; wait for server/hello before sending commands"
+        case let .connectionRefused(reason):
+            "Server refused connection (unauthenticated reason): \(reason.rawValue)"
         case let .streamNotActive(role):
             "No active \(role.rawValue) stream"
         case let .invalidServerURL(server):

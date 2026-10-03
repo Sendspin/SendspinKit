@@ -323,7 +323,7 @@ struct AudioFormatSpecTests {
 
     @Test
     func playerConfigurationDefaultsToPreferCurrentOutput() throws {
-        let format = try AudioFormatSpec(codec: .opus, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let configuration = try PlayerConfiguration(bufferCapacity: 1, supportedFormats: [format])
 
         #expect(configuration.outputSampleRatePolicy == .preferCurrentOutput)

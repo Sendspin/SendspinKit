@@ -13,8 +13,16 @@ public extension SendspinClient {
             unpairedAccessEnabled = policy == .allowUnpaired
             sessionEpoch += 1
             if let runtime = pairingConfiguration?.runtime {
-                let configuration = await pairingRuntimeConfiguration()
-                await runtime.update(configuration)
+                let configuration = await runtime.snapshot()
+                await runtime.update(PairingManagementConfiguration(
+                    pairingPsk: configuration.pairingPsk,
+                    pairingPskEnabled: configuration.pairingPskEnabled,
+                    unpairedAccessEnabled: policy == .allowUnpaired,
+                    presentation: configuration.pairingPresentation,
+                    outChannels: configuration.outChannels,
+                    formats: configuration.formats,
+                    staticPairingCode: configuration.staticPairingCode
+                ))
             }
             let pending = Array(pendingTransports.values)
             for transport in pending {
@@ -65,6 +73,7 @@ public extension SendspinClient {
                     presentation: pairing,
                     pairingPsk: device.pairingPsk,
                     store: store,
+                    unpairedAccessEnabled: access == .allowUnpaired,
                     staticPairingCode: device.staticCode
                 )
             )

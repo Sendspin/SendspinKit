@@ -22,6 +22,8 @@ public enum ConfigurationError: SendspinError, Hashable {
     case nonPositiveBufferCapacity
     /// At least one supported audio format is required.
     case emptySupportedFormats
+    /// A player must offer FLAC or PCM for servers without Opus support.
+    case missingLosslessFormat
     /// Output delay must be between 0 and 5000 milliseconds.
     case outputDelayOutOfRange(Int)
     /// Required lead time must be non-negative.
@@ -54,8 +56,6 @@ public enum ConfigurationError: SendspinError, Hashable {
     case invalidArtworkStateChannel
     /// Spectrum configuration is required exactly when spectrum is requested.
     case missingSpectrumConfiguration
-    /// At least one visualizer type is required.
-    case emptyVisualizerTypes
     /// Visualizer periodic frame rate must be positive.
     case nonPositiveVisualizerRate
     /// Spectrum dimensions and frequency bounds are invalid.
@@ -89,6 +89,8 @@ extension ConfigurationError: LocalizedError {
             "Buffer capacity must be positive"
         case .emptySupportedFormats:
             "Must support at least one audio format"
+        case .missingLosslessFormat:
+            "Must support at least one FLAC or PCM audio format"
         case let .outputDelayOutOfRange(v):
             "Output delay must be 0–5000 ms, got \(v)"
         case let .negativeRequiredLeadTime(v):
@@ -115,8 +117,6 @@ extension ConfigurationError: LocalizedError {
             "Artwork state channel fields do not match its source"
         case .missingSpectrumConfiguration:
             "Visualizer spectrum configuration is required exactly when spectrum is requested"
-        case .emptyVisualizerTypes:
-            "Visualizer configuration must request at least one type"
         case .nonPositiveVisualizerRate:
             "Visualizer rate_max must be positive"
         case .invalidSpectrumConfiguration:

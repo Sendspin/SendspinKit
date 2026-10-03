@@ -34,6 +34,44 @@ struct ArtworkObserverValidityTests {
     }
 
     @Test
+    func queuedArtworkDeliveryCannotRepopulateRemovedRole() async throws {
+        let client = try makeArtworkClient()
+        let server = try await connectClient(client, activeRoles: [.artworkV1])
+        try await server.injectText(artworkStreamStartJSON())
+        #expect(await waitUntil { await MainActor.run { client.artworkStreamActive } })
+        let connection = try #require(client.connection)
+        try await connection.sendClientState()
+        let drain = client.drainConnectionEventsTask
+        drain?.cancel()
+        await drain?.value
+        let delivery = Task.detached {
+            let size: UInt32 = 1
+            let pastTimestamp: Int64 = -1_000_000_000
+            var timestamp = pastTimestamp.bigEndian
+            var total = size.bigEndian
+            var announce = Data([BinaryMessageType.artworkChannel0.rawValue, ArtworkWireMessage.announceFlag])
+            announce.append(Data(bytes: &timestamp, count: MemoryLayout<Int64>.size))
+            announce.append(Data(bytes: &total, count: MemoryLayout<UInt32>.size))
+            try await connection.handleArtworkBinary(announce)
+            try await connection.handleArtworkBinary(Data([BinaryMessageType.artworkChannel0.rawValue, 0, 0xA]))
+            await connection.handleServerActivate(ServerActivateMessage(payload: ServerActivatePayload(
+                activities: [.playback], activeRoles: []
+            )))
+        }
+        let result = await outcomeOfUnstructuredOperation(timeout: .seconds(5)) {
+            try await delivery.value
+        }
+        #expect(result != nil)
+        _ = try result?.get()
+        await Task.detached {
+            await MainActor.run {}
+        }.value
+        #expect(await connection.activeRoles.isEmpty)
+        #expect(client.currentArtwork == nil)
+        await client.disconnect()
+    }
+
+    @Test
     func staleArtworkBinaryDoesNotUpdateCurrentArtwork() async throws {
         // Session-validity contract: once the token is invalidated
         // (reconnect/shutdown), the dying connection's in-flight binary events

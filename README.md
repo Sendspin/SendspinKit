@@ -114,6 +114,18 @@ to select a supported audio format, and `setArtworkChannelPreference(channel:pre
 `ArtworkChannelPreference.set(source:format:width:height:)` or `.disable` to update an artwork
 channel. These preferences can be changed while connected and apply to the active or next stream.
 
+### API behavior
+
+- `SendspinClientError.connectionRefused(ServerErrorReason)` reports an unauthenticated setup refusal for diagnostics, not proof of server identity.
+- `PlayerConfiguration` throws `ConfigurationError.missingLosslessFormat` unless its catalog includes FLAC or PCM.
+- `requireCurrentOutput` throws `OutputFormatError.noMatchingLosslessFormat` when the output-filtered catalog has no FLAC or PCM format.
+- `setVisualizerPreference(_:)` publishes visualizer preferences, and empty `types` disables requested visualizer data.
+- Controller calls throw `controllerStateUnavailable` before the first controller state or `controllerCommandUnsupported` when its latest `supported_commands` excludes the command.
+- Parameterless `PairingPresentation.speaker` and `.displayAndSpeaker` require host-provided speech, with `PairingCodeEmission.languages` supplying the language priority list.
+- `openPairingWindow(for:)` is the operator gesture that resets the device-wide emitted-round budget, including while a window is open.
+- `ClientEvent.pairingAttemptSuperseded` clears the superseded attempt's UI without reporting an operator abort.
+- `cancelPairing(attemptID:)` also accepts `pairingWindow.attemptID` to close authorization after its attempt ends.
+
 ### Group membership and external sources
 
 A client can leave its current group without requiring the controller role:
@@ -141,8 +153,8 @@ listen to `SendspinClient.events()` for `ClientEvent.pairingCodeChanged(_:)`,
   speak the value from the app; presentation grouping and QR image generation remain app
   responsibilities. A `nil` `code` clears any displayed code.
 - Call `try await client.openPairingWindow(for: snapshot.id)` from the app's physical-gesture or
-  equivalent operator-confirmation hook. It records or consumes the connection-owned window and
-  returns without waiting for pairing to finish.
+  equivalent operator-confirmation hook. It records operator consent, resets the emitted-round budget,
+  and returns without waiting for pairing to finish.
 - Cancel only the attempt represented by the ID captured with the rendered snapshot:
 
   ```swift
