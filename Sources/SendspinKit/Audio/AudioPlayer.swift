@@ -991,6 +991,10 @@ actor AudioPlayer {
         }
     }
 
+    var totalFramesEnqueued: Int64 {
+        lockedState.withLock { $0.totalFramesEnqueued }
+    }
+
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
@@ -1057,6 +1061,7 @@ actor AudioPlayer {
         let cb: AudioProcessCallback?
         let cbFormat: AudioFormatSpec?
         let enqueue: Bool
+        var deviceBecameLive = false
     }
 
     /// Server-time cursor target for a frame handed to hardware at `localNow`.
@@ -1226,11 +1231,9 @@ actor AudioPlayer {
 
             // `prepare()` fills every buffer through this path before the queue is started,
             // so the first callback with a start time recorded is the device's own.
-            if state.spinUpUs < 0, state.queueStartAbsoluteUs > 0 {
+            let deviceBecameLive = state.spinUpUs < 0 && state.queueStartAbsoluteUs > 0
+            if deviceBecameLive {
                 state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
-                Task { [weak self] in
-                    await self?.resumeOutputDeviceLiveWaiter()
-                }
             }
 
             Self.updateCorrectionSchedule(
@@ -1302,12 +1305,14 @@ actor AudioPlayer {
                     enqueue = false
                 }
             }
-            return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat, enqueue: enqueue)
+            return FillResult(outOffset: outOffset, cb: cb, cbFormat: cbFormat, enqueue: enqueue, deviceBecameLive: deviceBecameLive)
+        }
+
+        if result.deviceBecameLive {
+            scheduleOutputDeviceLiveResume()
         }
 
         // --- Post-lock: silence fill, process callback, enqueue ---
-        // None of this touches shared state.
-
         guard result.enqueue else { return }
         if result.outOffset < capacity {
             memset(dest + result.outOffset, 0, capacity - result.outOffset)
@@ -1323,6 +1328,12 @@ actor AudioPlayer {
         }
 
         enqueueFilledBuffer(queue: queue, buffer: buffer, capacity: capacity)
+    }
+
+    private nonisolated func scheduleOutputDeviceLiveResume() {
+        Task { [weak self] in
+            await self?.resumeOutputDeviceLiveWaiter()
+        }
     }
 
     private nonisolated func enqueueFilledBuffer(queue: AudioQueueRef, buffer: AudioQueueBufferRef, capacity: Int) {

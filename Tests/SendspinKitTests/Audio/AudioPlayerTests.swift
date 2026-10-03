@@ -25,6 +25,18 @@ struct AudioPlayerTests {
     }
 
     @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
+    func prepareCountsEachPrimedBufferOnce() async throws {
+        let player = AudioPlayer()
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        try await player.prepare(format: format, codecHeader: nil)
+        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+        let expected = Int64(audioQueueBufferCount) * (Int64(audioQueueBufferByteSize) / Int64(bytesPerFrame))
+        let primedFrames = await player.totalFramesEnqueued
+        await player.stop()
+        #expect(primedFrames == expected)
+    }
+
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func configureAudioFormat() async throws {
         let player = AudioPlayer()
 
