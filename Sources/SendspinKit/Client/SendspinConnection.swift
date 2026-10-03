@@ -111,6 +111,7 @@ actor SendspinConnection {
 
     var playerStartState: PlayerStartState = .none
     var playerStartGeneration: UInt64 = 0
+    var playerStartedEventEmitted = false
     /// Written from several places (this method, the engine report drain, stream-start
     /// validation). `operationalStateEpoch` stamps every one of them so a rollback can
     /// tell "nothing moved" from "something moved to the same value".

@@ -116,55 +116,64 @@ extension SendspinConnection {
     /// Report drain: consume engine reports and translate to control events.
     func reportDrain() async {
         for await report in audioEngine.reports {
-            switch report {
-            case let .operationalState(state):
-                clientOperationalState = state
-                controlSink.enqueue(.operationalState(state))
-                // Send client/state on every operational state change
-                try? await publishClientState()
+            await applyEngineReport(report)
+        }
+    }
 
-            case let .started(format, generation):
-                guard playerStartState == .pending(generation) else {
-                    Log.client.debug("Ignoring stale player start report generation=\(generation)")
-                    continue
-                }
-                // Report drain and message loop are sibling tasks; identity protects newer announcements.
-                playerStartState = .started(generation)
-                controlSink.enqueue(.streamStarted(format))
-                if clientOperationalState == .error {
-                    // Successful start: restore to synchronized after an earlier error.
-                    clientOperationalState = .synchronized
-                    controlSink.enqueue(.operationalState(.synchronized))
-                    try? await publishClientState()
-                }
+    func applyEngineReport(_ report: EngineReport) async {
+        switch report {
+        case let .operationalState(state):
+            clientOperationalState = state
+            controlSink.enqueue(.operationalState(state))
+            // Send client/state on every operational state change
+            try? await publishClientState()
 
-            case let .formatApplied(format, generation):
-                guard playerStartState == .pending(generation) else {
-                    Log.client.debug("Ignoring stale player format report generation=\(generation)")
-                    continue
-                }
-                playerStartState = .started(generation)
-                controlSink.enqueue(.streamFormatChanged(format))
-                if clientOperationalState == .error {
-                    clientOperationalState = .synchronized
-                    controlSink.enqueue(.operationalState(.synchronized))
-                    try? await publishClientState()
-                }
-
-            case let .startFailed(reason, generation):
-                guard playerStartState == .pending(generation) else {
-                    Log.client.debug("Ignoring stale player failure report generation=\(generation)")
-                    continue
-                }
-                playerStartState = .failed(generation)
-                // Audio start failed: emit error and stay in error state
-                let error = StreamingError.audioStartFailed(reason)
-                clientOperationalState = .error
-                controlSink.enqueue(.streamError(error))
-                controlSink.enqueue(.operationalState(.error))
+        case let .started(format, generation):
+            guard playerStartState == .pending(generation) else {
+                Log.client.debug("Ignoring stale player start report generation=\(generation)")
+                return
+            }
+            // Report drain and message loop are sibling tasks; identity protects newer announcements.
+            playerStartState = .started(generation)
+            emitPlayerStreamOutcome(format)
+            if clientOperationalState == .error {
+                // Successful start: restore to synchronized after an earlier error.
+                clientOperationalState = .synchronized
+                controlSink.enqueue(.operationalState(.synchronized))
                 try? await publishClientState()
             }
+
+        case let .formatApplied(format, generation):
+            guard playerStartState == .pending(generation) else {
+                Log.client.debug("Ignoring stale player format report generation=\(generation)")
+                return
+            }
+            playerStartState = .started(generation)
+            emitPlayerStreamOutcome(format)
+            if clientOperationalState == .error {
+                clientOperationalState = .synchronized
+                controlSink.enqueue(.operationalState(.synchronized))
+                try? await publishClientState()
+            }
+
+        case let .startFailed(reason, generation):
+            guard playerStartState == .pending(generation) else {
+                Log.client.debug("Ignoring stale player failure report generation=\(generation)")
+                return
+            }
+            playerStartState = .failed(generation)
+            // Audio start failed: emit error and stay in error state
+            let error = StreamingError.audioStartFailed(reason)
+            clientOperationalState = .error
+            controlSink.enqueue(.streamError(error))
+            controlSink.enqueue(.operationalState(.error))
+            try? await publishClientState()
         }
+    }
+
+    private func emitPlayerStreamOutcome(_ format: AudioFormatSpec) {
+        controlSink.enqueue(playerStartedEventEmitted ? .streamFormatChanged(format) : .streamStarted(format))
+        playerStartedEventEmitted = true
     }
 
     /// Main supervisor: run the three child loops, await the first to finish,
@@ -209,6 +218,7 @@ extension SendspinConnection {
         lifecycle = .shuttingDown
 
         stopOutputFormatNegotiation()
+        playerStartedEventEmitted = false
 
         // Invalidate both the session and any queued visualizer frames.
         validity.invalidate()
