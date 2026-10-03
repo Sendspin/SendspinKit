@@ -73,6 +73,63 @@ struct PlayerStreamConfigurationTests {
         await connection.shutdown()
     }
 
+    @Test("Player role removal resets the first-success event")
+    func playerRoleRemovalResetsStart() async throws {
+        let fixture = try await makeEstablishedConnection(startConnection: false)
+        let connection = fixture.connection
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        await connection.handleStreamStart(announcement(format))
+        await connection.applyEngineReport(.started(format, startGeneration: connection.playerStartGeneration))
+        await connection.handleServerActivate(ServerActivateMessage(payload: .init(activities: [], activeRoles: [])))
+        #expect(await connection.activeRoles.isEmpty)
+        #expect(await connection.playerStartedEventEmitted == false)
+        await connection.handleServerActivate(ServerActivateMessage(payload: .init(activities: [.playback], activeRoles: [.playerV1])))
+        #expect(await connection.activeRoles == [.playerV1])
+        await connection.handleStreamStart(announcement(format))
+        await connection.applyEngineReport(.formatApplied(format, startGeneration: connection.playerStartGeneration))
+        #expect(await lifecycleOutcomes(connection) == [.streamStarted(format), .streamStarted(format)])
+        await connection.shutdown()
+    }
+
+    @Test("Stream clear preserves the first-success event")
+    func streamClearPreservesStart() async throws {
+        let fixture = try await makeEstablishedConnection(startConnection: false)
+        let connection = fixture.connection
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        await connection.handleStreamStart(announcement(format))
+        await connection.applyEngineReport(.started(format, startGeneration: connection.playerStartGeneration))
+        await connection.handleStreamClear(StreamClearMessage(payload: .init(roles: [StreamRole.player.rawValue])))
+        await connection.handleStreamStart(announcement(format, header: Data("updated".utf8)))
+        await connection.applyEngineReport(.formatApplied(format, startGeneration: connection.playerStartGeneration))
+        #expect(await lifecycleOutcomes(connection) == [.streamStarted(format), .streamFormatChanged(format)])
+        await connection.shutdown()
+    }
+
+    @Test("A failed start does not consume the first-success event")
+    func failedStartRetryEmitsStart() async throws {
+        let fixture = try await makeEstablishedConnection(startConnection: false)
+        let connection = fixture.connection
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        await connection.handleStreamStart(announcement(format))
+        await connection.applyEngineReport(.startFailed(reason: "test output failure", startGeneration: connection.playerStartGeneration))
+        await connection.handleStreamStart(announcement(format))
+        await connection.applyEngineReport(.started(format, startGeneration: connection.playerStartGeneration))
+        #expect(await lifecycleOutcomes(connection) == [.streamStarted(format)])
+        await connection.shutdown()
+    }
+
+    private func lifecycleOutcomes(_ connection: SendspinConnection) async -> [ConnectionEvent] {
+        connection.controlSink.finish()
+        var outcomes: [ConnectionEvent] = []
+        for await event in connection.events {
+            switch event {
+            case .streamStarted, .streamFormatChanged: outcomes.append(event)
+            default: break
+            }
+        }
+        return outcomes
+    }
+
     @MainActor
     @Test("Reactivation updates activities without repeating serverConnected")
     func reactivationDoesNotRepeatConnection() async throws {
@@ -81,7 +138,9 @@ struct PlayerStreamConfigurationTests {
         let info = ServerInfo(serverId: "server", name: "Named server", trustLevel: .none, activeRoles: [.metadataV1], activities: [])
         client.applyConnectionEvent(.serverConnected(info))
         client.applyConnectionEvent(.serverActivated(activities: [.playback], activeRoles: [.metadataV1]))
+        #expect(client.currentActivities == [.playback])
         client.applyConnectionEvent(.serverActivated(activities: [], activeRoles: [.metadataV1]))
+        #expect(client.currentActivities.isEmpty)
         await client.close()
         var connected: [ServerInfo] = []
         for await event in events {
