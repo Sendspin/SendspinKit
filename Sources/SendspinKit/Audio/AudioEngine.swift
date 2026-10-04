@@ -1185,6 +1185,13 @@ actor AudioEngine {
 
     /// Discard the old output immediately when a route change invalidates its PCM.
     private func applyRouteInvalidatedFormatChange(format: AudioFormatSpec, codecHeader: Data?) async {
+        if let oldTimestamp = lastWireChunkTimestamp {
+            formatChangeLastWireTimestamp = oldTimestamp
+            let serverNow = await clock.localTimeToServer(MonotonicClock.absoluteMicroseconds())
+            Log.audio.debug(
+                "Route-invalidated format-change announcement: lastOld=\(oldTimestamp, privacy: .public) serverNow=\(serverNow, privacy: .public)"
+            )
+        }
         cancelStartupDeadline()
         startupBuffer = nil
         startupFormat = nil
