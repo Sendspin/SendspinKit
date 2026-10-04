@@ -80,6 +80,11 @@ force_cast:
 
 # Custom rules
 custom_rules:
+  no_public_extension:
+    name: "Explicit member access control"
+    regex: '^\s*public\s+extension\b'
+    message: "Members declare their own access level; public extension is not used."
+    severity: error
   # Backtick-quoted function names with spaces require Swift 6.2+.
   # CI runs Swift 6.1, so these will fail to parse there.
   # Remove this rule when the CI toolchain is bumped to 6.2+.
