@@ -250,7 +250,7 @@ actor AudioPlayer {
     /// All state shared between the actor and the audio thread, protected by
     /// `OSAllocatedUnfairLock` with priority donation. Access is structurally
     /// enforced: every read/write goes through `withLock`.
-    private nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
+    nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
 
     private var currentVolume: Float = 1.0
     private var appliedVolume: Float = 1.0

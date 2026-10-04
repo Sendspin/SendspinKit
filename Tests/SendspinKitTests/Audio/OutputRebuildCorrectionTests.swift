@@ -2,6 +2,39 @@
 import Testing
 
 struct OutputRebuildCorrectionTests {
+    @Test func stopResetsReadinessBeforeNextCorrectionPass() async throws {
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let player = AudioPlayer()
+        let capacity = Int(audioQueueBufferByteSize)
+        let frameSize = format.channels * (format.bitDepth / 8)
+        let cadence = UInt32(capacity / frameSize)
+        player.lockedState.withLock { state in
+            state.prewarming = false
+            state.queueStartAbsoluteUs = MonotonicClock.absoluteMicroseconds()
+            state.spinUpUs = 0
+            state.lastSyncErrorUs = audioQueueTeardownSlowThresholdUs
+        }
+        let ready = await player.telemetrySnapshot
+        #expect(ready.syncErrorUs == audioQueueTeardownSlowThresholdUs)
+
+        await player.stop()
+        player.lockedState.withLock { state in
+            state.correctionSchedule = CorrectionSchedule(insertEveryNFrames: cadence, dropEveryNFrames: cadence)
+            state.dropCounter = cadence
+            state.insertCounter = cadence
+            AudioPlayer.updateCorrectionSchedule(
+                state: &state, capacity: capacity, frameSize: frameSize,
+                sampleRate: format.sampleRate, inFlightAtCallback: nil
+            )
+            #expect(state.correctionSchedule == CorrectionSchedule())
+            #expect(state.dropCounter == 0)
+            #expect(state.insertCounter == 0)
+        }
+        let stopped = await player.telemetrySnapshot
+        #expect(stopped.syncErrorUs == nil)
+        #expect(stopped.correctionSchedule == CorrectionSchedule())
+    }
+
     @Test func staleCursorDoesNotDriveCorrectionUntilOutputIsReady() throws {
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let capacity = Int(audioQueueBufferByteSize)
