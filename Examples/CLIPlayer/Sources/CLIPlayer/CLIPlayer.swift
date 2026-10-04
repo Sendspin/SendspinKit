@@ -54,11 +54,12 @@ final class CLIPlayer {
         }
     }()
 
-    private static func playerConfig(volumeMode: VolumeMode) throws -> PlayerConfiguration {
+    private static func playerConfig(volumeMode: VolumeMode, outputPolicy: OutputSampleRatePolicy) throws -> PlayerConfiguration {
         try PlayerConfiguration(
             bufferCapacity: 2_097_152, // 2MB buffer
             supportedFormats: supportedFormats,
-            volumeMode: volumeMode
+            volumeMode: volumeMode,
+            outputSampleRatePolicy: outputPolicy
         )
     }
 
@@ -78,6 +79,7 @@ final class CLIPlayer {
         clientName: String,
         useTUI: Bool = true,
         volumeMode: VolumeMode = .software,
+        outputPolicy: OutputSampleRatePolicy = .preferCurrentOutput,
         enablePairing: Bool = false
     ) async throws {
         // Simple startup banner before TUI takes over
@@ -92,7 +94,7 @@ final class CLIPlayer {
         }
 
         // Create client
-        let config = try Self.playerConfig(volumeMode: volumeMode)
+        let config = try Self.playerConfig(volumeMode: volumeMode, outputPolicy: outputPolicy)
         // Ephemeral demo device: identity and pairing state vanish when the process exits.
         let device = SendspinDevice.ephemeral()
         let pairing: PairingPresentation = enablePairing ? .display : .tokenOnly
@@ -111,7 +113,7 @@ final class CLIPlayer {
         )
         self.client = client
 
-        fputs("[CONFIG] Volume mode: \(volumeMode) pairing=\(enablePairing)\n", stderr)
+        fputs("[CONFIG] Volume mode: \(volumeMode) outputPolicy=\(outputPolicy.rawValue) pairing=\(enablePairing)\n", stderr)
 
         // Start event monitoring
         eventTask = Task {
@@ -449,12 +451,19 @@ final class CLIPlayer {
     /// Listen for incoming server connections (server-initiated path).
     /// Advertises via mDNS and waits for servers to connect.
     @MainActor
-    func listen(port: UInt16, clientName: String, useTUI: Bool = true, volumeMode: VolumeMode = .software, enablePairing: Bool = false) async throws {
+    func listen(
+        port: UInt16,
+        clientName: String,
+        useTUI: Bool = true,
+        volumeMode: VolumeMode = .software,
+        outputPolicy: OutputSampleRatePolicy = .preferCurrentOutput,
+        enablePairing: Bool = false
+    ) async throws {
         print("🎵 Sendspin CLI Player (Listen Mode)")
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("Advertising on port \(port)...")
 
-        let config = try Self.playerConfig(volumeMode: volumeMode)
+        let config = try Self.playerConfig(volumeMode: volumeMode, outputPolicy: outputPolicy)
         // Ephemeral demo device: identity and pairing state vanish when the process exits.
         let device = SendspinDevice.ephemeral()
         let pairing: PairingPresentation = enablePairing ? .display : .tokenOnly

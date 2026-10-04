@@ -15,6 +15,8 @@ actor AudioEngine {
     private let output: any AudioOutput
     private let audioScheduler: AudioScheduler
     private let clock: any ClockSyncProtocol
+    private var lastWireChunkTimestamp: Int64?
+    private var formatChangeLastWireTimestamp: Int64?
 
     // Command ingress
     private let _commandsSink: DataPlaneSink
@@ -853,12 +855,28 @@ actor AudioEngine {
         Self.rebase(&startupReleaseDeferredChunks, from: oldDelayUs, to: newDelayUs)
     }
 
+    private func recordWireChunkTimestamp(_ timestamp: Int64) async {
+        if let oldTimestamp = formatChangeLastWireTimestamp {
+            let serverNow = await clock.localTimeToServer(MonotonicClock.absoluteMicroseconds())
+            Log.audio.debug(
+                """
+                Format-change first chunk: lastOld=\(oldTimestamp, privacy: .public) \
+                firstNew=\(timestamp, privacy: .public) delta=\(timestamp - oldTimestamp, privacy: .public) \
+                serverNow=\(serverNow, privacy: .public)
+                """
+            )
+            formatChangeLastWireTimestamp = nil
+        }
+        lastWireChunkTimestamp = timestamp
+    }
+
     /// Schedule a chunk for playback.
     private func applyChunk(data: Data, ts: Int64, generation: UInt64?, routeEpoch: UInt64? = nil) async {
         if let generation, generation < streamGeneration {
             return
         }
 
+        await recordWireChunkTimestamp(ts)
         let chunkGeneration = generation ?? streamGeneration
         guard failedDecoderGeneration != chunkGeneration else { return }
         do {
@@ -1167,6 +1185,13 @@ actor AudioEngine {
 
     /// Discard the old output immediately when a route change invalidates its PCM.
     private func applyRouteInvalidatedFormatChange(format: AudioFormatSpec, codecHeader: Data?) async {
+        if let oldTimestamp = lastWireChunkTimestamp {
+            formatChangeLastWireTimestamp = oldTimestamp
+            let serverNow = await clock.localTimeToServer(MonotonicClock.absoluteMicroseconds())
+            Log.audio.debug(
+                "Route-invalidated format-change announcement: lastOld=\(oldTimestamp, privacy: .public) serverNow=\(serverNow, privacy: .public)"
+            )
+        }
         cancelStartupDeadline()
         startupBuffer = nil
         startupFormat = nil
@@ -1203,6 +1228,11 @@ actor AudioEngine {
         if playerStartFailed, !outputHasStarted, startupFormat == nil {
             await applyStreamStart(format: format, codecHeader: codecHeader)
             return
+        }
+        if let oldTimestamp = lastWireChunkTimestamp {
+            formatChangeLastWireTimestamp = oldTimestamp
+            let serverNow = await clock.localTimeToServer(MonotonicClock.absoluteMicroseconds())
+            Log.audio.debug("Format-change announcement: lastOld=\(oldTimestamp, privacy: .public) serverNow=\(serverNow, privacy: .public)")
         }
         streamGeneration = generation
         formatBoundaries[generation] = FormatBoundary(format: format, codecHeader: codecHeader, startGeneration: startGeneration)
