@@ -20,15 +20,15 @@ protocol ClientAdvertising: AnyObject, Sendable {
 
 extension ClientAdvertiser: ClientAdvertising {}
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Current listener lifecycle, independent from ``connectionState``.
-    var listenerState: AdvertisingState {
+    public var listenerState: AdvertisingState {
         advertisingState
     }
 
     /// Start the client-owned Bonjour listener and wait for actual listener readiness.
     @MainActor
-    func startAdvertising(
+    public func startAdvertising(
         port: UInt16 = SendspinDefaults.clientPort,
         path: String = SendspinDefaults.webSocketPath
     ) async throws {
@@ -76,7 +76,7 @@ public extension SendspinClient {
 
     /// Stop accepting new inbound candidates. Admitted sessions remain connected.
     @MainActor
-    func stopAdvertising() async {
+    public func stopAdvertising() async {
         await shutdownAdvertising()
     }
 
