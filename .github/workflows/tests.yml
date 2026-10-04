@@ -111,7 +111,8 @@ jobs:
               exit 1
             fi
           done
-          wait "$suite"; rc=$?
+          # `|| rc=$?` keeps errexit from skipping the log print when the suite fails.
+          rc=0; wait "$suite" || rc=$?
           cat test-output.log
           exit $rc
 
