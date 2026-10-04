@@ -1180,9 +1180,13 @@ struct ClientIntegrationTests {
 
     @Test
     func competingConnection_silentOpenHandshakeTimesOutAndKeepsExisting() async throws {
-        let client = try makeTestClient(handshakeTimeout: .milliseconds(100))
+        let incumbentHandshakeBudget: Duration = .seconds(600)
+        let silentCompetitorHandshakeBudget: Duration = .milliseconds(100)
+        let client = try makeTestClient(handshakeTimeout: incumbentHandshakeBudget)
         let mock1 = try await connectClient(client, connectionReason: .discovery)
 
+        // Only the silent competitor races the short budget; admission of the incumbent does not.
+        client.handshakeTimeout = silentCompetitorHandshakeBudget
         let mock2 = MockTransport()
         let outcome = AsyncVoidOutcomeBox()
         Task {

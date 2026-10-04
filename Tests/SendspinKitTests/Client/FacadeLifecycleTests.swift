@@ -4,9 +4,12 @@ import Testing
 
 @MainActor
 struct FacadeLifecycleTests {
+    /// Parked handshakes must outlive competitor admission and deliberate lifecycle suspension.
+    private let parkedHandshakeBudget: Duration = .seconds(600)
+
     @Test("a disconnect while an accept handshakes prevents a later install")
     func acceptCancelledByDisconnectCannotInstall() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: parkedHandshakeBudget)
         let transport = MockTransport()
         let server = MockNoiseServer(transport: transport, psk: .sentinel)
 
@@ -25,7 +28,7 @@ struct FacadeLifecycleTests {
 
     @Test("a competing promotion supersedes a parked primary accept")
     func competingPromotionBumpsPrimaryEpoch() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: parkedHandshakeBudget)
 
         let primary = MockTransport()
         let primaryServer = MockNoiseServer(transport: primary, psk: .sentinel)
@@ -51,7 +54,7 @@ struct FacadeLifecycleTests {
 
     @Test("a disconnect during promotion teardown prevents the install")
     func disconnectDuringPromotionTeardownPreventsInstall() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: parkedHandshakeBudget)
 
         let incumbent = MockTransport()
         let incumbentServer = MockNoiseServer(transport: incumbent, psk: .sentinel)
@@ -86,7 +89,7 @@ struct FacadeLifecycleTests {
 
     @Test("a failing parked accept cannot clobber a replacement session")
     func abandonedFailingAcceptCannotClobberReplacement() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: parkedHandshakeBudget)
 
         let first = MockTransport()
         let firstAccept = Task { try? await client.acceptConnection(first) }
@@ -128,7 +131,7 @@ struct FacadeLifecycleTests {
 
     @Test("close() during a paused accept terminates without installing")
     func closeDuringPausedAcceptTerminates() async throws {
-        let client = try makeTestClient()
+        let client = try makeTestClient(handshakeTimeout: parkedHandshakeBudget)
         let transport = MockTransport()
 
         let accepted = Task { try await client.acceptConnection(transport) }

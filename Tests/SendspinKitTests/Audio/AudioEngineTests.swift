@@ -394,7 +394,7 @@ struct AudioEngineTests {
         engine.commands.enqueue(.setOutputDelay(delayMs))
         engine.commands.enqueue(.chunk(Data(repeating: 0, count: 100), ts: serverTimestamp))
 
-        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 1 }
+        let received = await waitUntil(timeout: audioProcessingBudget) { await scheduler.queuedChunks.count == 1 }
         let queued = await scheduler.queuedChunks
         await engine.shutdown()
 
@@ -435,7 +435,7 @@ struct AudioEngineTests {
         engine.commands.enqueue(.chunkAtGenerationWithSendAhead(
             Data(repeating: 0, count: 100), ts: timestamp, sendAhead: UInt32.max, generation: 0
         ))
-        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 1 }
+        let received = await waitUntil(timeout: audioProcessingBudget) { await scheduler.queuedChunks.count == 1 }
         let queued = await scheduler.queuedChunks
         await engine.shutdown()
 
@@ -462,7 +462,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.chunk(Data(repeating: 1, count: 100), ts: firstTimestamp))
         await engine.commands.enqueue(.chunk(Data(repeating: 2, count: 100), ts: secondTimestamp))
 
-        let received = await waitUntil(timeout: .seconds(3)) { await scheduler.queuedChunks.count == 2 }
+        let received = await waitUntil(timeout: audioProcessingBudget) { await scheduler.queuedChunks.count == 2 }
         let queued = await scheduler.queuedChunks
         await engine.shutdown()
 
@@ -475,10 +475,10 @@ struct AudioEngineTests {
     /// bump routes new chunks through the rebuild before `.formatApplied` is reported.
     @Test("seamless format change rebuilds and emits .formatApplied")
     func seamlessFormatChange() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        // A wide playback window keeps delivery reliable when the test process is busy.
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
 
         await engine.start()
@@ -487,25 +487,29 @@ struct AudioEngineTests {
         let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
 
         await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains(where: { $0.hasPrefix("start(") }) })
 
         // gen0 chunks, near-now timestamps so the scheduler emits them within its window.
         for i in 0 ..< 3 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: Int64(i) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 3 })
+        time.advance(to: 10_000)
+        await scheduler.checkQueue()
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 3 })
 
         await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().last == .formatChange })
 
         // gen1 chunks: at least formatTransitionPreBuffer (2) must arrive for the rebuild
         // to complete and emit .formatApplied — send extra to clear the pre-buffer.
         for i in 0 ..< 4 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i + 10), count: 100), ts: Int64(i + 4) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(400))
-
-        let formatApplied = await awaitReport(from: engine, timeoutMs: 200) {
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 7 })
+        time.advance(to: 35_000)
+        await scheduler.checkQueue()
+        let formatApplied = await awaitReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
             if case let .formatApplied(applied, _) = $0 {
                 applied == fmt1
             } else {
@@ -560,7 +564,7 @@ struct AudioEngineTests {
         engine.enqueueAudioChunk(data: postRouteNew, timestamp: 3)
         await output.releaseBlockedDecode()
 
-        let rebuilt = await waitUntil(timeout: .seconds(3)) {
+        let rebuilt = await waitUntil(timeout: audioProcessingBudget) {
             let calls = await output.recordedCalls
             let kinds = await engine.appliedCommandKinds()
             let decodedInputs = await output.decodedInputs
@@ -631,7 +635,7 @@ struct AudioEngineTests {
         await output.releaseBlockedDecode()
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(newPCM) },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(newPCM) },
             "the first PCM of the new stream must reach output"
         )
         let played = await output.playedPCMData
@@ -657,7 +661,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.chunk(sentinel, ts: 0))
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(Data([0xA1, 0x01])) },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(Data([0xA1, 0x01])) },
             "the first boundaryless stream chunk must reach playback"
         )
         let played = await output.playedPCMData
@@ -667,10 +671,19 @@ struct AudioEngineTests {
 
     @Test("startup buffering delivers its first PCM chunk")
     func startupGenerationFirstDelivery() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let sentinel = Data([0xF2, 0x02])
         let pcm = Data([0xA2, 0x02])
@@ -680,7 +693,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.chunk(sentinel, ts: 1_000_000))
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(pcm) },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(pcm) },
             "startup buffering must deliver the first primed chunk"
         )
         let calls = await output.recordedCalls
@@ -710,7 +723,7 @@ struct AudioEngineTests {
         await engine.start()
         engine.enqueueStreamStart(format: oldFormat, codecHeader: nil)
         engine.enqueueAudioChunk(data: primed, timestamp: 500_000)
-        #expect(await waitUntil { await output.playedPCMData.count == 1 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 1 })
         #expect(await engine.startupReleaseCommits == 0)
         engine.enqueueAudioChunk(data: deferredOld, timestamp: 501_000)
         #expect(await waitUntil { await output.decodedInputs.count == 2 })
@@ -718,7 +731,7 @@ struct AudioEngineTests {
         engine.enqueueAudioChunk(data: replacement, timestamp: 502_000)
         #expect(await waitUntil { await output.decodedInputs.count == 3 })
         await output.releaseBlockedPCM()
-        #expect(await waitUntil { await output.playedPCMData.count == 3 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 3 })
         #expect(await output.playedPCMData == [primed, deferredOld, replacement], "all primed and deferred PCM survives in order")
         #expect(await output.decodedFormats == [oldFormat, oldFormat, newFormat])
         let calls = await output.recordedCalls
@@ -752,7 +765,7 @@ struct AudioEngineTests {
         engine.enqueueAudioChunk(data: oldPCM, timestamp: 500_000)
         engine.enqueueFormatChange(format: newFormat, codecHeader: nil)
         engine.enqueueAudioChunk(data: newPCM, timestamp: 520_000)
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 2 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 2 })
         #expect(await output.playedPCMData == [oldPCM, newPCM], "startup preserves all PCM in format order")
         #expect(await output.decodedFormats == [oldFormat, newFormat], "each chunk uses its receipt-time decoder format")
         #expect(await output.recordedCalls.count(where: { $0 == "prepare(pcm)" }) == 1)
@@ -786,7 +799,7 @@ struct AudioEngineTests {
         engine.enqueueAudioChunk(data: newSentinel, timestamp: 0)
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(newPCM) },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(newPCM) },
             "the first chunk after a route rebuild must not be dropped"
         )
         let played = await output.playedPCMData
@@ -799,10 +812,19 @@ struct AudioEngineTests {
 
     @Test("stream clear in active production buffering does not restart startup")
     func activeProductionBufferingClearContinuesPlayback() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let first = Data([0xF4, 0x04])
         let replacement = Data([0xA4, 0x04])
@@ -810,7 +832,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         await output.setDecodeOutput(first, pcm: Data([0xB4, 0x04]))
         await engine.commands.enqueue(.chunk(first, ts: 1_000_000))
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
         let callsBeforeClear = await output.recordedCalls
 
         engine.commands.enqueue(.streamClear(roles: ["player"]))
@@ -819,7 +841,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.chunk(replacement, ts: 0))
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(Data([0xB5, 0x04])) },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(Data([0xB5, 0x04])) },
             "active buffering must continue directly after stream clear"
         )
         let callsAfterClear = await output.recordedCalls
@@ -845,7 +867,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.formatChange(newFormat, codecHeader: nil))
         await output.setDecodeOutput(stale, pcm: Data([0xB6, 0x05]))
         await engine.commands.enqueue(.chunk(stale, ts: 0))
-        #expect(await waitUntil { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
 
         engine.commands.enqueue(.streamClear(roles: ["player"]))
         #expect(await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamClear }) == 1 })
@@ -853,7 +875,7 @@ struct AudioEngineTests {
         await output.setDecodeOutput(replacement, pcm: Data([0xB7, 0x05]))
         await engine.commands.enqueue(.chunk(replacement, ts: 0))
 
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.contains(Data([0xB7, 0x05])) })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.contains(Data([0xB7, 0x05])) })
         let played = await output.playedPCMData
         await engine.shutdown()
         #expect(!played.contains(Data([0xB6, 0x05])))
@@ -861,9 +883,10 @@ struct AudioEngineTests {
 
     @Test("rapid ordered changes deliver each generation in order")
     func rapidOrderedChangesDeliverSentinelsInOrder() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
         let initial = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let firstFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
@@ -882,7 +905,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.chunk(second, ts: 0))
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 2 },
+            await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 2 },
             "rapid ordered generations must both reach playback"
         )
         let played = await output.playedPCMData
@@ -912,7 +935,7 @@ struct AudioEngineTests {
         #expect(await scheduler.queuedChunks.count == 1, "the old-format chunk should be pending in the scheduler")
 
         await engine.commands.enqueue(.formatChange(replacementFormat, codecHeader: nil))
-        let decoderSwapped = await waitUntil(timeout: .seconds(3)) {
+        let decoderSwapped = await waitUntil(timeout: audioProcessingBudget) {
             await output.recordedCalls.contains("swapDecoder(pcm)")
         }
         #expect(decoderSwapped, "the replacement decoder should be ready")
@@ -945,7 +968,7 @@ struct AudioEngineTests {
         engine.enqueueFormatChange(format: replacementFormat, codecHeader: nil)
         engine.enqueueAudioChunk(data: newData, timestamp: newTimestamp)
 
-        let sawSwap = await waitUntil(timeout: .seconds(3)) {
+        let sawSwap = await waitUntil(timeout: audioProcessingBudget) {
             await output.recordedCalls.contains("swapDecoder(pcm)")
         }
         #expect(sawSwap)
@@ -968,9 +991,10 @@ struct AudioEngineTests {
     @Test("a failed seamless rebuild surfaces .startFailed")
     func seamlessRebuildFailureReportsStartFailed() async throws {
         struct TestError: Error {}
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
 
         await engine.start()
@@ -979,26 +1003,30 @@ struct AudioEngineTests {
         let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
 
         await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains(where: { $0.hasPrefix("start(") }) })
 
         for i in 0 ..< 3 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: Int64(i) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 3 })
+        time.advance(to: 10_000)
+        await scheduler.checkQueue()
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count == 3 })
 
         // Arm the deferred rebuild to fail: swapDecoder still succeeds (so we take the
         // deferred-rebuild path), but the rebuild's output.start() throws.
         await output.setForcedStartThrow(TestError())
 
         await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().last == .formatChange })
 
         for i in 0 ..< 4 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i + 10), count: 100), ts: Int64(i + 4) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(400))
-
-        let sawStartFailed = await awaitReport(from: engine, timeoutMs: 200) {
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 7 })
+        time.advance(to: 35_000)
+        await scheduler.checkQueue()
+        let sawStartFailed = await awaitReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
             if case .startFailed = $0 {
                 true
             } else {
@@ -1057,7 +1085,7 @@ struct AudioEngineTests {
 
         // Observe the report before shutdown so finishing the stream cannot satisfy the
         // assertion by itself. The generous timeout covers scheduler latency under load.
-        let sawFormatApplied = await awaitReport(from: engine, timeoutMs: 5_000) { report in
+        let sawFormatApplied = await awaitReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) { report in
             if case let .formatApplied(applied, _) = report {
                 return applied == fmt1
             }
