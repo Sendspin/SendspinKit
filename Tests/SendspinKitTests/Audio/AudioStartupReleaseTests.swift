@@ -227,10 +227,10 @@ struct AudioStartupReleaseTests {
             )
         }
 
-        #expect(await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 8 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 8 })
         await time.releaseSleeps()
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
+            await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") },
             "the stream must start"
         )
         let evaluations = await engine.startupReleaseEvaluations
@@ -264,7 +264,7 @@ struct AudioStartupReleaseTests {
         let firstTimestamp: Int64 = 1_000_000
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.startupDeadlineArms == 1 },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.startupDeadlineArms == 1 },
             "the first chunk arms its deadline before later chunks arrive"
         )
 
@@ -279,7 +279,8 @@ struct AudioStartupReleaseTests {
         }
         let expectedChunkCount = laterChunkCount + 1
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount
+            },
             "the later chunks must be processed before checking deadline churn"
         )
         #expect(await engine.startupDeadlineArms == 1)
@@ -288,7 +289,7 @@ struct AudioStartupReleaseTests {
         await time.releaseSleeps()
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
+            await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") },
             "the original deadline must still produce one startup commit"
         )
         let commits = await engine.startupReleaseCommits
@@ -359,7 +360,7 @@ struct AudioStartupReleaseTests {
         // Wait until the engine has applied them so the next assertion observes processing,
         // not merely a delayed command queue.
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == staleCount },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == staleCount },
             "the stale chunks should have reached the engine"
         )
         #expect(
@@ -371,7 +372,7 @@ struct AudioStartupReleaseTests {
         await engine.commands.enqueue(.chunk(Data(repeating: 0xAA, count: 100), ts: 1_500_000))
 
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
+            await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") },
             "the newly arrived viable chunk must start the stream"
         )
         await engine.shutdown()
@@ -405,7 +406,7 @@ struct AudioStartupReleaseTests {
             )
         }
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == staleCount },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == staleCount },
             "the stale chunks should have reached the engine"
         )
         #expect(await !output.recordedCalls.contains("startPrepared()"), "nothing is viable yet")
@@ -423,7 +424,7 @@ struct AudioStartupReleaseTests {
         // A single viable chunk arrival must restart the stalled release.
         await engine.commands.enqueue(.chunk(Data(repeating: 0xAA, count: 100), ts: 1_500_000))
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.startupReleaseCommits == 1 },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.startupReleaseCommits == 1 },
             "a fresh viable chunk must commit a release"
         )
         await engine.shutdown()
@@ -455,17 +456,17 @@ struct AudioStartupReleaseTests {
         let secondTimestamp: Int64 = 1_100_000
         await output.blockNextOutputDeviceProbe()
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.outputDeviceProbeCount >= 1 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount >= 1 })
         await engine.commands.enqueue(.chunk(Data(repeating: 0x02, count: 100), ts: secondTimestamp))
         #expect(
-            await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 2 },
+            await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 2 },
             "the second chunk must be applied while the release probe is suspended"
         )
         await output.releaseBlockedOutputDeviceProbe()
 
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
         #expect(
-            await waitUntil(timeout: .seconds(3)) {
+            await waitUntil(timeout: audioProcessingBudget) {
                 let played = await output.playedPCMTimestamps
                 let scheduled = await scheduler.queuedChunks.map(\.originalTimestamp)
                 return played.count + scheduled.count == 2
@@ -523,8 +524,8 @@ struct AudioStartupReleaseTests {
         )
         await output.releaseBlockedPCM()
 
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
-        #expect(await waitUntil(timeout: .seconds(3)) { await scheduler.stats.received == 1 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 1 })
         let calls = await output.recordedCalls
         let timestamps = await output.playedPCMTimestamps
         let commits = await engine.startupReleaseCommits
@@ -560,11 +561,11 @@ struct AudioStartupReleaseTests {
         await engine.commands.enqueue(.streamStart(oldFormat, codecHeader: nil))
         await output.blockNextOutputDeviceProbe()
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: 1_000_000))
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.outputDeviceProbeCount == 1 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount == 1 })
 
         // The old release is suspended in the device probe when the format change lands.
         await engine.commands.enqueue(.formatChange(newFormat, codecHeader: nil))
-        #expect(await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().last == .formatChange })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().last == .formatChange })
         await output.releaseBlockedOutputDeviceProbe()
 
         for index in 0 ..< 8 {
@@ -572,7 +573,7 @@ struct AudioStartupReleaseTests {
                 .chunk(Data(repeating: UInt8(index), count: 100), ts: 1_500_000 + Int64(index) * 100_000)
             )
         }
-        let report = await awaitFirstReport(from: engine, timeoutMs: 4_000) { report in
+        let report = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) { report in
             if case .started = report {
                 return true
             }
@@ -581,13 +582,13 @@ struct AudioStartupReleaseTests {
             }
             return false
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await scheduler.stats.received == 8 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await scheduler.stats.received == 8 })
         for index in 0 ..< 8 {
             time.advance(to: 1_500_000 + Int64(index) * 100_000)
             await scheduler.checkQueue()
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
-        let applied = await awaitFirstReport(from: engine, timeoutMs: 3_000) {
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
+        let applied = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
             if case .formatApplied = $0 {
                 return true
             }
@@ -695,7 +696,7 @@ struct AudioStartupReleaseTests {
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
 
         let calls = await output.recordedCalls
         await engine.shutdown()
@@ -740,7 +741,7 @@ struct AudioStartupReleaseTests {
             )
         }
 
-        let report = await awaitFirstReport(from: engine, timeoutMs: 4_000) { report in
+        let report = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) { report in
             if case .started = report {
                 return true
             }
@@ -790,7 +791,7 @@ struct AudioStartupReleaseTests {
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
         }
-        let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: 3_000) { report in
+        let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) { report in
             if case .started = report {
                 return true
             }
@@ -836,7 +837,7 @@ struct AudioStartupReleaseTests {
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 500_000 + Int64(index) * 100_000))
         }
-        let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: 3_000) { report in
+        let firstTerminalReport = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) { report in
             if case .started = report {
                 return true
             }
@@ -872,13 +873,13 @@ struct AudioStartupReleaseTests {
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
 
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: Int64(index) * 100_000))
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.count(where: { $0 == "startPrepared()" }) == 2 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.count(where: { $0 == "startPrepared()" }) == 2 })
 
         let calls = await output.recordedCalls
         await engine.shutdown()
@@ -909,9 +910,9 @@ struct AudioStartupReleaseTests {
         for index in 0 ..< 8 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: 100), ts: 900_000 + Int64(index) * 100_000))
         }
-        #expect(await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 9 })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == 9 })
         await time.releaseSleeps()
-        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") })
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") })
 
         let calls = await output.recordedCalls
         await engine.shutdown()
