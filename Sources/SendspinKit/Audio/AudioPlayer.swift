@@ -533,9 +533,8 @@ actor AudioPlayer {
         lockedState.withLock { $0.outputDelayUs = max(0, delay) }
     }
 
-    /// Wait until the device has delivered its first callback. Before that, PCM released on
-    /// schedule sits in the ring and plays stale; spin-up is usually sub-second but has been
-    /// measured at 13 seconds.
+    /// PCM release waits for the first device callback so the ring does not accumulate stale audio.
+    /// AudioEngine.outputDeviceLiveTimeout bounds this gate while allowing slow device spin-up.
     func waitUntilOutputDeviceIsLive() async throws {
         // With pre-warm disabled the queue does not exist until the release, so there is no
         // device to wait for and gating on it would deadlock the startup path.

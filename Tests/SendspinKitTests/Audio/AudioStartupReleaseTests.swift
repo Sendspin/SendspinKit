@@ -776,7 +776,8 @@ struct AudioStartupReleaseTests {
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
         let engine = AudioEngine(
             output: output, scheduler: scheduler, clock: clock,
-            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep,
+            deviceLiveSleep: time.deviceLiveSleep
         )
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let pendingGeneration: UInt64 = 42
@@ -846,7 +847,8 @@ struct AudioStartupReleaseTests {
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
         let engine = AudioEngine(
             output: output, scheduler: scheduler, clock: clock,
-            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep,
+            deviceLiveSleep: time.deviceLiveSleep
         )
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let retiredGeneration: UInt64 = 42
@@ -910,7 +912,8 @@ struct AudioStartupReleaseTests {
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
         let engine = AudioEngine(
             output: output, scheduler: scheduler, clock: clock,
-            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep,
+            deviceLiveSleep: time.deviceLiveSleep
         )
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let timeout = AudioEngine.outputDeviceLiveTimeout.components
@@ -923,6 +926,8 @@ struct AudioStartupReleaseTests {
         #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount > 0 })
         time.advance(to: insideBoundUs)
         await output.releaseBlockedOutputDeviceProbe()
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains { $0.hasPrefix("playPCM(") } })
+        await time.expireDeviceLiveTimeout()
         await time.releaseSleeps()
         let terminal = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
             if case .started = $0 {

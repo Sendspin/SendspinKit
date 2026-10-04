@@ -79,9 +79,10 @@ actor AudioEngine {
     private var telemetryTask: Task<Void, Never>?
     private let telemetrySleep: @Sendable (Duration) async throws -> Void
     /// Above the ~13.3 s AudioQueueStart stall in docs/audio-timing-model.md, recovering devices start late.
-    /// Devices that never render report a start failure instead of permanent silence.
+    /// The engine reports a start failure for devices that never render instead of permanent silence.
     static let outputDeviceLiveTimeout: Duration = .seconds(20)
 
+    private let deviceLiveSleep: @Sendable (Duration) async throws -> Void
     private let startupSleep: @Sendable (Duration) async throws -> Void
 
     // Running state
@@ -373,6 +374,7 @@ actor AudioEngine {
         startupMinBufferMs: Int = 0,
         startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
         startupSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        deviceLiveSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         telemetrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.output = output
@@ -380,6 +382,7 @@ actor AudioEngine {
         self.clock = clock
         self.startupNow = startupNow
         self.startupSleep = startupSleep
+        self.deviceLiveSleep = deviceLiveSleep
         self.telemetrySleep = telemetrySleep
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -410,6 +413,7 @@ actor AudioEngine {
         self.clock = clock
         startupNow = { MonotonicClock.absoluteMicroseconds() }
         startupSleep = { try await Task.sleep(for: $0) }
+        deviceLiveSleep = { try await Task.sleep(for: $0) }
         telemetrySleep = { try await Task.sleep(for: $0) }
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -998,10 +1002,11 @@ actor AudioEngine {
         // with the latest actor-owned buffer rather than polling a negative probe.
         do {
             let output = output
-            let sleep = startupSleep
+            let sleep = deviceLiveSleep
             let deviceIsLive = try await withThrowingTaskGroup(of: Bool.self) { group in
                 group.addTask {
                     try await output.waitUntilOutputDeviceIsLive()
+                    try Task.checkCancellation()
                     return true
                 }
                 group.addTask {
@@ -1009,6 +1014,7 @@ actor AudioEngine {
                     return false
                 }
                 defer { group.cancelAll() }
+                // Only the first result decides liveness; cancellation releases the losing arm.
                 return try await group.next() ?? false
             }
             if !deviceIsLive {
