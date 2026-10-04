@@ -1,8 +1,8 @@
 import Foundation
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Applies local policy and closes sessions whose normal access depends on being unpaired.
-    func setAccessPolicy(_ policy: AccessPolicy) async throws {
+    public func setAccessPolicy(_ policy: AccessPolicy) async throws {
         try requireOpen()
         let previous = accessPolicyUpdateTask
         let task = Task { @MainActor [weak self] in
@@ -42,7 +42,7 @@ public extension SendspinClient {
     }
 
     /// Creates a client with explicit storage ownership, pairing presentation, and access policy.
-    convenience init(
+    public convenience init(
         device: SendspinDevice,
         name: String,
         roles: some Sequence<VersionedRole>,

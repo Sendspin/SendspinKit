@@ -1,6 +1,6 @@
 import Foundation
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Continuously discover Sendspin servers on the local network.
     ///
     /// Returns a `ServerDiscovery` whose `servers` stream emits an updated list
@@ -15,7 +15,7 @@ public extension SendspinClient {
     /// // Later:
     /// await discovery.stopDiscovery()
     /// ```
-    nonisolated static func discoverServers() async throws -> ServerDiscovery {
+    public nonisolated static func discoverServers() async throws -> ServerDiscovery {
         let discovery = ServerDiscovery()
         try await discovery.startDiscovery()
         return discovery
@@ -36,7 +36,7 @@ public extension SendspinClient {
     /// - Throws: ``SendspinClientError/invalidServerURL(_:)`` for malformed URLs,
     ///   ``SendspinClientError/noDiscoveredServers`` when discovery finds none, or
     ///   discovery transport errors from ``discoverServers(timeout:)``.
-    nonisolated static func resolveServerURL(
+    public nonisolated static func resolveServerURL(
         server: String?,
         discover: Bool,
         timeout: Duration = .seconds(3)
@@ -66,7 +66,7 @@ public extension SendspinClient {
     ///
     /// - Parameter timeout: How long to search for servers (default: 3 seconds)
     /// - Returns: Array of discovered servers
-    nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
+    public nonisolated static func discoverServers(timeout: Duration = .seconds(3)) async throws -> [DiscoveredServer] {
         let discovery = try await discoverServers()
 
         return await withTaskGroup(of: Void.self) { group in

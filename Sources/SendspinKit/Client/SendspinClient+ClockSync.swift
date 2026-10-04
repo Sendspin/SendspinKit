@@ -1,6 +1,6 @@
 import Foundation
 
-public extension SendspinClient {
+extension SendspinClient {
     internal nonisolated func getCurrentMicroseconds() -> Int64 {
         MonotonicClock.nowMicroseconds()
     }
@@ -22,7 +22,7 @@ public extension SendspinClient {
     /// Server-clock instant; compare only with server-domain timestamps. Convert before mixing
     /// with `Date`, `time()`, or `MonotonicClock`.
     @MainActor
-    func currentServerTimeMicroseconds() async -> Int64? {
+    public func currentServerTimeMicroseconds() async -> Int64? {
         guard let connection else { return nil }
         return await connection.currentServerTimeMicroseconds(localNow: MonotonicClock.absoluteMicroseconds())
     }
@@ -36,7 +36,7 @@ public extension SendspinClient {
     /// The returned values are a point-in-time snapshot — they may change on the
     /// next `server/time` exchange.
     @MainActor
-    func currentClockSyncStats() async -> ClockSyncStats? {
+    public func currentClockSyncStats() async -> ClockSyncStats? {
         guard let connection else { return nil }
         // Single actor hop through the connection — all values are from the
         // connection-owned clock-sync actor at one point in time. The connection

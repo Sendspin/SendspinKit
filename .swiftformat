@@ -7,7 +7,8 @@
 --trailingcommas never
 
 # Disable rules that conflict with SwiftLint or our style
---disable wrapMultilineStatementBraces
+--disable wrapMultilineStatementBraces,extensionAccessControl,redundantInternal
+--doc-comments preserve
 
 # Self: remove redundant self (Swift default)
 --self remove

@@ -2,7 +2,7 @@ import Foundation
 
 // MARK: - External source
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Signal that this client's output is in use by an external source.
     ///
     /// Per spec, setting `state: 'external_source'` tells the server that
@@ -24,7 +24,7 @@ public extension SendspinClient {
     /// - Throws: ``SendspinClientError/notConnected`` if not connected,
     ///   or ``SendspinClientError/sendFailed(_:)`` if the server notification fails.
     @MainActor
-    func enterExternalSource() async throws {
+    public func enterExternalSource() async throws {
         try await transitionOperationalState(to: .externalSource)
         // Signal engine to suppress underrun telemetry only after the server
         // accepted the state transition; failed sends leave engine/facade aligned.
@@ -43,7 +43,7 @@ public extension SendspinClient {
     /// - Throws: ``SendspinClientError/notConnected`` if not connected,
     ///   or ``SendspinClientError/sendFailed(_:)`` if the server notification fails.
     @MainActor
-    func exitExternalSource() async throws {
+    public func exitExternalSource() async throws {
         try await transitionOperationalState(to: .synchronized)
         // Signal engine to resume underrun monitoring only after the server
         // accepted the state transition; failed sends leave engine/facade aligned.
@@ -53,7 +53,7 @@ public extension SendspinClient {
 
 // MARK: - Group membership
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Leave the current server group without changing local group state.
     ///
     /// This operation is available to every client role. The server moves the
@@ -64,7 +64,7 @@ public extension SendspinClient {
     ///   ``SendspinClientError/handshakeIncomplete`` during re-handshake, or
     ///   ``SendspinClientError/sendFailed(_:)`` when the encrypted send fails.
     @MainActor
-    func leaveGroup() async throws {
+    public func leaveGroup() async throws {
         try requireOpen()
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.leaveGroup()
@@ -73,10 +73,10 @@ public extension SendspinClient {
 
 // MARK: - Dynamic player capabilities and format preference
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Update the commands the player currently accepts from the server.
     @MainActor
-    func updatePlayerSupportedCommands(_ commands: Set<PlayerCommand>) async throws {
+    public func updatePlayerSupportedCommands(_ commands: Set<PlayerCommand>) async throws {
         try requireOpen()
         guard let connection else { throw SendspinClientError.notConnected }
         try await connection.updateAdvertisedCommands(commands)
@@ -84,7 +84,7 @@ public extension SendspinClient {
 
     /// Publish a preferred format in the player client/state object.
     @MainActor
-    func setPlayerFormatPreference(_ format: AudioFormatSpec?) async throws {
+    public func setPlayerFormatPreference(_ format: AudioFormatSpec?) async throws {
         try requireOpen()
         guard roleSet.contains(.playerV1) else { throw SendspinClientError.roleNotActive(.playerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
@@ -102,7 +102,7 @@ public extension SendspinClient {
 
     /// Select a preferred supported format by matching the supplied fields.
     @MainActor
-    func setPlayerFormatPreference(
+    public func setPlayerFormatPreference(
         codec: AudioCodec? = nil,
         channels: Int? = nil,
         sampleRate: Int? = nil,
@@ -120,10 +120,10 @@ public extension SendspinClient {
 
 // MARK: - Artwork state preference
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Publish one artwork channel's current preference in client/state.
     @MainActor
-    func setArtworkChannelPreference(
+    public func setArtworkChannelPreference(
         channel: Int,
         preference: ArtworkChannelPreference
     ) async throws {
@@ -136,10 +136,10 @@ public extension SendspinClient {
     }
 }
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Publish the complete visualizer preference, including an empty types request to disable data.
     @MainActor
-    func setVisualizerPreference(_ preference: VisualizerStateObject) async throws {
+    public func setVisualizerPreference(_ preference: VisualizerStateObject) async throws {
         try requireOpen()
         guard roleSet.contains(.visualizerV1) else { throw SendspinClientError.roleNotActive(.visualizerV1) }
         guard let connection else { throw SendspinClientError.notConnected }
@@ -181,12 +181,12 @@ extension SendspinClient {
     }
 }
 
-public extension SendspinClient {
+extension SendspinClient {
     /// Only an operator gesture opens connection-scoped eligibility, not peer trust; attempts do not close it.
     /// Opening resets the device-wide 20-round budget, except when re-opening an open window after dynamic pair-init.
     /// Never invoke automatically or per attempt.
     @MainActor
-    func openPairingWindow(for attemptID: PairingAttemptID) async throws {
+    public func openPairingWindow(for attemptID: PairingAttemptID) async throws {
         try requireOpen()
         let candidates = [connection, pairingConnection].compactMap(\.self)
         guard !candidates.isEmpty else { throw SendspinClientError.notConnected }
@@ -202,7 +202,7 @@ public extension SendspinClient {
     /// A window identity remains valid after its original attempt ends. Closing its window also
     /// ends any current attempt on the owning connection; it never targets another connection.
     @MainActor
-    func cancelPairing(attemptID: PairingAttemptID) async throws {
+    public func cancelPairing(attemptID: PairingAttemptID) async throws {
         try requireOpen()
         let candidates = [connection, pairingConnection].compactMap(\.self)
         guard !candidates.isEmpty else { throw SendspinClientError.notConnected }
@@ -223,35 +223,35 @@ public extension SendspinClient {
     /// or ``SendspinClientError/controllerCommandUnsupported(_:)`` when it is not listed.
     ///
     /// - Throws: ``SendspinClientError/notConnected`` if not connected.
-    @MainActor func play() async throws {
+    @MainActor public func play() async throws {
         try await sendCommand(.play)
     }
 
     /// Pause playback.
     ///
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func pause() async throws {
+    @MainActor public func pause() async throws {
         try await sendCommand(.pause)
     }
 
     /// Stop playback.
     ///
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func stopPlayback() async throws {
+    @MainActor public func stopPlayback() async throws {
         try await sendCommand(.stop)
     }
 
     /// Skip to the next track.
     ///
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func next() async throws {
+    @MainActor public func next() async throws {
         try await sendCommand(.next)
     }
 
     /// Skip to the previous track.
     ///
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func previous() async throws {
+    @MainActor public func previous() async throws {
         try await sendCommand(.previous)
     }
 
@@ -263,7 +263,7 @@ public extension SendspinClient {
     /// command is sent so SwiftUI bindings feel immediate; if the send fails, the
     /// previous controller state is restored and the error is rethrown.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func setGroupVolume(_ volume: Int) async throws {
+    @MainActor public func setGroupVolume(_ volume: Int) async throws {
         let clamped = max(0, min(100, volume))
         let previous = currentControllerState
         if let previous {
@@ -291,7 +291,7 @@ public extension SendspinClient {
     /// ``currentControllerState`` is updated optimistically before the command is sent;
     /// if the send fails, the previous controller state is restored and the error is rethrown.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func setGroupMute(_ muted: Bool) async throws {
+    @MainActor public func setGroupMute(_ muted: Bool) async throws {
         let previous = currentControllerState
         if let previous {
             updateControllerState(ControllerState(
@@ -317,7 +317,7 @@ public extension SendspinClient {
     ///   to zero; if the server reported ``ControllerState/seekMaxMs``, values above it are clamped
     ///   before sending. Servers still validate the command and may ignore unsupported targets per spec.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func seek(to positionMs: Int) async throws {
+    @MainActor public func seek(to positionMs: Int) async throws {
         let clamped = min(max(positionMs, 0), currentControllerState?.seekMaxMs ?? Int.max)
         try await sendCommand(.seek, positionMs: clamped)
     }
@@ -328,7 +328,7 @@ public extension SendspinClient {
     ///   negative values seek backward. The server clamps/applies the resulting position on a
     ///   best-effort basis per spec.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func seekRelative(by offsetMs: Int) async throws {
+    @MainActor public func seekRelative(by offsetMs: Int) async throws {
         try await sendCommand(.seekRelative, offsetMs: offsetMs)
     }
 
@@ -337,7 +337,7 @@ public extension SendspinClient {
     /// Maps directly to the individual repeat commands on the wire.
     /// Useful when binding a `Picker<RepeatMode>` in SwiftUI.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func setRepeatMode(_ mode: RepeatMode) async throws {
+    @MainActor public func setRepeatMode(_ mode: RepeatMode) async throws {
         switch mode {
         case .off: try await sendCommand(.repeatOff)
         case .one: try await sendCommand(.repeatOne)
@@ -349,43 +349,43 @@ public extension SendspinClient {
     ///
     /// Useful when binding a toggle in SwiftUI.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func setShuffle(_ enabled: Bool) async throws {
+    @MainActor public func setShuffle(_ enabled: Bool) async throws {
         try await sendCommand(enabled ? .shuffle : .unshuffle)
     }
 
     /// Repeat off.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func repeatOff() async throws {
+    @MainActor public func repeatOff() async throws {
         try await sendCommand(.repeatOff)
     }
 
     /// Repeat the current track.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func repeatOne() async throws {
+    @MainActor public func repeatOne() async throws {
         try await sendCommand(.repeatOne)
     }
 
     /// Repeat all tracks in the queue.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func repeatAll() async throws {
+    @MainActor public func repeatAll() async throws {
         try await sendCommand(.repeatAll)
     }
 
     /// Enable shuffle mode.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func shuffle() async throws {
+    @MainActor public func shuffle() async throws {
         try await sendCommand(.shuffle)
     }
 
     /// Disable shuffle mode.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func unshuffle() async throws {
+    @MainActor public func unshuffle() async throws {
         try await sendCommand(.unshuffle)
     }
 
     /// Switch to the next group.
     /// Requires the controller role. See ``play()`` for server support notes.
-    @MainActor func switchGroup() async throws {
+    @MainActor public func switchGroup() async throws {
         try await sendCommand(.switch)
     }
 }

@@ -27,6 +27,7 @@ exhaustively over `ClientEvent` on purpose — add the missing case, not a `defa
 - `docs/implementation-plans/`, `docs/test-plans/` — design/AC history and manual gates.
 
 ## Conventions
+- Members declare their own access level; `public extension` is not used.
 - Run tests with `timeout` and `set -o pipefail`; check for leftover testing helpers.
   Run `scripts/strict-pool-test.sh` before pushing changes to tests or timing.
   Hardware-tagged suites are labels; tests that start a real `AudioQueue` are gated on `SENDSPIN_REAL_AUDIO_TESTS=1`.
