@@ -22,7 +22,7 @@ protocol AudioOutputCapabilityProviding: Actor {
     func audioQueueTransitionDidStart()
 
     /// Start monitoring and return the single client-owned stream of future updates.
-    func startMonitoring() -> AsyncStream<AudioOutputSnapshot>
+    func startMonitoring() async -> AsyncStream<AudioOutputSnapshot>
 
     /// Record the host application's audio-session activation state.
     ///
@@ -58,6 +58,8 @@ struct AudioOutputPlatformObservation: Sendable, Equatable {
 protocol AudioOutputPlatformMonitoring: Actor {
     /// Whether observations are trustworthy only while the host reports an active audio session.
     nonisolated var requiresActiveAudioSession: Bool { get }
+
+    nonisolated func currentObservation() -> AudioOutputPlatformObservation?
 
     /// Start a fresh, single-consumer observation stream.
     func startMonitoring() async -> AsyncStream<AudioOutputPlatformObservation>
@@ -220,6 +222,13 @@ actor AudioOutputCapabilityService: AudioOutputCapabilityProviding {
 
     private func beginPlatformMonitoring() {
         guard !isStopped, monitoringTask == nil else { return }
+        if let observation = platformMonitor.currentObservation() {
+            publish(AudioOutputSnapshot(
+                sampleRate: Self.normalizeSampleRate(observation.sampleRate),
+                reportedBitDepth: observation.reportedBitDepth,
+                diagnosticDescription: observation.diagnosticDescription
+            ))
+        }
         let identity = UUID()
         monitoringIdentity = identity
         let monitor = platformMonitor
@@ -300,6 +309,12 @@ actor AudioOutputCapabilityService: AudioOutputCapabilityProviding {
     }
 }
 
+extension AudioOutputPlatformMonitoring {
+    nonisolated func currentObservation() -> AudioOutputPlatformObservation? {
+        nil
+    }
+}
+
 private actor UnknownAudioOutputPlatformMonitor: AudioOutputPlatformMonitoring {
     nonisolated let requiresActiveAudioSession = false
 
@@ -328,6 +343,15 @@ private actor UnknownAudioOutputPlatformMonitor: AudioOutputPlatformMonitoring {
         private var nominalRateListener: AudioObjectPropertyListenerBlock?
         private var listenerIdentity = UUID()
         private var isMonitoring = false
+
+        nonisolated func currentObservation() -> AudioOutputPlatformObservation? {
+            guard let device = Self.defaultOutputDevice() else { return nil }
+            return AudioOutputPlatformObservation(
+                sampleRate: Self.nominalSampleRate(device),
+                reportedBitDepth: Self.reportedBitDepth(device),
+                diagnosticDescription: Self.deviceName(device)
+            )
+        }
 
         func startMonitoring() -> AsyncStream<AudioOutputPlatformObservation> {
             let (stream, continuation) = AsyncStream.makeStream(
@@ -580,15 +604,21 @@ private actor UnknownAudioOutputPlatformMonitor: AudioOutputPlatformMonitoring {
 
         private func publishRoute(identity: UUID) {
             guard isMonitoring, self.identity == identity else { return }
+            if let observation = currentObservation() {
+                continuation?.yield(observation)
+            }
+        }
+
+        nonisolated func currentObservation() -> AudioOutputPlatformObservation? {
             let session = AVAudioSession.sharedInstance()
             let description = session.currentRoute.outputs
                 .map { "\($0.portName) (\($0.portType.rawValue))" }
                 .joined(separator: ", ")
-            continuation?.yield(AudioOutputPlatformObservation(
+            return AudioOutputPlatformObservation(
                 sampleRate: session.sampleRate,
                 reportedBitDepth: nil,
                 diagnosticDescription: description.isEmpty ? nil : description
-            ))
+            )
         }
 
         private func invalidate(identity: UUID) {

@@ -23,6 +23,7 @@ public enum OutputSampleRatePolicy: String, Sendable, Hashable, Codable, CaseIte
 
     /// Prefer formats whose sample rate matches the current output route while
     /// retaining all other supplied formats as fallback choices.
+    /// The route must be known at connect for client/hello to reflect it.
     case preferCurrentOutput
 
     /// Advertise only formats whose sample rate matches the current output route.

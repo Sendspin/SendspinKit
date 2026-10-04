@@ -167,6 +167,7 @@ public final class SendspinClient {
         .makeProductionOutput
     let sessionNegotiationHook: @Sendable () async -> Void
     private var audioOutputCapabilityTask: Task<Void, Never>?
+    var audioOutputCapabilityStartupTask: Task<Void, Never>?
     var audioOutputSnapshotSequence: UInt64 = 0
 
     /// Validity token gating the current session's binary events. Stored here so
@@ -423,14 +424,15 @@ public final class SendspinClient {
 
     private func startAudioOutputCapabilityMonitoring() {
         let provider = audioOutputCapabilityProvider
-        audioOutputCapabilityTask = Task { @MainActor [weak self] in
+        audioOutputCapabilityStartupTask = Task { @MainActor [weak self] in
             let updates = await provider.startMonitoring()
             let initialSnapshot = await provider.snapshot()
             self?.applyConnectionEvent(.audioOutputChanged(initialSnapshot))
-
-            for await snapshot in updates {
-                guard let self else { return }
-                applyConnectionEvent(.audioOutputChanged(snapshot))
+            self?.audioOutputCapabilityTask = Task { @MainActor [weak self] in
+                for await snapshot in updates {
+                    guard let self else { return }
+                    applyConnectionEvent(.audioOutputChanged(snapshot))
+                }
             }
         }
     }
@@ -438,6 +440,7 @@ public final class SendspinClient {
     /// Permanent capability-service cleanup hook used by tests and ``close()``.
     /// Reusable ``disconnect(reason:)`` deliberately does not call this.
     func finishAudioOutputCapabilityMonitoring() async {
+        await audioOutputCapabilityStartupTask?.value
         audioOutputCapabilityTask?.cancel()
         audioOutputCapabilityTask = nil
         await audioOutputCapabilityProvider.stopMonitoring()
@@ -1090,6 +1093,7 @@ public final class SendspinClient {
         connection = nil
         let candidates = Array(pendingTransports.values)
         pendingTransports.removeAll()
+        await audioOutputCapabilityStartupTask?.value
         let capabilityTask = audioOutputCapabilityTask
         audioOutputCapabilityTask = nil
         capabilityTask?.cancel()
