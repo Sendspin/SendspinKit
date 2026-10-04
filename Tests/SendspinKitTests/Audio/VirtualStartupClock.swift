@@ -17,6 +17,10 @@ final class VirtualStartupClock: Sendable {
         time.withLock { $0 }
     }
 
+    func advance(to timestamp: Int64) {
+        time.withLock { $0 = max($0, anchor + timestamp) }
+    }
+
     func sleep(_ duration: Duration) async throws {
         await gate.wait()
         try Task.checkCancellation()

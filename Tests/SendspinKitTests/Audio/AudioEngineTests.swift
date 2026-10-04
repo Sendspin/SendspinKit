@@ -665,10 +665,19 @@ struct AudioEngineTests {
 
     @Test("startup buffering delivers its first PCM chunk")
     func startupGenerationFirstDelivery() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let sentinel = Data([0xF2, 0x02])
         let pcm = Data([0xA2, 0x02])
@@ -797,10 +806,19 @@ struct AudioEngineTests {
 
     @Test("stream clear in active production buffering does not restart startup")
     func activeProductionBufferingClearContinuesPlayback() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let first = Data([0xF4, 0x04])
         let replacement = Data([0xA4, 0x04])
@@ -859,9 +877,10 @@ struct AudioEngineTests {
 
     @Test("rapid ordered changes deliver each generation in order")
     func rapidOrderedChangesDeliverSentinelsInOrder() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30)
+        let scheduler = AudioScheduler(clockSync: clock, playbackWindow: 30, now: time.now)
         let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock)
         let initial = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         let firstFormat = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)

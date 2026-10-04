@@ -243,10 +243,19 @@ struct AudioStartupReleaseTests {
     /// Later chunks must not replace a pending deadline when the earliest candidate is unchanged.
     @Test("later startup chunks keep the existing release deadline")
     func laterChunksKeepExistingReleaseDeadline() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
@@ -533,7 +542,7 @@ struct AudioStartupReleaseTests {
         let time = VirtualStartupClock()
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
         let engine = AudioEngine(
             output: output,
             scheduler: scheduler,
@@ -571,6 +580,11 @@ struct AudioStartupReleaseTests {
             }
             return false
         }
+        #expect(await waitUntil(timeout: .seconds(3)) { await scheduler.stats.received == 8 })
+        for index in 0 ..< 8 {
+            time.advance(to: 1_500_000 + Int64(index) * 100_000)
+            await scheduler.checkQueue()
+        }
         #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
         let applied = await awaitFirstReport(from: engine, timeoutMs: 3_000) {
             if case .formatApplied = $0 {
@@ -596,10 +610,19 @@ struct AudioStartupReleaseTests {
 
     @Test("stream end invalidates a suspended startup release")
     func streamEndInvalidatesSuspendedStartupRelease() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
@@ -621,10 +644,19 @@ struct AudioStartupReleaseTests {
 
     @Test("shutdown invalidates a suspended startup release")
     func shutdownInvalidatesSuspendedStartupRelease() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
@@ -678,9 +710,10 @@ struct AudioStartupReleaseTests {
     /// entire content is shorter than the requested min-buffer must still play.
     @Test("a stream shorter than min-buffer still starts")
     func shortStreamStarts() async throws {
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
-        let scheduler = AudioScheduler(clockSync: clock)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
         // Injected engines default this to 0, which would make the min-buffer irrelevant.
         let minBufferMs = 200
         let engine = AudioEngine(
@@ -688,8 +721,11 @@ struct AudioStartupReleaseTests {
             scheduler: scheduler,
             clock: clock,
             enableStartupBuffering: true,
-            startupMinBufferMs: minBufferMs
+            startupMinBufferMs: minBufferMs,
+            startupNow: time.now,
+            startupSleep: time.sleep
         )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
 
@@ -778,11 +814,20 @@ struct AudioStartupReleaseTests {
     @Test("startup buffering does not report started if priming PCM fails")
     func startupBufferingDoesNotReportStartedWhenPrimingPCMFails() async throws {
         struct TestError: Error {}
-        let clock = StubClock(anchorToNow: true)
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
         await output.setForcedPlayPCMThrow(TestError())
-        let scheduler = AudioScheduler(clockSync: clock)
-        let engine = AudioEngine(output: output, scheduler: scheduler, clock: clock, enableStartupBuffering: true)
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output,
+            scheduler: scheduler,
+            clock: clock,
+            enableStartupBuffering: true,
+            startupNow: time.now,
+            startupSleep: time.sleep
+        )
+        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
 
