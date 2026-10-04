@@ -251,10 +251,27 @@ actor SpyAudioOutput: AudioOutput {
         playbackState = true
     }
 
-    func stop() {
+    private var shouldBlockNextStop = false
+    private var blockedStop: CheckedContinuation<Void, Never>?
+
+    func blockNextStop() {
+        shouldBlockNextStop = true
+    }
+
+    func releaseBlockedStop() {
+        blockedStop?.resume()
+        blockedStop = nil
+    }
+
+    func stop() async {
         recordedCalls.append("stop()")
         releaseBlockedOutputDeviceProbe()
         playbackState = false
+        if shouldBlockNextStop {
+            shouldBlockNextStop = false
+            await withCheckedContinuation { blockedStop = $0 }
+        }
+        recordedCalls.append("stopCompleted()")
     }
 
     func swapDecoder(format: AudioFormatSpec, codecHeader _: Data?) throws {

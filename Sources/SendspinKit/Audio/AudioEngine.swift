@@ -1015,6 +1015,7 @@ actor AudioEngine {
                 guard startupReleaseInProgress, startupSequence == sequence else { return }
                 startupReleaseInProgress = false
                 await output.stop()
+                guard startupSequence == sequence else { return }
                 outputHasStarted = false
                 let reason = "Output device-live timeout expired before the first render callback"
                 let timeoutLog = "startup device-live timeout engine=\(engineID) sequence=\(sequence) generation=\(startGeneration)"
@@ -1178,6 +1179,7 @@ actor AudioEngine {
             guard startupSequence == sequence else { return }
             startupReleaseInProgress = false
             await output.stop()
+            guard startupSequence == sequence else { return }
             outputHasStarted = false
             yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
             return

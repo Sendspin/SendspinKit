@@ -836,6 +836,71 @@ struct AudioStartupReleaseTests {
         #expect(generation == freshGeneration)
     }
 
+    @Test("expired device-live cleanup preserves a replacement stream")
+    func staleDeviceLiveCleanupPreservesReplacement() async throws {
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
+        let output = SpyAudioOutput()
+        await output.blockNextOutputDeviceProbe()
+        await output.blockNextStop()
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output, scheduler: scheduler, clock: clock,
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+        )
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let retiredGeneration: UInt64 = 42
+        let freshGeneration = retiredGeneration + 1
+        let chunkBytes = 100
+        let chunkSpacingUs: Int64 = 100_000
+        let chunkCount = 8
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil, startGeneration: retiredGeneration))
+        await engine.commands.enqueue(.chunk(Data(repeating: 0, count: chunkBytes), ts: 0))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount > 0 })
+        await time.expireDeviceLiveTimeout()
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("stop()") })
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil, startGeneration: freshGeneration))
+        let freshTimestamp = time.now() - time.anchor
+        for index in 0 ..< chunkCount {
+            await engine.commands.enqueue(.chunk(
+                Data(repeating: UInt8(index), count: chunkBytes),
+                ts: freshTimestamp + Int64(index) * chunkSpacingUs
+            ))
+        }
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == chunkCount + 1
+        })
+        await output.releaseBlockedStop()
+        await time.releaseSleeps()
+        let terminal = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
+            if case .started = $0 {
+                return true
+            }
+            if case .startFailed = $0 {
+                return true
+            }
+            return false
+        }
+        guard case let .started(_, generation) = terminal else {
+            await engine.shutdown()
+            #expect(Bool(false), "stale cleanup must not emit failure before replacement starts")
+            return
+        }
+        #expect(generation == freshGeneration)
+        let probesBeforeChunk = await output.outputDeviceProbeCount
+        let playsBeforeChunk = await output.playedPCMData.count
+        time.advance(to: freshTimestamp + Int64(chunkCount) * chunkSpacingUs)
+        await engine.commands.enqueue(.chunk(Data(repeating: 0, count: chunkBytes), ts: freshTimestamp + Int64(chunkCount) * chunkSpacingUs))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.playedPCMData.count > playsBeforeChunk })
+        #expect(await output.outputDeviceProbeCount == probesBeforeChunk, "started replacement must not re-enter startup")
+        await engine.shutdown()
+        for await report in engine.reports {
+            if case let .startFailed(_, generation) = report {
+                #expect(generation != freshGeneration)
+            }
+        }
+    }
+
     @Test("device-live probe just inside the bound starts without failure")
     func deviceLiveProbeInsideBound() async throws {
         let time = VirtualStartupClock()
