@@ -53,11 +53,8 @@ for SwiftUI.
   `AdvertisingTransportOwnership` is passed through internal acceptance, arbitration, and setup;
   the claim remains authoritative after admission returns, and `AdvertisingCandidateTransport` routes
   pre-adoption cleanup through it; adoption removes the pending candidate and installs its original transport.
-- **Lifecycle events are render-applied, async.** `.streamStarted`/`.streamFormatChanged` derive from
-  engine `EngineReport`s (`.started`/`.formatApplied`), so they are NOT wire-ordered against
-  `.rawAudioChunk`. "No audio before stream/start" is enforced by the `playerStreamActive` gate at
-  frame receipt, NOT by event ordering. Tests must assert within-class order + counts, not cross-class
-  interleaving.
+- **Lifecycle events are render-applied, async.** The first successful engine outcome per announced player stream emits `.streamStarted`; later outcomes emit `.streamFormatChanged`.
+  Binary delivery is not wire-ordered against these events; `playerStreamActive` gates receipt, and tests assert within-class order and counts.
 - **Stream classification uses wire identity.** `announcedPlayerStream` stores format and codec header
   in `handleStreamStart`; identical active announcements preserve the timeline, changed configurations
   preserve buffered audio, and failed starts retry; render-applied `currentStreamFormat` is not the key.

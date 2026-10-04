@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConfigurationError.emptyVisualizerTypes` is absent because empty requests are valid.
 
 ### Fixed
+- Player streams emit `streamStarted` once on their first successful engine outcome and `streamFormatChanged` on later outcomes.
+- Server reactivation updates session state without repeating `serverConnected` with an empty name.
 - Activation admission follows the credential activity table and permits simultaneous playback and pairing without quiescing playback.
 - Removed versioned roles clear state, scheduled updates, buffers, and temporary output while unchanged roles retain state.
 - Artwork stream end and role removal clear current artwork and invalidate pending image deliveries.

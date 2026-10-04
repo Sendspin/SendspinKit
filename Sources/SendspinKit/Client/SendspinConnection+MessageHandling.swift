@@ -319,6 +319,7 @@ extension SendspinConnection {
             playerStreamActive = false
             announcedPlayerStream = nil
             playerStartState = .none
+            playerStartedEventEmitted = false
             resetOutputFormatNegotiationForStreamBoundary()
             // Stream end stops scheduler/output; stream clear also discards the output buffer.
             audioEngine.enqueueStreamEnd(roles: [StreamRole.player.rawValue])
@@ -1506,6 +1507,9 @@ extension SendspinConnection {
         // Classification uses the wire-announced format and header before any await.
         // An identical active-stream announcement preserves the existing audio timeline.
         let previous = announcedPlayerStream
+        if previous == nil {
+            playerStartedEventEmitted = false
+        }
         let isFormatChange = previous.map { $0.format != format || $0.codecHeader != codecHeader } ?? false
         announcedPlayerStream = (format: format, codecHeader: codecHeader)
         if outputSampleRatePolicy != .requireCurrentOutput, previous == nil || isFormatChange || pendingOutputFormatRequest != nil {
@@ -1587,6 +1591,7 @@ extension SendspinConnection {
             audioEngine.enqueueStreamEnd(roles: endedRoles)
             announcedPlayerStream = nil
             playerStartState = .none
+            playerStartedEventEmitted = false
             resetOutputFormatNegotiationForStreamBoundary()
         }
 

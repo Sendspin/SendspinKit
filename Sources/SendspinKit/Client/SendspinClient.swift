@@ -1357,13 +1357,6 @@ public final class SendspinClient {
             if activities.contains(.playback), let currentServerId {
                 Task { await persistenceProvider?.saveLastPlayedServerId(currentServerId) }
             }
-            emitEvent(.serverConnected(ServerInfo(
-                serverId: currentServerId ?? "",
-                name: "",
-                trustLevel: trustLevel,
-                activeRoles: activeRoles,
-                activities: activities
-            )))
 
         case let .operationalState(state):
             clientOperationalState = state
