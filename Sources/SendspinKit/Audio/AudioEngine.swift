@@ -78,6 +78,7 @@ actor AudioEngine {
     private var schedulerOutputTask: Task<Void, Never>?
     private var telemetryTask: Task<Void, Never>?
     private let telemetrySleep: @Sendable (Duration) async throws -> Void
+    private let startupSleep: @Sendable (Duration) async throws -> Void
 
     // Running state
     private var running = false
@@ -145,8 +146,11 @@ actor AudioEngine {
     /// The budget is a guard against a non-advancing clock only: the entry check bounds the
     /// distance to ``startupSpinThresholdUs``, so a monotonic clock always reaches the release
     /// instant first. Normal operation never reaches it.
-    static func yieldUntilReleaseInstant(_ releaseTimeUs: Int64) async {
-        let entry = MonotonicClock.absoluteMicroseconds()
+    static func yieldUntilReleaseInstant(
+        _ releaseTimeUs: Int64,
+        now: @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() }
+    ) async {
+        let entry = now()
         let distance = releaseTimeUs.subtractingReportingOverflow(entry)
         // Only the final approach is yielded through; a still-distant instant belongs to the
         // next sleep hop.
@@ -154,8 +158,8 @@ actor AudioEngine {
         let budget = entry.addingReportingOverflow(startupSpinThresholdUs * 4)
         let giveUpAt = budget.overflow ? Int64.max : budget.partialValue
         while !Task.isCancelled {
-            let now = MonotonicClock.absoluteMicroseconds()
-            if now >= releaseTimeUs || now >= giveUpAt {
+            let current = now()
+            if current >= releaseTimeUs || current >= giveUpAt {
                 return
             }
             await Task.yield()
@@ -364,12 +368,14 @@ actor AudioEngine {
         enableStartupBuffering: Bool = false,
         startupMinBufferMs: Int = 0,
         startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
+        startupSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         telemetrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.output = output
         audioScheduler = scheduler
         self.clock = clock
         self.startupNow = startupNow
+        self.startupSleep = startupSleep
         self.telemetrySleep = telemetrySleep
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -399,6 +405,7 @@ actor AudioEngine {
         self.audioScheduler = audioScheduler
         self.clock = clock
         startupNow = { MonotonicClock.absoluteMicroseconds() }
+        startupSleep = { try await Task.sleep(for: $0) }
         telemetrySleep = { try await Task.sleep(for: $0) }
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -1066,13 +1073,15 @@ actor AudioEngine {
             scheduledLog += " invocation=\(invocation) releaseIn=\(delayUs)us"
             scheduledLog += " chunks=\(startupBuffer?.chunks.count ?? 0)"
             Log.audio.debug("\(scheduledLog, privacy: .public)")
+            let sleep = startupSleep
+            let now = startupNow
             startupDeadlineTask = Task { [weak self] in
                 do {
-                    try await Task.sleep(for: .microseconds(delayUs))
+                    try await sleep(.microseconds(delayUs))
                 } catch {
                     return
                 }
-                await Self.yieldUntilReleaseInstant(startTime)
+                await Self.yieldUntilReleaseInstant(startTime, now: now)
                 await self?.signalStartupDeadline(arm)
             }
             return
