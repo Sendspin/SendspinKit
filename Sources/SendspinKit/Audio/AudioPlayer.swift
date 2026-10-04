@@ -856,6 +856,18 @@ actor AudioPlayer {
         let padFrames: Int64
         if let localPlayTime {
             let gapUs = localPlayTime - nowAbsolute - pipelineDelayUs
+            if gapUs < 0 {
+                let ringBacklogFrames = state.pcmRingBuffer.availableToRead / state.frameSize
+                Log.audio
+                    .debug(
+                        """
+                        First-frame negative gap: localLead=\(localPlayTime - nowAbsolute, privacy: .public) \
+                        pipelineDelayUs=\(pipelineDelayUs, privacy: .public) \
+                        framesInFlight=\(framesInFlight, privacy: .public) \
+                        ringBacklogFrames=\(ringBacklogFrames, privacy: .public)
+                        """
+                    )
+            }
             state.startupLateUs = max(0, -gapUs)
             padFrames = min(
                 max(gapUs * sampleRate / 1_000_000, 0),

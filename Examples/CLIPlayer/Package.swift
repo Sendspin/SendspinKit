@@ -7,7 +7,7 @@ let package = Package(
         .macOS(.v14)
     ],
     dependencies: [
-        .package(path: "../..")
+        .package(name: "SendspinKit", path: "../..")
     ],
     targets: [
         .executableTarget(

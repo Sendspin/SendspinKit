@@ -12,6 +12,7 @@ var enableTUI = true
 var listenMode = false
 var listenPort: UInt16 = 8928
 var volumeMode: VolumeMode = .software
+var outputPolicy: OutputSampleRatePolicy = .preferCurrentOutput
 var enablePairing = false
 
 var argIndex = 1
@@ -28,6 +29,20 @@ while argIndex < args.count {
         if argIndex + 1 < args.count, let port = UInt16(args[argIndex + 1]) {
             listenPort = port
             argIndex += 1
+        }
+    } else if arg == "--output-policy" {
+        guard argIndex + 1 < args.count else {
+            print("--output-policy requires: prefer, preserve, require")
+            exit(1)
+        }
+        argIndex += 1
+        switch args[argIndex] {
+        case "prefer": outputPolicy = .preferCurrentOutput
+        case "preserve": outputPolicy = .preserveFormatOrder
+        case "require": outputPolicy = .requireCurrentOutput
+        default:
+            print("Unknown output policy '\(args[argIndex])'. Use: prefer, preserve, require")
+            exit(1)
         }
     } else if arg == "--volume-mode" {
         if argIndex + 1 < args.count {
@@ -92,7 +107,7 @@ sigintSource.resume()
 do {
     if listenMode {
         // Server-initiated: advertise via mDNS and wait for servers to connect
-        try await player.listen(port: listenPort, clientName: clientName, useTUI: enableTUI, enablePairing: enablePairing)
+        try await player.listen(port: listenPort, clientName: clientName, useTUI: enableTUI, outputPolicy: outputPolicy, enablePairing: enablePairing)
     } else {
         // Client-initiated: discover or connect to provided server URL
         if serverURL == nil {
@@ -120,7 +135,14 @@ do {
             print("No server URL available")
             exit(1)
         }
-        try await player.run(serverURL: url, clientName: clientName, useTUI: enableTUI, volumeMode: volumeMode, enablePairing: enablePairing)
+        try await player.run(
+            serverURL: url,
+            clientName: clientName,
+            useTUI: enableTUI,
+            volumeMode: volumeMode,
+            outputPolicy: outputPolicy,
+            enablePairing: enablePairing
+        )
     }
 } catch {
     print("Fatal error: \(error)")

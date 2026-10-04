@@ -1,5 +1,5 @@
 {
-  "originHash" : "ae9debf913fe343bc1666f96bbfff92a2bc75d092ebfe274da35849a3886bb29",
+  "originHash" : "7f004e306b3114688e11b6ff9728b35b13f3654fa9c306691fe145020ab90ab1",
   "pins" : [
     {
       "identity" : "flac-binary-xcframework",
@@ -17,6 +17,15 @@
       "state" : {
         "revision" : "c0e822e18738ad913864e98d9614927ac1e9337c",
         "version" : "0.1.2"
+      }
+    },
+    {
+      "identity" : "swift-sodium",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/jedisct1/swift-sodium.git",
+      "state" : {
+        "revision" : "4f9164a0a2c9a6a7ff53a2833d54a5c79c957342",
+        "version" : "0.9.1"
       }
     }
   ],
