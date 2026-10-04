@@ -586,14 +586,23 @@ struct SendspinClientTests {
             ),
             holdStartup: true
         )
-        let client = try makePlayerClient(capabilityProvider: provider)
-        #expect(await waitUntil { await provider.monitoringStarted })
+        let client = try makePlayerClient(
+            capabilityProvider: provider,
+            sessionNegotiationHook: { await provider.negotiationEntered() }
+        )
+        defer {
+            Task {
+                await provider.releaseStartup()
+                await client.finishAudioOutputCapabilityMonitoring()
+            }
+        }
+        await provider.waitUntilStartupIsHeld()
         let negotiation = Task { try await client.makeSessionFormatNegotiation() }
-        #expect(await waitUntil { await provider.snapshotCount == 0 })
-        await Task.yield()
+        await provider.waitUntilNegotiationIsHeld()
         #expect(await provider.snapshotCount == 0)
         await provider.releaseStartup()
         let result = try await negotiation.value
+        #expect(await provider.snapshotCount == 2)
         #expect(result.effectivePlayerFormats?.first?.sampleRate == nativeRate)
         await client.finishAudioOutputCapabilityMonitoring()
     }
@@ -649,9 +658,12 @@ struct SendspinClientTests {
         let server = MockNoiseServer(transport: transport, psk: .sentinel)
         async let accepted: Void = client.acceptConnection(transport)
         try await server.respondToHandshake()
-        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Output Capability Test"}}"#)
+        try await server.sendJSON(#"{"type":"\#(ServerHelloMessage.typeString)","payload":{"name":"Output Capability Test"}}"#)
         let hello = try await JSONDecoder().decode(ClientHelloMessage.self, from: server.nextClientJSON())
-        try await server.sendJSON(#"{"type":"server/activate","payload":{"activities":[],"active_roles":["player@v1"]}}"#)
+        let playerRole = VersionedRole.playerV1.identifier
+        try await server.sendJSON(
+            #"{"type":"\#(ServerActivateMessage.typeString)","payload":{"activities":[],"active_roles":["\#(playerRole)"]}}"#
+        )
         try await accepted
         let expected = policy == .preferCurrentOutput && nativeRate != nil ? formats.reversed().map(\.self) : formats
         #expect(hello.payload.playerV1Support?.supportedFormats == expected)
@@ -1157,7 +1169,8 @@ struct SendspinClientTests {
         capabilityProvider: any AudioOutputCapabilityProviding,
         settle: Duration = .milliseconds(250),
         requestTimeout: Duration = .seconds(3),
-        negotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
+        negotiationSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        sessionNegotiationHook: @escaping @Sendable () async -> Void = {}
     ) throws -> SendspinClient {
         let formats = try formats ?? [
             AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
@@ -1175,7 +1188,8 @@ struct SendspinClientTests {
             outputSettleInterval: settle,
             outputRequestTimeout: requestTimeout,
             outputNegotiationSleep: negotiationSleep,
-            audioOutputFactory: { _, _ in NoOpAudioOutput() }
+            audioOutputFactory: { _, _ in NoOpAudioOutput() },
+            sessionNegotiationHook: sessionNegotiationHook
         )
     }
 
@@ -1279,6 +1293,33 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
     private(set) var stopCount = 0
     private let holdStartup: Bool
     private var startupWaiter: CheckedContinuation<Void, Never>?
+    private var startupReleased = false
+    private var startupObservers: [CheckedContinuation<Void, Never>] = []
+    private var negotiationIsHeld = false
+    private var negotiationObservers: [CheckedContinuation<Void, Never>] = []
+
+    func waitUntilStartupIsHeld() async {
+        if startupWaiter != nil {
+            return
+        }
+        await withCheckedContinuation { startupObservers.append($0) }
+    }
+
+    func negotiationEntered() {
+        #expect(startupWaiter != nil)
+        negotiationIsHeld = true
+        for observer in negotiationObservers {
+            observer.resume()
+        }
+        negotiationObservers.removeAll()
+    }
+
+    func waitUntilNegotiationIsHeld() async {
+        if negotiationIsHeld {
+            return
+        }
+        await withCheckedContinuation { negotiationObservers.append($0) }
+    }
 
     init(
         initialSnapshot: AudioOutputSnapshot = AudioOutputSnapshot(
@@ -1294,6 +1335,7 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
     }
 
     func snapshot() -> AudioOutputSnapshot {
+        #expect(!holdStartup || startupReleased)
         snapshotCount += 1
         return currentSnapshot
     }
@@ -1308,13 +1350,20 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
 
     func startMonitoring() async -> AsyncStream<AudioOutputSnapshot> {
         monitoringStarted = true
-        if holdStartup {
-            await withCheckedContinuation { startupWaiter = $0 }
+        if holdStartup, !startupReleased {
+            await withCheckedContinuation {
+                startupWaiter = $0
+                for observer in startupObservers {
+                    observer.resume()
+                }
+                startupObservers.removeAll()
+            }
         }
         return stream
     }
 
     func releaseStartup() {
+        startupReleased = true
         startupWaiter?.resume()
         startupWaiter = nil
     }
