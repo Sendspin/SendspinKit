@@ -12,7 +12,7 @@ actor NoOpAudioOutput: AudioOutput {
         AudioPlayer.TelemetrySnapshot(
             cursorMicroseconds: 0,
             sampleRate: 0,
-            syncErrorUs: 0,
+            syncErrorUs: nil,
             correctionSchedule: CorrectionSchedule(),
             underrunCount: 0,
             pcmBytesDropped: 0,

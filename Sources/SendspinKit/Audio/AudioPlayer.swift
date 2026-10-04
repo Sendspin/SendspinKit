@@ -72,7 +72,7 @@ private let volumeRampStepDuration: Duration = .milliseconds(10)
 /// (no copy), but `@unchecked Sendable` means the compiler won't catch
 /// accidental copies elsewhere. Only one instance should ever exist,
 /// owned by the `OSAllocatedUnfairLock` in `AudioPlayer`.
-private struct LockedState: @unchecked Sendable {
+struct LockedState: @unchecked Sendable {
     // Ring buffer
     var pcmRingBuffer: PCMRingBuffer
     var frameSize: Int = 0
@@ -94,6 +94,21 @@ private struct LockedState: @unchecked Sendable {
 
     /// Latest sync error in µs, written by audio callback, read by telemetry
     var lastSyncErrorUs: Int64 = 0
+
+    var syncOutputIsReady: Bool {
+        !prewarming && queueStartAbsoluteUs > 0 && spinUpUs >= 0
+    }
+
+    var telemetrySyncErrorUs: Int64? {
+        syncOutputIsReady ? lastSyncErrorUs : nil
+    }
+
+    mutating func suspendCorrection() {
+        correctionSchedule = CorrectionSchedule()
+        dropCounter = 0
+        insertCounter = 0
+    }
+
     var pendingReanchorServerTime: Int64 = 0
     var reanchorRequested: Bool = false
     /// Grace period: suppress sync correction after AudioQueue rebuild.
@@ -235,7 +250,7 @@ actor AudioPlayer {
     /// All state shared between the actor and the audio thread, protected by
     /// `OSAllocatedUnfairLock` with priority donation. Access is structurally
     /// enforced: every read/write goes through `withLock`.
-    private nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
+    nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
 
     private var currentVolume: Float = 1.0
     private var appliedVolume: Float = 1.0
@@ -610,6 +625,12 @@ actor AudioPlayer {
         let currentPlayerID = playerID
         let currentlyPlaying = _isPlaying
         Log.audio.debug("stop player=\(currentPlayerID, privacy: .public) isPlaying=\(currentlyPlaying, privacy: .public)")
+        lockedState.withLock { state in
+            state.queueStartAbsoluteUs = 0
+            state.spinUpUs = -1
+            state.prewarming = true
+            state.suspendCorrection()
+        }
         cancelVolumeRamp()
         outputDeviceLiveContinuation?.resume()
         outputDeviceLiveContinuation = nil
@@ -936,7 +957,7 @@ actor AudioPlayer {
     struct TelemetrySnapshot {
         let cursorMicroseconds: Int64
         let sampleRate: Int
-        let syncErrorUs: Int64
+        let syncErrorUs: Int64?
         let correctionSchedule: CorrectionSchedule
         let underrunCount: Int64
         let pcmBytesDropped: Int64
@@ -975,7 +996,7 @@ actor AudioPlayer {
         let startupLateUs: Int64
 
         init(
-            cursorMicroseconds: Int64, sampleRate: Int, syncErrorUs: Int64, correctionSchedule: CorrectionSchedule,
+            cursorMicroseconds: Int64, sampleRate: Int, syncErrorUs: Int64?, correctionSchedule: CorrectionSchedule,
             underrunCount: Int64, pcmBytesDropped: Int64, startupOffsetUs: Int64?, spinUpUs: Int64,
             startupPadFrames: Int64, framesConsumed: Int64, silentBuffers: Int64, enqueueFailures: Int64,
             peakOutputLevel: Float, appliedVolume: Float, queueGain: Float, deviceVolume: Float,
@@ -1039,8 +1060,8 @@ actor AudioPlayer {
             return TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
                 sampleRate: state.sampleRate,
-                syncErrorUs: state.lastSyncErrorUs,
-                correctionSchedule: state.correctionSchedule,
+                syncErrorUs: state.telemetrySyncErrorUs,
+                correctionSchedule: state.syncOutputIsReady ? state.correctionSchedule : CorrectionSchedule(),
                 underrunCount: state.underrunCount,
                 pcmBytesDropped: state.pcmBytesDropped,
                 startupOffsetUs: state.startupOffsetUs,
@@ -1094,13 +1115,18 @@ actor AudioPlayer {
         return snapshot.localTimeToServer(audibleLocalTime)
     }
 
-    private static func updateCorrectionSchedule(
+    static func updateCorrectionSchedule(
         state: inout LockedState,
         capacity: Int,
         frameSize: Int,
         sampleRate: Int,
         inFlightAtCallback: Int64?
     ) {
+        // A stopped or prewarming queue has no output cursor to compare with the clock.
+        guard state.syncOutputIsReady else {
+            state.suspendCorrection()
+            return
+        }
         guard state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot else { return }
         let nowAbsolute = MonotonicClock.absoluteMicroseconds()
 

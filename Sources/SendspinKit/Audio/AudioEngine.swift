@@ -1472,10 +1472,12 @@ actor AudioEngine {
                 let estErrUs = Int64(syncSnap.estimatedError.rounded())
                 let driftPpm = syncSnap.drift * 1_000_000.0
 
-                let syncErrorUs = tSnap.syncErrorUs
-                let dropN = tSnap.correctionSchedule.dropEveryNFrames
-                let insertN = tSnap.correctionSchedule.insertEveryNFrames
-                let correcting = tSnap.correctionSchedule.isCorrecting
+                let syncErrorUs = outputHasStarted ? tSnap.syncErrorUs : nil
+                let syncText = syncErrorUs.map { "\($0)us" } ?? "pending"
+                let schedule = syncErrorUs == nil ? CorrectionSchedule() : tSnap.correctionSchedule
+                let dropN = schedule.dropEveryNFrames
+                let insertN = schedule.insertEveryNFrames
+                let correcting = schedule.isCorrecting
 
                 let telemetry = "sched=\(framesScheduled) played=\(framesPlayed)"
                     + " late=\(framesDroppedLate)"
@@ -1486,7 +1488,7 @@ actor AudioEngine {
                     + " drift=\(String(format: "%.2f", driftPpm))ppm"
                     + " samples=\(syncSnap.sampleCount)"
                     + " queue=\(currentStats.queueSize)"
-                    + " sync=\(syncErrorUs)us"
+                    + " sync=\(syncText)"
                     + " correcting=\(correcting)"
                     + " drop=\(dropN) insert=\(insertN)"
                     + " timingCodec=\(chunkTimingFormat?.codec.rawValue ?? "none")"
