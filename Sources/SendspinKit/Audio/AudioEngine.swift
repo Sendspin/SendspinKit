@@ -78,6 +78,10 @@ actor AudioEngine {
     private var schedulerOutputTask: Task<Void, Never>?
     private var telemetryTask: Task<Void, Never>?
     private let telemetrySleep: @Sendable (Duration) async throws -> Void
+    /// Above the ~13.3 s AudioQueueStart stall in docs/audio-timing-model.md, recovering devices start late.
+    /// Devices that never render report a start failure instead of permanent silence.
+    static let outputDeviceLiveTimeout: Duration = .seconds(20)
+
     private let startupSleep: @Sendable (Duration) async throws -> Void
 
     // Running state
@@ -993,7 +997,31 @@ actor AudioEngine {
         // is not consuming. The coordinator waits for the device transition once, then resumes
         // with the latest actor-owned buffer rather than polling a negative probe.
         do {
-            try await output.waitUntilOutputDeviceIsLive()
+            let output = output
+            let sleep = startupSleep
+            let deviceIsLive = try await withThrowingTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    try await output.waitUntilOutputDeviceIsLive()
+                    return true
+                }
+                group.addTask {
+                    try await sleep(Self.outputDeviceLiveTimeout)
+                    return false
+                }
+                defer { group.cancelAll() }
+                return try await group.next() ?? false
+            }
+            if !deviceIsLive {
+                guard startupReleaseInProgress, startupSequence == sequence else { return }
+                startupReleaseInProgress = false
+                await output.stop()
+                outputHasStarted = false
+                let reason = "Output device-live timeout expired before the first render callback"
+                let timeoutLog = "startup device-live timeout engine=\(engineID) sequence=\(sequence) generation=\(startGeneration)"
+                Log.audio.notice("\(timeoutLog, privacy: .public)")
+                yield(.startFailed(reason: reason, startGeneration: startGeneration))
+                return
+            }
         } catch {
             guard startupReleaseInProgress, startupSequence == sequence else { return }
             startupReleaseInProgress = false

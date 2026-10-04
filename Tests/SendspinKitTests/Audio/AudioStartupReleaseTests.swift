@@ -767,6 +767,114 @@ struct AudioStartupReleaseTests {
         )
     }
 
+    @Test("device-live timeout reports its generation and permits a fresh start")
+    func deviceLiveTimeoutRecovers() async throws {
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
+        let output = SpyAudioOutput()
+        await output.blockNextOutputDeviceProbe()
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output, scheduler: scheduler, clock: clock,
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+        )
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let pendingGeneration: UInt64 = 42
+        let chunkCount = 8
+        let chunkBytes = 100
+        let chunkSpacingUs: Int64 = 100_000
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil, startGeneration: pendingGeneration))
+        for index in 0 ..< chunkCount {
+            await engine.commands.enqueue(.chunk(Data(repeating: UInt8(index), count: chunkBytes), ts: Int64(index) * chunkSpacingUs))
+        }
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount > 0 })
+        await time.expireDeviceLiveTimeout()
+        let terminal = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
+            if case .startFailed = $0 {
+                return true
+            }
+            if case .started = $0 {
+                return true
+            }
+            return false
+        }
+        let calls = await output.recordedCalls
+        #expect(calls.contains("stop()"))
+        #expect(!calls.contains("startPrepared()"))
+        guard case let .startFailed(reason, generation) = terminal else {
+            await engine.shutdown()
+            #expect(Bool(false), "device-live timeout must report failure before started")
+            return
+        }
+        #expect(generation == pendingGeneration)
+        #expect(reason.lowercased().contains("device-live timeout"))
+        let freshGeneration = pendingGeneration + 1
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil, startGeneration: freshGeneration))
+        let freshTimestamp = time.now() - time.anchor
+        for index in 0 ..< chunkCount {
+            await engine.commands.enqueue(.chunk(
+                Data(repeating: UInt8(index), count: chunkBytes),
+                ts: freshTimestamp + Int64(index) * chunkSpacingUs
+            ))
+        }
+        await time.releaseSleeps()
+        let recovered = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
+            if case .started = $0 {
+                return true
+            }
+            if case .startFailed = $0 {
+                return true
+            }
+            return false
+        }
+        await engine.shutdown()
+        guard case let .started(_, generation) = recovered else {
+            #expect(Bool(false), "fresh stream must recover after timeout")
+            return
+        }
+        #expect(generation == freshGeneration)
+    }
+
+    @Test("device-live probe just inside the bound starts without failure")
+    func deviceLiveProbeInsideBound() async throws {
+        let time = VirtualStartupClock()
+        let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
+        let output = SpyAudioOutput()
+        await output.blockNextOutputDeviceProbe()
+        let scheduler = AudioScheduler(clockSync: clock, now: time.now)
+        let engine = AudioEngine(
+            output: output, scheduler: scheduler, clock: clock,
+            enableStartupBuffering: true, startupNow: time.now, startupSleep: time.sleep
+        )
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let timeout = AudioEngine.outputDeviceLiveTimeout.components
+        let timeoutUs = timeout.seconds * 1_000_000 + timeout.attoseconds / 1_000_000_000_000
+        let insideBoundUs = timeoutUs - AudioEngine.startupSpinThresholdUs
+        let chunkBytes = 100
+        await engine.start()
+        await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
+        await engine.commands.enqueue(.chunk(Data(repeating: 0, count: chunkBytes), ts: insideBoundUs))
+        #expect(await waitUntil(timeout: audioProcessingBudget) { await output.outputDeviceProbeCount > 0 })
+        time.advance(to: insideBoundUs)
+        await output.releaseBlockedOutputDeviceProbe()
+        await time.releaseSleeps()
+        let terminal = await awaitFirstReport(from: engine, timeoutMs: audioProcessingBudgetMilliseconds) {
+            if case .started = $0 {
+                return true
+            }
+            if case .startFailed = $0 {
+                return true
+            }
+            return false
+        }
+        await engine.shutdown()
+        guard case .started = terminal else {
+            #expect(Bool(false), "probe inside the timeout must start, not fail")
+            return
+        }
+    }
+
     @Test("startup buffering does not report started if prepared output fails")
     func startupBufferingDoesNotReportStartedWhenPreparedOutputFails() async throws {
         struct TestError: Error {}

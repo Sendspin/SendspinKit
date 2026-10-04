@@ -253,6 +253,7 @@ actor SpyAudioOutput: AudioOutput {
 
     func stop() {
         recordedCalls.append("stop()")
+        releaseBlockedOutputDeviceProbe()
         playbackState = false
     }
 
