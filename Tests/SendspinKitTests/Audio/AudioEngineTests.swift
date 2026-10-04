@@ -487,25 +487,23 @@ struct AudioEngineTests {
         let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
 
         await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains(where: { $0.hasPrefix("start(") }) })
 
         // gen0 chunks, near-now timestamps so the scheduler emits them within its window.
         for i in 0 ..< 3 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: Int64(i) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 3 })
 
         await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().last == .formatChange })
 
         // gen1 chunks: at least formatTransitionPreBuffer (2) must arrive for the rebuild
         // to complete and emit .formatApplied — send extra to clear the pre-buffer.
         for i in 0 ..< 4 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i + 10), count: 100), ts: Int64(i + 4) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(400))
-
-        let formatApplied = await awaitReport(from: engine, timeoutMs: 200) {
+        let formatApplied = await awaitReport(from: engine, timeoutMs: 3_000) {
             if case let .formatApplied(applied, _) = $0 {
                 applied == fmt1
             } else {
@@ -710,7 +708,7 @@ struct AudioEngineTests {
         await engine.start()
         engine.enqueueStreamStart(format: oldFormat, codecHeader: nil)
         engine.enqueueAudioChunk(data: primed, timestamp: 500_000)
-        #expect(await waitUntil { await output.playedPCMData.count == 1 })
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 1 })
         #expect(await engine.startupReleaseCommits == 0)
         engine.enqueueAudioChunk(data: deferredOld, timestamp: 501_000)
         #expect(await waitUntil { await output.decodedInputs.count == 2 })
@@ -718,7 +716,7 @@ struct AudioEngineTests {
         engine.enqueueAudioChunk(data: replacement, timestamp: 502_000)
         #expect(await waitUntil { await output.decodedInputs.count == 3 })
         await output.releaseBlockedPCM()
-        #expect(await waitUntil { await output.playedPCMData.count == 3 })
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 3 })
         #expect(await output.playedPCMData == [primed, deferredOld, replacement], "all primed and deferred PCM survives in order")
         #expect(await output.decodedFormats == [oldFormat, oldFormat, newFormat])
         let calls = await output.recordedCalls
@@ -845,7 +843,7 @@ struct AudioEngineTests {
         await engine.commands.enqueue(.formatChange(newFormat, codecHeader: nil))
         await output.setDecodeOutput(stale, pcm: Data([0xB6, 0x05]))
         await engine.commands.enqueue(.chunk(stale, ts: 0))
-        #expect(await waitUntil { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("switchHardwareFormat(pcm)") })
 
         engine.commands.enqueue(.streamClear(roles: ["player"]))
         #expect(await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .streamClear }) == 1 })
@@ -979,26 +977,24 @@ struct AudioEngineTests {
         let fmt1 = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16)
 
         await engine.commands.enqueue(.streamStart(fmt0, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains(where: { $0.hasPrefix("start(") }) })
 
         for i in 0 ..< 3 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i), count: 100), ts: Int64(i) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(150))
+        #expect(await waitUntil(timeout: .seconds(3)) { await output.playedPCMData.count == 3 })
 
         // Arm the deferred rebuild to fail: swapDecoder still succeeds (so we take the
         // deferred-rebuild path), but the rebuild's output.start() throws.
         await output.setForcedStartThrow(TestError())
 
         await engine.commands.enqueue(.formatChange(fmt1, codecHeader: nil))
-        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().last == .formatChange })
 
         for i in 0 ..< 4 {
             await engine.commands.enqueue(.chunk(Data(repeating: UInt8(i + 10), count: 100), ts: Int64(i + 4) * 5_000))
         }
-        try? await Task.sleep(for: .milliseconds(400))
-
-        let sawStartFailed = await awaitReport(from: engine, timeoutMs: 200) {
+        let sawStartFailed = await awaitReport(from: engine, timeoutMs: 3_000) {
             if case .startFailed = $0 {
                 true
             } else {
