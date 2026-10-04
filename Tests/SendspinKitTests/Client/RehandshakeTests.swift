@@ -565,6 +565,9 @@ struct RehandshakeTests {
         let before = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count
         try await session.server.sendActivation(activities: [.playback], activeRoles: [.playerV1])
         #expect(await waitUntil { await connection.isRehandshakeInProgress == false })
+        // The mock reads client frames back asynchronously; wait for the published state
+        // to reach the wire rather than for the client-side flag alone.
+        #expect(await waitUntil { await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).count > before })
         let states = await session.server.clientJSONMessages(ofType: ClientStateMessage.typeString).dropFirst(before)
         #expect(states.count == 1)
         let state = try JSONDecoder().decode(ClientStateMessage.self, from: #require(states.first))
