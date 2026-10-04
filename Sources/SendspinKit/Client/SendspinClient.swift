@@ -153,7 +153,7 @@ public final class SendspinClient {
     let audioOutputCapabilityProvider: any AudioOutputCapabilityProviding
     let outputSettleInterval: Duration
     let outputRequestTimeout: Duration
-    let handshakeTimeout: Duration
+    @ObservationIgnored var handshakeTimeout: Duration
     let pairingAttemptTimeout: Duration
     let pairingWindowLifetime: Duration
     #if DEBUG
