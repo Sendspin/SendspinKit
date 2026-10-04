@@ -245,6 +245,7 @@ struct AudioStartupReleaseTests {
     @Test("later startup chunks keep the existing release deadline")
     func laterChunksKeepExistingReleaseDeadline() async throws {
         let time = VirtualStartupClock()
+        defer { Task { await time.releaseSleeps() } }
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
@@ -256,17 +257,15 @@ struct AudioStartupReleaseTests {
             startupNow: time.now,
             startupSleep: time.sleep
         )
-        await time.releaseSleeps()
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
 
         let firstTimestamp: Int64 = 1_000_000
-        await output.blockNextOutputDeviceProbe()
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
         #expect(
-            await waitUntil(timeout: .seconds(5)) { await output.outputDeviceProbeCount == 1 },
-            "the first release must reach the device probe before later chunks are processed"
+            await waitUntil(timeout: .seconds(3)) { await engine.startupDeadlineArms == 1 },
+            "the first chunk arms its deadline before later chunks arrive"
         )
 
         let laterChunkCount = 32
@@ -280,12 +279,13 @@ struct AudioStartupReleaseTests {
         }
         let expectedChunkCount = laterChunkCount + 1
         #expect(
-            await waitUntil { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount },
+            await waitUntil(timeout: .seconds(3)) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount },
             "the later chunks must be processed before checking deadline churn"
         )
+        #expect(await engine.startupDeadlineArms == 1)
         let callsBeforeRelease = await output.recordedCalls
         #expect(!callsBeforeRelease.contains("startPrepared()"))
-        await output.releaseBlockedOutputDeviceProbe()
+        await time.releaseSleeps()
 
         #expect(
             await waitUntil(timeout: .seconds(3)) { await output.recordedCalls.contains("startPrepared()") },
