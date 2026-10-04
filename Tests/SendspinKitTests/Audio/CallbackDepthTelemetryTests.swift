@@ -4,7 +4,7 @@ import Testing
 struct CallbackDepthTelemetryTests {
     @Test func skipsDoNotChangeDepthAndMissedPositionKeepsLatch() throws {
         let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
-        let buffer = Int64(audioQueueBufferByteSize) / Int64(format.channels * (format.bitDepth / 8))
+        let buffer = Int64(audioQueueBufferSize(for: format).frames)
         let total = buffer * Int64(audioQueueBufferCount)
         var telemetry = CallbackDepthTelemetry()
         telemetry.record(total: total, played: buffer, bufferFrames: buffer, costUs: buffer, prewarming: true)
@@ -24,8 +24,9 @@ struct CallbackDepthTelemetryTests {
         #expect(telemetry.timeCostUs == buffer)
     }
 
-    @Test func aggregatesMinimumMaximumLastDelayAndCost() {
-        let buffer = Int64(audioQueueBufferByteSize)
+    @Test func aggregatesMinimumMaximumLastDelayAndCost() throws {
+        let format = try AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 44_100, bitDepth: 16)
+        let buffer = Int64(audioQueueBufferSize(for: format).frames)
         let total = buffer * Int64(audioQueueBufferCount)
         var telemetry = CallbackDepthTelemetry()
         telemetry.record(total: total, played: buffer, bufferFrames: buffer, costUs: buffer, prewarming: false)
@@ -40,8 +41,9 @@ struct CallbackDepthTelemetryTests {
         #expect(telemetry.prewarmSkipped == 0 && telemetry.zeroPlayedSkipped == 0)
     }
 
-    @Test func depthClampsAndMeasuresDeliveryDelay() {
-        let bufferFrames = Int64(audioQueueBufferByteSize)
+    @Test func depthClampsAndMeasuresDeliveryDelay() throws {
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        let bufferFrames = Int64(audioQueueBufferSize(for: format).frames)
         let modelled = Int64(audioQueueBufferCount) * bufferFrames
         let afterCompletion = modelled - bufferFrames
         let delivered = CallbackDepthTelemetry.depth(

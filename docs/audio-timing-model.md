@@ -161,8 +161,13 @@ once a position is observed for the queue, a missed or zero read holds its previ
 Only successful enqueues enter the cumulative frame count; refused and withheld buffers do not.
 Startup leads and silence-pad ceilings remain conservative allocated-depth estimates.
 
-Three 30-second tone runs on a MacBook Air's built-in speakers use 44,100Hz/stereo/32-bit output:
-16,384 bytes per buffer / 8 bytes per frame = 2,048 frames; three buffers model 6,144 frames.
+Each queue buffer contains whole frames from `audioQueueBufferDuration × sampleRate`, with at
+least one frame; three buffers model `audioQueueBufferCount × frames / sampleRate` seconds.
+The byte allocation uses the effective output width, so depth in time does not depend on bit depth
+or sample rate. At 50 ms, 44,100Hz output contains 2,205 frames per buffer and models 6,615 frames.
+
+Three 30-second tone runs on a MacBook Air's built-in speakers use 44,100Hz/stereo/32-bit output
+(measured with 2,048-frame buffers, modelling 6,144 frames).
 Callback depth spans 4,622–5,090 frames (2.26–2.49 buffers), leaving a 1,054–1,522-frame model gap.
 The interval-last medians are 4,801.5 / 4,932.5 / 4,926 frames. The delivery-delay formula clamps to
 zero: measured depth exceeds two buffers rather than simply being two minus callback delay.

@@ -1770,9 +1770,16 @@ struct ClientIntegrationTests {
     func applyUnderrunTransition_toErrorIsIgnoredDuringExternalSource() async throws {
         let client = try makeTestClient()
         let mock = try await connectClient(client)
+        // Sync first so the external-source flip is wire-visible as available
+        // true -> false; waiting for that flip to read back pins the baseline
+        // after every client/state the flip produces.
+        try await establishClockSync(client, via: mock)
+        #expect(await waitUntil { await lastClientState(from: mock, after: 0)?.available == true })
+        let countSynced = await mock.sentTextMessages.count
 
         try await client.enterExternalSource()
         #expect(client.clientOperationalState == .externalSource)
+        #expect(await waitUntil { await lastClientState(from: mock, after: countSynced)?.available == false })
 
         let countBefore = await mock.sentTextMessages.count
         await client.applyUnderrunTransition(.toError)

@@ -47,15 +47,20 @@ let audioQueueTeardownSlowThresholdUs: Int64 = 500_000
 /// investigating CoreAudio start stalls. Set `SENDSPIN_NO_PREWARM=1` to enable it.
 let audioQueuePrewarmDisabled = ProcessInfo.processInfo.environment["SENDSPIN_NO_PREWARM"] == "1"
 
-/// Byte size of each prepared AudioQueue buffer.
-/// Shared with startup latency estimation so priming and correction use the same model.
-let audioQueueBufferByteSize: UInt32 = 16_384
+/// Startup lead, pad ceiling and modelled fallback describe depth in time,
+/// so buffer duration stays independent of bit depth and sample rate.
+let audioQueueBufferDuration: Duration = .milliseconds(50)
 
-/// Buffers allocated and primed by `prepare()`, and so the pipeline depth once running.
-///
-/// Must stay the single source of truth for both the allocation loop and the latency
-/// model: a mismatch is a constant offset that `graceExpiryRebaselineCursor` bakes in
-/// permanently at grace expiry (~85ms per buffer at 48kHz/stereo/16-bit).
+func audioQueueBufferSize(for format: AudioFormatSpec) -> (frames: Int, bytes: UInt32) {
+    let components = audioQueueBufferDuration.components
+    let seconds = Double(components.seconds) + Double(components.attoseconds) / 1e18
+    let frames = max(1, Int(seconds * Double(format.sampleRate)))
+    let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
+    return (frames, UInt32(frames * bytesPerFrame))
+}
+
+/// Allocated and primed buffer count matches the latency model, because
+/// `graceExpiryRebaselineCursor` permanently absorbs any mismatch at grace expiry.
 let audioQueueBufferCount = 3
 
 private let volumeRampStepCount = 5
@@ -445,7 +450,7 @@ actor AudioPlayer {
             state.correctionGraceFrames = Int64(format.sampleRate)
         }
 
-        try allocateAndPrewarm(queue: queue)
+        try allocateAndPrewarm(queue: queue, format: format)
     }
 
     private func prepareHardwareQueue(format: AudioFormatSpec) throws {
@@ -458,11 +463,12 @@ actor AudioPlayer {
     /// begin producing and the figure varies by ~100ms between starts, so it cannot be led by an
     /// estimate — but paid during the window already spent buffering, it is spent before any
     /// audio depends on it. The ring is empty, so every buffer enqueued below is silence.
-    private func allocateAndPrewarm(queue: AudioQueueRef) throws {
+    private func allocateAndPrewarm(queue: AudioQueueRef, format: AudioFormatSpec) throws {
+        let bufferSize = audioQueueBufferSize(for: format)
         var allocated: [AudioQueueBufferRef] = []
         for _ in 0 ..< audioQueueBufferCount {
             var buffer: AudioQueueBufferRef?
-            let allocStatus = AudioQueueAllocateBuffer(queue, audioQueueBufferByteSize, &buffer)
+            let allocStatus = AudioQueueAllocateBuffer(queue, bufferSize.bytes, &buffer)
             guard allocStatus == noErr, let buffer else {
                 AudioQueueDispose(queue, true)
                 audioQueue = nil
@@ -517,10 +523,9 @@ actor AudioPlayer {
     /// Correction reads the device; this conservative estimate is zero before `prepare()`.
     func pipelineLatencyMicroseconds() -> Int64 {
         guard let format = currentFormat else { return 0 }
-        let bytesPerFrame = format.channels * (format.effectiveOutputBitDepth / 8)
-        guard bytesPerFrame > 0, format.sampleRate > 0 else { return 0 }
-        let queueDepthUs = Int64(audioQueueBufferCount) * Int64(audioQueueBufferByteSize) * 1_000_000
-            / Int64(format.sampleRate * bytesPerFrame)
+        let bufferSize = audioQueueBufferSize(for: format)
+        let queueDepthUs = Int64(audioQueueBufferCount) * Int64(bufferSize.frames) * 1_000_000
+            / Int64(format.sampleRate)
         return queueDepthUs + lockedState.withLock { $0.deviceLatencyUs }
     }
 
