@@ -47,6 +47,7 @@ is deliberately not combined with drift correction.
 
 ## What the implementation now does
 
+- The correction loop stays idle and telemetry reports `sync=pending` across an output rebuild until the new queue places its first frame and receives its first device callback.
 - The correction target is one shared mapping: `snapshot.localTimeToServer(localNow + physicalPipeline + localOutputDelay)`, with saturating local arithmetic. The callback error, grace-expiry rebaseline, and reanchor target all use that exact helper, including nonzero clock drift.
 - `L` includes the device path, read from the HAL at `prepare()` (`OutputDeviceLatency`), while the commanded output delay remains a separate local-domain term.
 - A runtime output-delay change shifts every pending scheduler/startup/deferred local play instant by `oldDelay - newDelay` exactly once. Wire timestamps and decoded cadence remain unchanged; chunks already yielded to the output are immutable and are corrected by render pacing rather than rewriting PCM.

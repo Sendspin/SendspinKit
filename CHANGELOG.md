@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConfigurationError.emptyVisualizerTypes` is absent because empty requests are valid.
 
 ### Fixed
+- Sync correction pauses across output rebuilds, and telemetry reports pending sync until output is ready.
 - Initial player format negotiation reflects the known output route before composing `client/hello`.
 - Player streams emit `streamStarted` once on their first successful engine outcome and `streamFormatChanged` on later outcomes.
 - Server reactivation updates session state without repeating `serverConnected` with an empty name.
