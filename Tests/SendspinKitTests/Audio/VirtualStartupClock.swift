@@ -17,6 +17,7 @@ final class VirtualStartupClock: Sendable {
         time.withLock { $0 }
     }
 
+    /// Advance runs only after gated sleeps are released so sleepers observe every clock change.
     func advance(to timestamp: Int64) {
         time.withLock { $0 = max($0, anchor + timestamp) }
     }
@@ -37,18 +38,33 @@ final class VirtualStartupClock: Sendable {
 
     private actor SleepGate {
         private var released = false
-        private var waiters: [CheckedContinuation<Void, Never>] = []
+        private var waiters: [UUID: CheckedContinuation<Void, Never>] = [:]
 
         func wait() async {
             guard !released else { return }
-            await withCheckedContinuation { waiters.append($0) }
+            let id = UUID()
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if Task.isCancelled || released {
+                        continuation.resume()
+                    } else {
+                        waiters[id] = continuation
+                    }
+                }
+            } onCancel: {
+                Task { await self.cancel(id) }
+            }
+        }
+
+        private func cancel(_ id: UUID) {
+            waiters.removeValue(forKey: id)?.resume()
         }
 
         func release() {
             released = true
             let pending = waiters
             waiters.removeAll()
-            for waiter in pending {
+            for waiter in pending.values {
                 waiter.resume()
             }
         }

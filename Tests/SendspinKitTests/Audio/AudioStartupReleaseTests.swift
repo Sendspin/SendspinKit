@@ -205,6 +205,7 @@ struct AudioStartupReleaseTests {
     @Test("the startup wait sleeps through the schedule rather than polling it")
     func startupWaitDoesNotPoll() async throws {
         let time = VirtualStartupClock()
+        defer { Task { await time.releaseSleeps() } }
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
@@ -887,6 +888,7 @@ struct AudioStartupReleaseTests {
     @Test("stream clear during startup buffering discards pre-clear chunks and re-primes")
     func streamClearDuringStartupBufferingReprimesWithPostClearChunks() async throws {
         let time = VirtualStartupClock()
+        defer { Task { await time.releaseSleeps() } }
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
         let scheduler = AudioScheduler(clockSync: clock, now: time.now)
