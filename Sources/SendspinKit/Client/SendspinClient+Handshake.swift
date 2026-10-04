@@ -40,6 +40,7 @@ extension SendspinClient {
             )
         }
 
+        await audioOutputCapabilityStartupTask?.value
         let output = await audioOutputCapabilityProvider.snapshot()
         audioOutputSnapshotSequence += 1
         let formats = try effectiveSupportedFormats(

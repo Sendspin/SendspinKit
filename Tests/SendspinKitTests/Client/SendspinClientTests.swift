@@ -578,6 +578,88 @@ struct SendspinClientTests {
     }
 
     @Test
+    func negotiationWaitsUntilCapabilityMonitoringStarts() async throws {
+        let nativeRate = 48_000
+        let provider = FakeAudioOutputCapabilityProvider(
+            initialSnapshot: AudioOutputSnapshot(
+                sampleRate: nativeRate, reportedBitDepth: nil, diagnosticDescription: nil
+            ),
+            holdStartup: true
+        )
+        let client = try makePlayerClient(capabilityProvider: provider)
+        #expect(await waitUntil { await provider.monitoringStarted })
+        let negotiation = Task { try await client.makeSessionFormatNegotiation() }
+        #expect(await waitUntil { await provider.snapshotCount == 0 })
+        await Task.yield()
+        #expect(await provider.snapshotCount == 0)
+        await provider.releaseStartup()
+        let result = try await negotiation.value
+        #expect(result.effectivePlayerFormats?.first?.sampleRate == nativeRate)
+        await client.finishAudioOutputCapabilityMonitoring()
+    }
+
+    @Test
+    func monitoringSeedsSnapshotWithoutStreamIteration() async {
+        let nativeRate = 48_000
+        let service = AudioOutputCapabilityService(platformMonitor: InertAudioOutputPlatformMonitor(
+            observation: AudioOutputPlatformObservation(
+                sampleRate: Double(nativeRate), reportedBitDepth: nil, diagnosticDescription: nil
+            )
+        ))
+        _ = await service.startMonitoring()
+        #expect(await service.snapshot().sampleRate == nativeRate)
+        await service.stopMonitoring()
+    }
+
+    @Test(arguments: [OutputSampleRatePolicy.preferCurrentOutput, .preserveFormatOrder])
+    func helloWaitsForSynchronousOutputObservation(policy: OutputSampleRatePolicy) async throws {
+        try await assertSeededHello(policy: policy, nativeRate: 48_000)
+    }
+
+    @Test
+    func helloPreservesOrderWhenSynchronousObservationIsUnknown() async throws {
+        try await assertSeededHello(policy: .preferCurrentOutput, nativeRate: nil)
+    }
+
+    @Test
+    func strictHelloRejectsUnknownSynchronousObservation() async throws {
+        let provider = AudioOutputCapabilityService(platformMonitor: InertAudioOutputPlatformMonitor())
+        let client = try makePlayerClient(policy: .requireCurrentOutput, capabilityProvider: provider)
+        let transport = MockTransport()
+        await #expect(throws: OutputFormatError.routeUnavailable) {
+            try await client.acceptConnection(transport)
+        }
+        #expect(await transport.sentTextMessages.isEmpty)
+        await client.finishAudioOutputCapabilityMonitoring()
+    }
+
+    private func assertSeededHello(policy: OutputSampleRatePolicy, nativeRate: Int?) async throws {
+        let formats = try [
+            AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
+            AudioFormatSpec(codec: .flac, channels: 2, sampleRate: 48_000, bitDepth: 24)
+        ]
+        let observation = nativeRate.map {
+            AudioOutputPlatformObservation(sampleRate: Double($0), reportedBitDepth: nil, diagnosticDescription: nil)
+        }
+        let provider = AudioOutputCapabilityService(
+            platformMonitor: InertAudioOutputPlatformMonitor(observation: observation)
+        )
+        let client = try makePlayerClient(formats: formats, policy: policy, capabilityProvider: provider)
+        let transport = MockTransport()
+        let server = MockNoiseServer(transport: transport, psk: .sentinel)
+        async let accepted: Void = client.acceptConnection(transport)
+        try await server.respondToHandshake()
+        try await server.sendJSON(#"{"type":"server/hello","payload":{"name":"Output Capability Test"}}"#)
+        let hello = try await JSONDecoder().decode(ClientHelloMessage.self, from: server.nextClientJSON())
+        try await server.sendJSON(#"{"type":"server/activate","payload":{"activities":[],"active_roles":["player@v1"]}}"#)
+        try await accepted
+        let expected = policy == .preferCurrentOutput && nativeRate != nil ? formats.reversed().map(\.self) : formats
+        #expect(hello.payload.playerV1Support?.supportedFormats == expected)
+        await client.disconnect()
+        await client.finishAudioOutputCapabilityMonitoring()
+    }
+
+    @Test
     func helloUsesOneSnapshotAndPolicyAppliedOrderingThenResetsCatalog() async throws {
         let formats = try [
             AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 44_100, bitDepth: 16),
@@ -1195,14 +1277,18 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
     private(set) var queueTransitionRates: [Int] = []
     private(set) var queueStartCount = 0
     private(set) var stopCount = 0
+    private let holdStartup: Bool
+    private var startupWaiter: CheckedContinuation<Void, Never>?
 
     init(
         initialSnapshot: AudioOutputSnapshot = AudioOutputSnapshot(
             sampleRate: nil,
             reportedBitDepth: nil,
             diagnosticDescription: nil
-        )
+        ),
+        holdStartup: Bool = false
     ) {
+        self.holdStartup = holdStartup
         currentSnapshot = initialSnapshot
         (stream, continuation) = AsyncStream.makeStream(bufferingPolicy: .bufferingNewest(1))
     }
@@ -1220,9 +1306,17 @@ private actor FakeAudioOutputCapabilityProvider: AudioOutputCapabilityProviding 
         queueStartCount += 1
     }
 
-    func startMonitoring() -> AsyncStream<AudioOutputSnapshot> {
+    func startMonitoring() async -> AsyncStream<AudioOutputSnapshot> {
         monitoringStarted = true
+        if holdStartup {
+            await withCheckedContinuation { startupWaiter = $0 }
+        }
         return stream
+    }
+
+    func releaseStartup() {
+        startupWaiter?.resume()
+        startupWaiter = nil
     }
 
     func setAudioSessionActivationState(_ state: AudioSessionActivationState) {

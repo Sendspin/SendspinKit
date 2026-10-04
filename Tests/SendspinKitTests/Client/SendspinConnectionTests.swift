@@ -666,13 +666,13 @@ struct SendspinConnectionTests {
         // setOutputDelay (no volume/mute) so a volume command is unlisted.
         let connection = try await makeConnectionWithTransport(transport)
 
-        /// Count only client/state messages — the clock-sync loop emits client/time
-        /// periodically, which would pollute a raw message count.
+        // Count only client/state messages — the clock-sync loop emits client/time
+        // periodically, which would pollute a raw message count.
         func sentClientStateCount() async -> Int {
             await sentJSONMessages(on: transport)
                 .count(where: { SendspinEncoding.messageType(of: $0) == ClientStateMessage.typeString })
         }
-        /// Deterministic poll: wait until the count reaches `target` (or time out).
+        // Deterministic poll: wait until the count reaches `target` (or time out).
         func waitForClientStateCount(atLeast target: Int) async -> Bool {
             for _ in 0 ..< 100 {
                 if await sentClientStateCount() >= target {

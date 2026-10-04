@@ -32,6 +32,15 @@ actor TestBox<Value: Sendable> {
 
 actor InertAudioOutputPlatformMonitor: AudioOutputPlatformMonitoring {
     nonisolated let requiresActiveAudioSession = false
+    nonisolated let observation: AudioOutputPlatformObservation?
+
+    init(observation: AudioOutputPlatformObservation? = nil) {
+        self.observation = observation
+    }
+
+    nonisolated func currentObservation() -> AudioOutputPlatformObservation? {
+        observation
+    }
 
     func startMonitoring() -> AsyncStream<AudioOutputPlatformObservation> {
         AsyncStream { _ in }
