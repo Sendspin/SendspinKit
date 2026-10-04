@@ -106,7 +106,7 @@ actor SpyAudioOutput: AudioOutput {
     var outputDeviceProbeDelayAfterFirst: Duration = .zero
     private(set) var outputDeviceProbeCount = 0
     private var shouldBlockNextOutputDeviceProbe = false
-    private var blockedOutputDeviceProbe: CheckedContinuation<Void, Never>?
+    private var blockedOutputDeviceProbe: OutputDeviceLiveWaiter?
     private var shouldBlockNextPCM = false
     private var blockedPCM: CheckedContinuation<Void, Never>?
     private var shouldBlockNextDecode = false
@@ -205,8 +205,17 @@ actor SpyAudioOutput: AudioOutput {
         outputDeviceProbeCount += 1
         if shouldBlockNextOutputDeviceProbe {
             shouldBlockNextOutputDeviceProbe = false
-            await withCheckedContinuation { continuation in
-                blockedOutputDeviceProbe = continuation
+            let waiter = OutputDeviceLiveWaiter()
+            blockedOutputDeviceProbe = waiter
+            await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    waiter.install(continuation)
+                }
+            } onCancel: {
+                waiter.resume()
+            }
+            if blockedOutputDeviceProbe === waiter {
+                blockedOutputDeviceProbe = nil
             }
         }
         let delay = outputDeviceProbeCount == 1 ? outputDeviceProbeDelay : outputDeviceProbeDelayAfterFirst

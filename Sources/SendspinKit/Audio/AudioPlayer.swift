@@ -232,7 +232,7 @@ actor AudioPlayer {
 
     /// Buffers held back for `startPrepared()` when pre-warm is disabled; empty otherwise.
     private var pendingStartBuffers: [AudioQueueBufferRef] = []
-    private var outputDeviceLiveContinuation: CheckedContinuation<Void, Never>?
+    private var outputDeviceLiveWaiter: OutputDeviceLiveWaiter?
 
     private var _isPlaying: Bool = false
     private let playerID = UUID().uuidString
@@ -541,18 +541,26 @@ actor AudioPlayer {
         // device to wait for and gating on it would deadlock the startup path.
         guard !audioQueuePrewarmDisabled else { return }
         guard lockedState.withLock({ $0.spinUpUs < 0 }) else { return }
-        await withCheckedContinuation { continuation in
-            outputDeviceLiveContinuation = continuation
-            if lockedState.withLock({ $0.spinUpUs >= 0 }) {
-                outputDeviceLiveContinuation = nil
-                continuation.resume()
+        let waiter = OutputDeviceLiveWaiter()
+        outputDeviceLiveWaiter = waiter
+        await withTaskCancellationHandler {
+            await withCheckedContinuation { continuation in
+                waiter.install(continuation)
+                if lockedState.withLock({ $0.spinUpUs >= 0 }) {
+                    waiter.resume()
+                }
             }
+        } onCancel: {
+            waiter.resume()
+        }
+        if outputDeviceLiveWaiter === waiter {
+            outputDeviceLiveWaiter = nil
         }
     }
 
     private func resumeOutputDeviceLiveWaiter() {
-        outputDeviceLiveContinuation?.resume()
-        outputDeviceLiveContinuation = nil
+        outputDeviceLiveWaiter?.resume()
+        outputDeviceLiveWaiter = nil
     }
 
     /// How far before a frame should be audible it must be written to the ring.
@@ -616,8 +624,7 @@ actor AudioPlayer {
         let currentlyPlaying = _isPlaying
         Log.audio.debug("stop player=\(currentPlayerID, privacy: .public) isPlaying=\(currentlyPlaying, privacy: .public)")
         cancelVolumeRamp()
-        outputDeviceLiveContinuation?.resume()
-        outputDeviceLiveContinuation = nil
+        resumeOutputDeviceLiveWaiter()
         guard let queue = audioQueue else { return }
 
         let stopStartedAt = MonotonicClock.absoluteMicroseconds()
