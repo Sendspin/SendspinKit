@@ -228,12 +228,15 @@ struct SendspinClientTests {
 
     @Test
     func failedConnectRollsBackToDisconnectedAndAllowsReconnect() async throws {
+        let failingTransport = MockTransport(connectError: .connectionFailed)
         let client = try SendspinClient(
             identity: .generate(),
             name: "Test Client",
-            roles: [.metadataV1]
+            roles: [.metadataV1],
+            audioOutputCapabilityProvider: FakeAudioOutputCapabilityProvider(),
+            outboundTransportFactory: { _ in failingTransport }
         )
-        let failingURL = try #require(URL(string: "ws://127.0.0.1:1/sendspin"))
+        let failingURL = try #require(URL(string: "ws://unused.invalid/sendspin"))
 
         let result = await outcomeOfUnstructuredOperation(
             timeout: .seconds(2),
@@ -245,7 +248,7 @@ struct SendspinClientTests {
         case nil:
             Issue.record("connect(to:) timed out instead of failing promptly")
         case .success:
-            Issue.record("connect(to:) unexpectedly succeeded against a closed localhost port")
+            Issue.record("connect(to:) unexpectedly succeeded despite the injected dial failure")
         case .failure:
             break
         }
