@@ -8,6 +8,11 @@ final class VirtualStartupClock: Sendable {
     let anchor = MonotonicClock.absoluteMicroseconds()
     private let time: OSAllocatedUnfairLock<Int64>
     private let gate = SleepGate()
+    private let deviceLiveGate = SleepGate()
+
+    func expireDeviceLiveTimeout() async {
+        await deviceLiveGate.release()
+    }
 
     init() {
         time = OSAllocatedUnfairLock(initialState: anchor)
@@ -25,6 +30,17 @@ final class VirtualStartupClock: Sendable {
     func sleep(_ duration: Duration) async throws {
         await gate.wait()
         try Task.checkCancellation()
+        advanceBySleep(duration)
+    }
+
+    func deviceLiveSleep(_ duration: Duration) async throws {
+        await deviceLiveGate.wait()
+        await deviceLiveGate.reset()
+        try Task.checkCancellation()
+        advanceBySleep(duration)
+    }
+
+    private func advanceBySleep(_ duration: Duration) {
         let components = duration.components
         let microseconds = components.seconds * 1_000_000 + components.attoseconds / 1_000_000_000_000
         // The final approach advances with the sleep, so the yield loop observes its target
@@ -58,6 +74,10 @@ final class VirtualStartupClock: Sendable {
 
         private func cancel(_ id: UUID) {
             waiters.removeValue(forKey: id)?.resume()
+        }
+
+        func reset() {
+            released = false
         }
 
         func release() {

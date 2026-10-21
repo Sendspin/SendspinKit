@@ -17,7 +17,7 @@ public actor ClientAdvertiser {
     private nonisolated(unsafe) var connectionsContinuation: AsyncStream<any SendspinTransport>.Continuation?
     private var readinessWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
     private var listenerReady = false
-    private var pendingConnections: [UUID: NWConnection] = [:]
+    private var pendingConnections: [UUID: any ClientConnectionHandle] = [:]
     private var pendingConnectionTimeouts: [UUID: Task<Void, Never>] = [:]
 
     /// Stream of incoming server connections, each as a ready-to-use transport.
@@ -204,7 +204,7 @@ public actor ClientAdvertiser {
         }
     }
 
-    private func handleNewConnection(_ connection: NWConnection, token: UUID) {
+    private func handleNewConnection(_ connection: any ClientConnectionHandle, token: UUID) {
         guard listenerToken == token, listenerReady, connectionsContinuation != nil else {
             connection.cancel()
             return
@@ -242,8 +242,7 @@ public actor ClientAdvertiser {
                 connection.cancel()
                 return
             }
-            let transport = NWWebSocketTransport(connection: connection)
-            await transport.startReceiving()
+            let transport = await connection.makeTransport()
             guard connectionsContinuation != nil, listenerReady else {
                 await transport.disconnect()
                 return
@@ -320,7 +319,7 @@ enum ClientListenerState: Sendable {
 
 protocol ClientListenerHandle: AnyObject, Sendable {
     var stateUpdateHandler: (@Sendable (ClientListenerState) -> Void)? { get set }
-    var newConnectionHandler: (@Sendable (NWConnection) -> Void)? { get set }
+    var newConnectionHandler: (@Sendable (any ClientConnectionHandle) -> Void)? { get set }
     var service: NWListener.Service? { get set }
     var port: UInt16? { get }
     func start(queue: DispatchQueue)
@@ -346,9 +345,16 @@ private final class NWClientListenerHandle: ClientListenerHandle, @unchecked Sen
         }
     }
 
-    var newConnectionHandler: (@Sendable (NWConnection) -> Void)? {
-        get { listener.newConnectionHandler }
-        set { listener.newConnectionHandler = newValue }
+    var newConnectionHandler: (@Sendable (any ClientConnectionHandle) -> Void)? {
+        didSet {
+            let handler = newConnectionHandler
+            let callback: (@Sendable (NWConnection) -> Void)? = if let handler {
+                { connection in handler(connection) }
+            } else {
+                nil
+            }
+            listener.newConnectionHandler = callback
+        }
     }
 
     var service: NWListener.Service? {

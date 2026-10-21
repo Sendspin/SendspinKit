@@ -51,7 +51,17 @@ actor MockTransport: ClientDialingTransport {
 
     // MARK: - SendspinTransport conformance
 
-    func connect() async throws {}
+    private let connectError: TransportError?
+
+    init(connectError: TransportError? = nil) {
+        self.connectError = connectError
+    }
+
+    func connect() async throws {
+        if let connectError {
+            throw connectError
+        }
+    }
 
     func nextFrame() async -> TransportFrame? {
         await inbox.next()

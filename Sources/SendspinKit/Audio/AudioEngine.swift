@@ -78,6 +78,11 @@ actor AudioEngine {
     private var schedulerOutputTask: Task<Void, Never>?
     private var telemetryTask: Task<Void, Never>?
     private let telemetrySleep: @Sendable (Duration) async throws -> Void
+    /// Above the ~13.3 s AudioQueueStart stall in docs/audio-timing-model.md, recovering devices start late.
+    /// The engine reports a start failure for devices that never render instead of permanent silence.
+    static let outputDeviceLiveTimeout: Duration = .seconds(20)
+
+    private let deviceLiveSleep: @Sendable (Duration) async throws -> Void
     private let startupSleep: @Sendable (Duration) async throws -> Void
 
     // Running state
@@ -140,7 +145,7 @@ actor AudioEngine {
     ///
     /// Yielding polls the clock at microsecond cost while still suspending, so this lands
     /// within a few microseconds where no sleep can, and the engine keeps draining its
-    /// command queue throughout. Runs on the deadline task rather than inside an
+    /// command queue throughout. Runs on the release timer task rather than inside an
     /// actor-isolated method, so it never holds the engine between polls.
     ///
     /// The budget is a guard against a non-advancing clock only: the entry check bounds the
@@ -179,16 +184,16 @@ actor AudioEngine {
     /// Chunks arriving after a release claims the startup buffer wait here until the
     /// prepared output is running. They must not enter the scheduler before `.started`.
     private var startupReleaseDeferredChunks: [StartupBufferedChunk] = []
-    private var startupDeadlineTask: Task<Void, Never>?
-    private var currentStartupDeadlineArm: DeadlineArm?
+    private var startupReleaseTimerTask: Task<Void, Never>?
+    private var currentStartupReleaseTimerArm: StartupReleaseTimerArm?
     /// Identifies the current wait. `Task` is not `Equatable`, so without this a
     /// continuation cannot ask whether the stored handle still refers to it — and the stream
     /// sequence cannot answer that, because every wait within one stream shares a sequence.
-    private var startupDeadlineToken: UInt64 = 0
+    private var startupReleaseTimerToken: UInt64 = 0
 
     private enum StartupSignal: Sendable {
         case stateChanged
-        case deadline(DeadlineArm)
+        case releaseTimer(StartupReleaseTimerArm)
         case finished
     }
 
@@ -197,8 +202,8 @@ actor AudioEngine {
     private(set) var startupReleaseEvaluations = 0
     /// Count of successful prepared-start commits for the current engine lifetime.
     private(set) var startupReleaseCommits = 0
-    /// Count of deadline tasks armed for the current stream.
-    private(set) var startupDeadlineArms = 0
+    /// Count of startup release timers armed for the current stream.
+    private(set) var startupReleaseTimerArms = 0
     private var startupSequence: UInt64 = 0
     private var startupSignalPending: StartupSignal?
     private var startupStateChangedPending = false
@@ -221,7 +226,7 @@ actor AudioEngine {
 
     /// What a timer-driven re-entry needs in order to identify itself: which wait it is,
     /// which stream it belongs to, and the instant it waited for.
-    private struct DeadlineArm: Sendable {
+    private struct StartupReleaseTimerArm: Sendable {
         let sequence: UInt64
         let token: UInt64
         let releaseTimeUs: Int64
@@ -299,11 +304,11 @@ actor AudioEngine {
     /// Cancel any pending startup wait and invalidate its arm, so a continuation already past
     /// its sleep cannot act on a schedule that no longer applies. Cancellation alone does not
     /// achieve that: it is cooperative, and a task past its last suspension point runs on.
-    private func cancelStartupDeadline() {
-        startupDeadlineTask?.cancel()
-        startupDeadlineTask = nil
-        currentStartupDeadlineArm = nil
-        startupDeadlineToken &+= 1
+    private func cancelStartupReleaseTimer() {
+        startupReleaseTimerTask?.cancel()
+        startupReleaseTimerTask = nil
+        currentStartupReleaseTimerArm = nil
+        startupReleaseTimerToken &+= 1
     }
 
     /// Pick the chunk to start on, honouring a wait already made for one.
@@ -369,6 +374,7 @@ actor AudioEngine {
         startupMinBufferMs: Int = 0,
         startupNow: @escaping @Sendable () -> Int64 = { MonotonicClock.absoluteMicroseconds() },
         startupSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
+        deviceLiveSleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) },
         telemetrySleep: @escaping @Sendable (Duration) async throws -> Void = { try await Task.sleep(for: $0) }
     ) {
         self.output = output
@@ -376,6 +382,7 @@ actor AudioEngine {
         self.clock = clock
         self.startupNow = startupNow
         self.startupSleep = startupSleep
+        self.deviceLiveSleep = deviceLiveSleep
         self.telemetrySleep = telemetrySleep
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -406,6 +413,7 @@ actor AudioEngine {
         self.clock = clock
         startupNow = { MonotonicClock.absoluteMicroseconds() }
         startupSleep = { try await Task.sleep(for: $0) }
+        deviceLiveSleep = { try await Task.sleep(for: $0) }
         telemetrySleep = { try await Task.sleep(for: $0) }
         let sink = DataPlaneSink()
         _commandsSink = sink
@@ -574,7 +582,7 @@ actor AudioEngine {
 
         // 4. Stop the output immediately (any buffered playPCM becomes harmless)
         finishStartupCoordinator()
-        cancelStartupDeadline()
+        cancelStartupReleaseTimer()
         startupBuffer = nil
         startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
         startupReleaseInProgress = false
@@ -615,7 +623,7 @@ actor AudioEngine {
         switch signal {
         case .stateChanged:
             startupStateChangedPending = true
-        case .deadline:
+        case .releaseTimer:
             startupSignalPending = signal
         case .finished:
             startupSignalPending = signal
@@ -627,12 +635,12 @@ actor AudioEngine {
         }
     }
 
-    private func signalStartupDeadline(_ arm: DeadlineArm) {
+    private func signalStartupReleaseTimer(_ arm: StartupReleaseTimerArm) {
         guard !startupCoordinatorFinished else { return }
-        // A deadline is only meaningful if it is still the current arm. The coordinator checks
+        // A release timer signal is only meaningful if it is still the current arm. The coordinator checks
         // the token again before touching the buffer, so a stale wake cannot resurrect old work.
-        guard arm.token == startupDeadlineToken else { return }
-        signalStartupCoordinator(.deadline(arm))
+        guard arm.token == startupReleaseTimerToken else { return }
+        signalStartupCoordinator(.releaseTimer(arm))
     }
 
     private func finishStartupCoordinator() {
@@ -674,11 +682,11 @@ actor AudioEngine {
             case .stateChanged:
                 // Once a release instant is armed, arrivals only extend the owned buffer.
                 // They must not re-select the startup anchor: doing so can keep sliding the
-                // deadline on a late join until the server ends the stream. The deadline task
+                // release instant on a late join until the server ends the stream. The release timer
                 // is the sole owner of that wait and re-evaluates lateness when it fires.
-                guard currentStartupDeadlineArm == nil else { continue }
+                guard currentStartupReleaseTimerArm == nil else { continue }
                 await releaseStartupBufferIfReady()
-            case let .deadline(arm):
+            case let .releaseTimer(arm):
                 await releaseStartupBufferIfReady(arm: arm)
             case .finished:
                 return
@@ -790,14 +798,14 @@ actor AudioEngine {
     private func applyStreamStart(format: AudioFormatSpec, codecHeader: Data?) async {
         let startGeneration = playerStartGeneration
         playerStartFailed = false
-        cancelStartupDeadline()
+        cancelStartupReleaseTimer()
         startupBuffer = nil
         startupFormat = nil
         startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
         startupReleaseInProgress = false
         startupSequence &+= 1
         startupReleaseEvaluations = 0
-        startupDeadlineArms = 0
+        startupReleaseTimerArms = 0
         streamGeneration &+= 1
         transitionToken &+= 1
         failedTransitionGeneration = nil
@@ -964,19 +972,19 @@ actor AudioEngine {
     /// Release the startup buffer when starting AudioQueue now will naturally land
     /// the first sample near its server timestamp. The release feeds decoded PCM into
     /// the ring before starting AudioQueue, then hands any future chunks back to the scheduler.
-    private func releaseStartupBufferIfReady(arm: DeadlineArm? = nil) async { // swiftlint:disable:this function_body_length
+    private func releaseStartupBufferIfReady(arm: StartupReleaseTimerArm? = nil) async { // swiftlint:disable:this function_body_length
         startupReleaseEvaluations += 1
         guard !outputHasStarted, !startupReleaseInProgress,
               var buffer = startupBuffer, !buffer.chunks.isEmpty else { return }
         if let arm {
-            guard buffer.sequence == arm.sequence, arm.token == startupDeadlineToken else {
+            guard buffer.sequence == arm.sequence, arm.token == startupReleaseTimerToken else {
                 // A superseded wait: a newer arrival re-armed, or the stream was replaced.
                 return
             }
             // This call runs on the task the handle refers to. Clearing the handle first keeps
             // a replacement from cancelling the task it runs on.
-            startupDeadlineTask = nil
-            currentStartupDeadlineArm = nil
+            startupReleaseTimerTask = nil
+            currentStartupReleaseTimerArm = nil
         }
 
         let sequence = buffer.sequence
@@ -993,7 +1001,34 @@ actor AudioEngine {
         // is not consuming. The coordinator waits for the device transition once, then resumes
         // with the latest actor-owned buffer rather than polling a negative probe.
         do {
-            try await output.waitUntilOutputDeviceIsLive()
+            let output = output
+            let sleep = deviceLiveSleep
+            let deviceIsLive = try await withThrowingTaskGroup(of: Bool.self) { group in
+                group.addTask {
+                    try await output.waitUntilOutputDeviceIsLive()
+                    try Task.checkCancellation()
+                    return true
+                }
+                group.addTask {
+                    try await sleep(Self.outputDeviceLiveTimeout)
+                    return false
+                }
+                defer { group.cancelAll() }
+                // Only the first result decides liveness; cancellation releases the losing arm.
+                return try await group.next() ?? false
+            }
+            if !deviceIsLive {
+                guard startupReleaseInProgress, startupSequence == sequence else { return }
+                startupReleaseInProgress = false
+                await output.stop()
+                guard startupSequence == sequence else { return }
+                outputHasStarted = false
+                let reason = "Output device-live timeout expired before the first render callback"
+                let timeoutLog = "startup device-live timeout engine=\(engineID) sequence=\(sequence) generation=\(startGeneration)"
+                Log.audio.notice("\(timeoutLog, privacy: .public)")
+                yield(.startFailed(reason: reason, startGeneration: startGeneration))
+                return
+            }
         } catch {
             guard startupReleaseInProgress, startupSequence == sequence else { return }
             startupReleaseInProgress = false
@@ -1040,7 +1075,7 @@ actor AudioEngine {
             startupBuffer?.chunks.append(contentsOf: startupReleaseDeferredChunks)
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupReleaseInProgress = false
-            cancelStartupDeadline()
+            cancelStartupReleaseTimer()
             // No self-wake: the restored chunks are identical to the ones that just
             // failed the scan, so `.stateChanged` here spins forever. Only a fresh
             // arrival changes the outcome, and the chunk path signals the coordinator.
@@ -1058,16 +1093,16 @@ actor AudioEngine {
             startupBuffer?.chunks.append(contentsOf: startupReleaseDeferredChunks)
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupReleaseInProgress = false
-            if let currentArm = currentStartupDeadlineArm,
+            if let currentArm = currentStartupReleaseTimerArm,
                currentArm.sequence == sequence,
                currentArm.releaseTimeUs <= startTime {
                 return
             }
             let delayUs = Self.startupWaitMicroseconds(releaseTimeUs: startTime, nowUs: nowUs)
-            cancelStartupDeadline()
-            let arm = DeadlineArm(sequence: sequence, token: startupDeadlineToken, releaseTimeUs: startTime)
-            currentStartupDeadlineArm = arm
-            startupDeadlineArms += 1
+            cancelStartupReleaseTimer()
+            let arm = StartupReleaseTimerArm(sequence: sequence, token: startupReleaseTimerToken, releaseTimeUs: startTime)
+            currentStartupReleaseTimerArm = arm
+            startupReleaseTimerArms += 1
             var scheduledLog = "startup release scheduled"
             scheduledLog += " engine=\(engineID) sequence=\(sequence)"
             scheduledLog += " invocation=\(invocation) releaseIn=\(delayUs)us"
@@ -1075,19 +1110,19 @@ actor AudioEngine {
             Log.audio.debug("\(scheduledLog, privacy: .public)")
             let sleep = startupSleep
             let now = startupNow
-            startupDeadlineTask = Task { [weak self] in
+            startupReleaseTimerTask = Task { [weak self] in
                 do {
                     try await sleep(.microseconds(delayUs))
                 } catch {
                     return
                 }
                 await Self.yieldUntilReleaseInstant(startTime, now: now)
-                await self?.signalStartupDeadline(arm)
+                await self?.signalStartupReleaseTimer(arm)
             }
             return
         }
 
-        cancelStartupDeadline()
+        cancelStartupReleaseTimer()
         // The claimed buffer remains local for the whole priming operation. No actor state is
         // restored after an await unless the sequence check above still proves ownership.
         let horizonSum = firstPlayTime.addingReportingOverflow(startupMinBufferUs)
@@ -1150,6 +1185,7 @@ actor AudioEngine {
             guard startupSequence == sequence else { return }
             startupReleaseInProgress = false
             await output.stop()
+            guard startupSequence == sequence else { return }
             outputHasStarted = false
             yield(.startFailed(reason: error.localizedDescription, startGeneration: startGeneration))
             return
@@ -1176,7 +1212,7 @@ actor AudioEngine {
 
     /// Discard the old output immediately when a route change invalidates its PCM.
     private func applyRouteInvalidatedFormatChange(format: AudioFormatSpec, codecHeader: Data?) async {
-        cancelStartupDeadline()
+        cancelStartupReleaseTimer()
         startupBuffer = nil
         startupFormat = nil
         startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
@@ -1238,7 +1274,7 @@ actor AudioEngine {
         let shouldClear = roles == nil || roles?.contains("player") ?? false
         if shouldClear {
             let pendingBoundary = formatBoundaries[streamGeneration]
-            cancelStartupDeadline()
+            cancelStartupReleaseTimer()
             startupReleaseInProgress = false
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupSequence &+= 1
@@ -1286,7 +1322,7 @@ actor AudioEngine {
             failedDecoderGeneration = nil
             startupReleaseDeferredChunks.removeAll(keepingCapacity: true)
             startupReleaseInProgress = false
-            cancelStartupDeadline()
+            cancelStartupReleaseTimer()
             startupSequence &+= 1
             signalStartupCoordinator(.stateChanged)
             outputHasStarted = false
@@ -1437,9 +1473,7 @@ actor AudioEngine {
             // Telemetry logging (every 2s = every 4 ticks at 500ms)
             if tickCount % 4 == 0 {
                 let currentStats = await audioScheduler.stats
-                guard currentStats.received > 0 else { continue }
-
-                guard let syncSnap = await clock.diagnosticSnapshot() else { continue }
+                guard currentStats.received > 0, let syncSnap = await clock.diagnosticSnapshot() else { continue }
 
                 let chunkTiming = chunkTimingDiagnostics.takeSnapshot()
                 let framesScheduled = currentStats.received - lastTelemetryStats.received

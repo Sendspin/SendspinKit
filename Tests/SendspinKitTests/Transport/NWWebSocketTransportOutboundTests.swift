@@ -144,21 +144,11 @@ struct NWWebSocketTransportOutboundTests {
 
     // MARK: - Dial failure: refused port must fail promptly, not hang in .waiting
 
-    /// A refused connection (no listener on the port) parks NWConnection in
-    /// `.waiting` — Network.framework retries indefinitely waiting for conditions
-    /// to change. The dial must surface that as a prompt error, not an unbounded
-    /// hang of `connect()`. Deterministic repro: dial a loopback port whose
-    /// listener was just shut down.
-    ///
-    /// The bounded operation timeout prevents a stalled dial from leaking a parked
-    /// continuation; the cleanup disconnect releases any pending Network.framework wait.
+    /// Inject the refused-dial state without relying on a vacant port that another
+    /// process can acquire. The real continuation and state handler must fail promptly.
     @Test
     func dialRefusedPortFailsPromptlyInsteadOfHangingInWaiting() async throws {
-        let server = LoopbackWebSocketServer()
-        let port = try await server.start()
-        await server.stop()
-
-        let url = try #require(URL(string: "ws://127.0.0.1:\(port)"))
+        let url = try #require(URL(string: "ws://unused.invalid/sendspin"))
         let transport = NWWebSocketTransport(url: url)
 
         do {
@@ -166,13 +156,21 @@ struct NWWebSocketTransportOutboundTests {
                 .seconds(3),
                 label: "connect() to a refused port",
                 onTimeout: { await transport.disconnect() },
-                operation: { try await transport.connect() }
+                operation: {
+                    try await transport.connect { connection in
+                        connection.stateUpdateHandler?(.waiting(NWError.posix(.ECONNREFUSED)))
+                    }
+                }
             )
             Issue.record("connect() to a refused port unexpectedly succeeded")
         } catch is AsyncTestDeadlineError {
             Issue.record("connect() to a refused port must fail promptly, not hang in .waiting")
         } catch {
-            // Expected: a refused dial should surface a connection failure promptly.
+            guard case TransportError.connectionFailed = error else {
+                Issue.record("refused dial threw \(error) instead of TransportError.connectionFailed")
+                await transport.disconnect()
+                return
+            }
         }
 
         await transport.disconnect()

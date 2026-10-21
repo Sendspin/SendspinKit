@@ -145,7 +145,10 @@ What remains actionable regardless of the cause:
 1. `prepare()` blocks the engine's ordered command loop for the whole of `AudioQueueStart` --
    339ms on a healthy machine, and everything piles up behind it. Starting the queue without
    blocking the loop would turn this fault from catastrophic into a late start, since
-   `outputDeviceIsLive` already gates the release.
+   `waitUntilOutputDeviceIsLive()` gates the release. The gate is bounded by
+   `AudioEngine.outputDeviceLiveTimeout` (20 seconds), above the longest observed ~13.3-second
+   stall so a recovering device starts late. At expiry the engine stops the prepared output
+   and reports `.startFailed` with the pending start generation instead of waiting indefinitely.
 2. A start slower than `audioQueueStartSlowThresholdUs` is logged at `.notice`, so a
    user-collected log shows it without debug logging.
 3. The smoke harness fails on spin-up over 2s, on a peak that never rises, and on any refused

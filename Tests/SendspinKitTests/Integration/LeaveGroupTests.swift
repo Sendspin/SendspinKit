@@ -42,6 +42,13 @@ struct LeaveGroupTests {
 
         try await client.enterExternalSource()
         #expect(client.clientOperationalState == .externalSource)
+        try #require(await waitUntil {
+            guard let message = await server.clientJSONMessages(ofType: ClientStateMessage.typeString).last,
+                  let object = try? JSONSerialization.jsonObject(with: message) as? [String: Any],
+                  let payload = object["payload"] as? [String: Any]
+            else { return false }
+            return payload["available"] as? Bool == false
+        })
         let groupBefore = client.currentGroup
         let stateCountBeforeLeave = await server.clientJSONMessages(ofType: ClientStateMessage.typeString).count
 

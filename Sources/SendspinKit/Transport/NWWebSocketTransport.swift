@@ -103,6 +103,12 @@ actor NWWebSocketTransport: ClientDialingTransport {
     /// Connect to a remote WebSocket server (outbound path).
     /// For inbound connections, the connection is already established.
     func connect() async throws {
+        try await connect { connection in
+            connection.start(queue: DispatchQueue(label: "com.sendspin.nwwebsocket", qos: .userInitiated))
+        }
+    }
+
+    func connect(startConnection: @Sendable (NWConnection) -> Void) async throws {
         guard let connection else {
             throw TransportError.connectionFailed
         }
@@ -115,7 +121,7 @@ actor NWWebSocketTransport: ClientDialingTransport {
             connection.stateUpdateHandler = { [weak self] state in
                 Task { await self?.handleConnectionState(state) }
             }
-            connection.start(queue: DispatchQueue(label: "com.sendspin.nwwebsocket", qos: .userInitiated))
+            startConnection(connection)
         }
 
         startReceiving()

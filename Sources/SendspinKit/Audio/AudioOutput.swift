@@ -648,7 +648,7 @@ protocol AudioOutput: Actor, Sendable {
     func start(format: AudioFormatSpec, codecHeader: Data?) throws
 
     /// Stop playback. Safe to call even if not playing.
-    func stop()
+    func stop() async
 
     /// Swap the decoder for seamless format transitions.
     /// Called in wire order before chunks in the new format arrive.

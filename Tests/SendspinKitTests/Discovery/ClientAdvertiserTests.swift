@@ -6,29 +6,66 @@ import Testing
 struct ClientAdvertiserTests {
     @Test
     func clientAdvertiser_startsAndStopsWithoutError() async throws {
-        let advertiser = ClientAdvertiser(name: "Test Speaker", port: 18_929, path: "/sendspin")
+        let factory = AdvertiserTestListenerFactory()
+        defer { factory.listener?.cancel() }
+        let advertiser = ClientAdvertiser(
+            name: "Test Speaker",
+            port: 0,
+            path: SendspinDefaults.webSocketPath,
+            listenerFactory: { parameters, port in
+                #expect(port == .any)
+                return try factory.makeListener(parameters: parameters, port: port)
+            }
+        )
 
         try await advertiser.start()
         let isRunning = await advertiser.isRunning
         #expect(isRunning)
-
+        let listener = try #require(factory.listener)
+        let port = try #require(listener.port)
+        #expect(port != 0)
+        #expect(listener.service?.name == nil)
+        let url = try #require(URL(string: "ws://127.0.0.1:\(port)\(SendspinDefaults.webSocketPath)"))
+        let transport = NWWebSocketTransport(url: url)
+        do {
+            try await runUnstructuredWithDeadline(
+                .seconds(3),
+                label: "advertiser loopback connection",
+                onTimeout: { await transport.disconnect(); await advertiser.stop() },
+                operation: { try await transport.connect() }
+            )
+            let incoming = Task { await advertiser.connections.first(where: { _ in true }) }
+            switch await observeTask(incoming, timeout: .seconds(2), onTimeout: { await advertiser.stop() }) {
+            case let .completed(connection):
+                #expect(connection != nil)
+                await connection?.disconnect()
+            case .timedOut:
+                Issue.record("advertiser must yield the connected loopback transport")
+            }
+        } catch {
+            await transport.disconnect()
+            await advertiser.stop()
+            throw error
+        }
+        await transport.disconnect()
         await advertiser.stop()
         let isStoppedAfter = await advertiser.isRunning
         #expect(!isStoppedAfter)
     }
 
     @Test
-    func clientAdvertiser_defaultsMatchSpecRecommendations() async throws {
-        // Spec recommends port 8928 and path /sendspin
+    func clientAdvertiser_defaultsMatchSpecRecommendations() async {
         let advertiser = ClientAdvertiser()
-        // Just verify it can be created with no arguments
-        try await advertiser.start()
+        #expect(await advertiser.matches(port: SendspinDefaults.clientPort, path: SendspinDefaults.webSocketPath))
+        #expect(await !advertiser.matches(port: 0, path: SendspinDefaults.webSocketPath))
+        #expect(await !advertiser.matches(port: SendspinDefaults.clientPort, path: "/other"))
+        #expect(await !advertiser.isRunning)
         await advertiser.stop()
     }
 
     @Test
     func clientAdvertiser_ignoresDoubleStart() async throws {
-        let advertiser = ClientAdvertiser(name: "Test", port: 18_930)
+        let advertiser = ClientAdvertiser(name: "Test", port: 0)
         try await advertiser.start()
         // Second start should be a no-op, not an error
         try await advertiser.start()
@@ -53,7 +90,7 @@ struct ClientAdvertiserTests {
 
     @Test
     func startAfterStopThrowsTerminatedError() async throws {
-        let advertiser = ClientAdvertiser(name: "Test", port: 18_932)
+        let advertiser = ClientAdvertiser(name: "Test", port: 0)
         try await advertiser.start()
         await advertiser.stop()
 
@@ -64,7 +101,7 @@ struct ClientAdvertiserTests {
 
     @Test
     func freshAdvertiserIsNotTerminated() async {
-        let advertiser = ClientAdvertiser(name: "Test", port: 18_933)
+        let advertiser = ClientAdvertiser(name: "Test", port: 0)
         let isTerminated = await advertiser.isTerminated
         #expect(!isTerminated, "A new advertiser should not be terminated")
     }
@@ -74,7 +111,7 @@ struct ClientAdvertiserTests {
         // The advertised path is our own config; a non-absolute value would
         // malform the URL servers build, so start() fails loud rather than
         // publishing an unusable advertisement.
-        let advertiser = ClientAdvertiser(name: "Test", port: 18_934, path: "sendspin")
+        let advertiser = ClientAdvertiser(name: "Test", port: 0, path: "sendspin")
         await #expect(throws: ConfigurationError.invalidWebSocketPath("sendspin")) {
             try await advertiser.start()
         }
