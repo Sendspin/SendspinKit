@@ -108,19 +108,49 @@ struct ClientAdvertiserListenerTests {
         fake.emit(.ready)
         try await start.value
 
-        let first = try makeNWConnection()
-        let second = try makeNWConnection()
+        let first = TestPendingConnection()
+        let second = TestPendingConnection()
         fake.emit(first)
+        try #require(await waitUntil { first.started })
         fake.emit(second)
-        first.start(queue: DispatchQueue(label: "advertiser.pending.first"))
-        second.start(queue: DispatchQueue(label: "advertiser.pending.second"))
 
-        #expect(await waitUntil {
-            (first.state == .cancelled) != (second.state == .cancelled)
-        })
+        try #require(await waitUntil { second.cancelled })
+        #expect(!second.started)
+        #expect(!first.cancelled)
         await advertiser.stop()
-        first.cancel()
-        second.cancel()
+        #expect(first.cancelled)
+        #expect(!first.hasStateHandler)
+        #expect(!second.hasStateHandler)
+    }
+
+    @Test("failed and cancelled pending connections release their slots", arguments: [false, true])
+    func terminalPendingConnectionReleasesSlot(failed: Bool) async throws {
+        let fake = TestListenerHandle()
+        let advertiser = ClientAdvertiser(
+            name: "Test",
+            port: 0,
+            path: SendspinDefaults.webSocketPath,
+            maximumPendingConnections: 1,
+            listenerFactory: { _, _ in fake }
+        )
+        let start = Task { try await advertiser.start() }
+        try await fake.waitForStateHandler()
+        fake.emit(.ready)
+        try await start.value
+
+        let pending = TestPendingConnection()
+        fake.emit(pending)
+        try #require(await waitUntil { pending.started })
+        pending.emit(failed ? .failed(.posix(.ECONNRESET)) : .cancelled)
+        try #require(await waitUntil { !pending.hasStateHandler })
+        #expect(pending.cancelled == failed)
+
+        let replacement = TestPendingConnection()
+        fake.emit(replacement)
+        try #require(await waitUntil { replacement.started })
+        await advertiser.stop()
+        #expect(replacement.cancelled)
+        #expect(!replacement.hasStateHandler)
     }
 
     @Test("pending NW connections time out and are removed")
@@ -139,21 +169,71 @@ struct ClientAdvertiserListenerTests {
         fake.emit(.ready)
         try await start.value
 
-        let pending = try makeNWConnection()
+        let pending = TestPendingConnection()
         fake.emit(pending)
+        try #require(await waitUntil { pending.started })
+        try #require(await waitUntil(timeout: .seconds(2)) { pending.cancelled })
+        #expect(!pending.hasStateHandler)
 
-        try #require(await waitUntil(timeout: .seconds(2)) { pending.state == .cancelled })
+        let replacement = TestPendingConnection()
+        fake.emit(replacement)
+        try #require(await waitUntil { replacement.started })
+        replacement.emit(.ready)
+        let admitted = Task { await advertiser.connections.first(where: { _ in true }) }
+        switch await observeTask(admitted, timeout: .seconds(2), onTimeout: { await advertiser.stop() }) {
+        case let .completed(transport):
+            #expect(transport != nil)
+        case .timedOut:
+            Issue.record("ready replacement must be admitted after timeout frees the pending slot")
+        }
+        #expect(!replacement.hasStateHandler)
         await advertiser.stop()
-        pending.cancel()
+        #expect(!replacement.cancelled)
+        #expect(await !replacement.transport.disconnectCalled)
+        await replacement.transport.disconnect()
     }
 }
 
-private func makeNWConnection() throws -> NWConnection {
-    let parameters = NWParameters.tcp
-    return NWConnection(
-        to: .hostPort(host: "127.0.0.1", port: 1),
-        using: parameters
-    )
+private final class TestPendingConnection: ClientConnectionHandle, @unchecked Sendable {
+    private let lock = NSLock()
+    private var handler: (@Sendable (NWConnection.State) -> Void)?
+    private var startedStorage = false
+    private var cancelledStorage = false
+    let transport = MockTransport()
+
+    var stateUpdateHandler: (@Sendable (NWConnection.State) -> Void)? {
+        get { lock.withLock { handler } }
+        set { lock.withLock { handler = newValue } }
+    }
+
+    var started: Bool {
+        lock.withLock { startedStorage }
+    }
+
+    var cancelled: Bool {
+        lock.withLock { cancelledStorage }
+    }
+
+    var hasStateHandler: Bool {
+        lock.withLock { handler != nil }
+    }
+
+    func start(queue _: DispatchQueue) {
+        lock.withLock { startedStorage = true }
+    }
+
+    func cancel() {
+        lock.withLock { cancelledStorage = true }
+    }
+
+    func emit(_ state: NWConnection.State) {
+        let callback = lock.withLock { handler }
+        callback?(state)
+    }
+
+    func makeTransport() async -> any SendspinTransport {
+        transport
+    }
 }
 
 private enum TestListenerError: Error {
@@ -165,7 +245,7 @@ private final class TestListenerHandle: ClientListenerHandle, @unchecked Sendabl
     private let stateHandlerReady: AsyncStream<Void>
     private let stateHandlerReadyContinuation: AsyncStream<Void>.Continuation
     private var stateUpdateHandlerStorage: (@Sendable (ClientListenerState) -> Void)?
-    private var newConnectionHandlerStorage: (@Sendable (NWConnection) -> Void)?
+    private var newConnectionHandlerStorage: (@Sendable (any ClientConnectionHandle) -> Void)?
     private var serviceStorage: NWListener.Service?
     private var portStorage: UInt16?
 
@@ -181,7 +261,7 @@ private final class TestListenerHandle: ClientListenerHandle, @unchecked Sendabl
         }
     }
 
-    var newConnectionHandler: (@Sendable (NWConnection) -> Void)? {
+    var newConnectionHandler: (@Sendable (any ClientConnectionHandle) -> Void)? {
         get { lock.withLock { newConnectionHandlerStorage } }
         set {
             lock.withLock {
@@ -221,7 +301,7 @@ private final class TestListenerHandle: ClientListenerHandle, @unchecked Sendabl
         handler?(state)
     }
 
-    func emit(_ connection: NWConnection) {
+    func emit(_ connection: any ClientConnectionHandle) {
         let handler = lock.withLock { newConnectionHandlerStorage }
         handler?(connection)
     }

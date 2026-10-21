@@ -1,5 +1,21 @@
+import Foundation
 import Network
 @testable import SendspinKit
+
+final class AdvertiserTestListenerFactory: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: AdvertiserTestListener?
+
+    var listener: AdvertiserTestListener? {
+        lock.withLock { storage }
+    }
+
+    func makeListener(parameters: NWParameters, port: NWEndpoint.Port) throws -> AdvertiserTestListener {
+        let listener = try AdvertiserTestListener(parameters: parameters, port: port)
+        lock.withLock { storage = listener }
+        return listener
+    }
+}
 
 /// Keeps the actual listener accessible without exposing a test-only port on the advertiser API.
 final class AdvertiserTestListener: ClientListenerHandle, @unchecked Sendable {
@@ -20,9 +36,16 @@ final class AdvertiserTestListener: ClientListenerHandle, @unchecked Sendable {
         }
     }
 
-    var newConnectionHandler: (@Sendable (NWConnection) -> Void)? {
-        get { listener.newConnectionHandler }
-        set { listener.newConnectionHandler = newValue }
+    var newConnectionHandler: (@Sendable (any ClientConnectionHandle) -> Void)? {
+        didSet {
+            let handler = newConnectionHandler
+            let callback: (@Sendable (NWConnection) -> Void)? = if let handler {
+                { connection in handler(connection) }
+            } else {
+                nil
+            }
+            listener.newConnectionHandler = callback
+        }
     }
 
     var service: NWListener.Service? {
@@ -34,12 +57,8 @@ final class AdvertiserTestListener: ClientListenerHandle, @unchecked Sendable {
         listener.port?.rawValue
     }
 
-    init() throws {
-        let options = NWProtocolWebSocket.Options()
-        options.autoReplyPing = true
-        let parameters = NWParameters.tcp
-        parameters.defaultProtocolStack.applicationProtocols.insert(options, at: 0)
-        listener = try NWListener(using: parameters, on: .any)
+    init(parameters: NWParameters, port: NWEndpoint.Port) throws {
+        listener = try NWListener(using: parameters, on: port)
     }
 
     func start(queue: DispatchQueue) {

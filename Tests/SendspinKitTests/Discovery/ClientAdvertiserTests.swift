@@ -6,21 +6,22 @@ import Testing
 struct ClientAdvertiserTests {
     @Test
     func clientAdvertiser_startsAndStopsWithoutError() async throws {
-        let listener = try AdvertiserTestListener()
-        defer { listener.cancel() }
+        let factory = AdvertiserTestListenerFactory()
+        defer { factory.listener?.cancel() }
         let advertiser = ClientAdvertiser(
             name: "Test Speaker",
             port: 0,
             path: SendspinDefaults.webSocketPath,
-            listenerFactory: { _, port in
+            listenerFactory: { parameters, port in
                 #expect(port == .any)
-                return listener
+                return try factory.makeListener(parameters: parameters, port: port)
             }
         )
 
         try await advertiser.start()
         let isRunning = await advertiser.isRunning
         #expect(isRunning)
+        let listener = try #require(factory.listener)
         let port = try #require(listener.port)
         #expect(port != 0)
         #expect(listener.service?.name == nil)
