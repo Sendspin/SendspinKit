@@ -241,9 +241,9 @@ struct AudioStartupReleaseTests {
         #expect(evaluations < 200, "the release was evaluated \(evaluations) times — the wait is polling")
     }
 
-    /// Later chunks must not replace a pending deadline when the earliest candidate is unchanged.
-    @Test("later startup chunks keep the existing release deadline")
-    func laterChunksKeepExistingReleaseDeadline() async throws {
+    /// Later chunks must not replace a pending release timer when the earliest candidate is unchanged.
+    @Test("later startup chunks keep the existing release timer")
+    func laterChunksKeepExistingReleaseTimer() async throws {
         let time = VirtualStartupClock()
         defer { Task { await time.releaseSleeps() } }
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
@@ -264,8 +264,8 @@ struct AudioStartupReleaseTests {
         let firstTimestamp: Int64 = 1_000_000
         await engine.commands.enqueue(.chunk(Data(repeating: 0x01, count: 100), ts: firstTimestamp))
         #expect(
-            await waitUntil(timeout: audioProcessingBudget) { await engine.startupDeadlineArms == 1 },
-            "the first chunk arms its deadline before later chunks arrive"
+            await waitUntil(timeout: audioProcessingBudget) { await engine.startupReleaseTimerArms == 1 },
+            "the first chunk arms its release timer before later chunks arrive"
         )
 
         let laterChunkCount = 32
@@ -281,16 +281,16 @@ struct AudioStartupReleaseTests {
         #expect(
             await waitUntil(timeout: audioProcessingBudget) { await engine.appliedCommandKinds().count(where: { $0 == .chunk }) == expectedChunkCount
             },
-            "the later chunks must be processed before checking deadline churn"
+            "the later chunks must be processed before checking release timer churn"
         )
-        #expect(await engine.startupDeadlineArms == 1)
+        #expect(await engine.startupReleaseTimerArms == 1)
         let callsBeforeRelease = await output.recordedCalls
         #expect(!callsBeforeRelease.contains("startPrepared()"))
         await time.releaseSleeps()
 
         #expect(
             await waitUntil(timeout: audioProcessingBudget) { await output.recordedCalls.contains("startPrepared()") },
-            "the original deadline must still produce one startup commit"
+            "the original release timer must still produce one startup commit"
         )
         let commits = await engine.startupReleaseCommits
         let calls = await output.recordedCalls
@@ -430,8 +430,8 @@ struct AudioStartupReleaseTests {
         await engine.shutdown()
     }
 
-    @Test("startup release remains single-flight while a deadline probe is suspended")
-    func startupReleaseRemainsSingleFlightWhileDeadlineProbeIsSuspended() async throws {
+    @Test("startup release remains single-flight while a release timer probe is suspended")
+    func startupReleaseRemainsSingleFlightWhileReleaseTimerProbeIsSuspended() async throws {
         let time = VirtualStartupClock()
         let clock = StubClock(anchorToNow: true, absoluteAnchorMicroseconds: time.anchor)
         let output = SpyAudioOutput()
@@ -450,7 +450,7 @@ struct AudioStartupReleaseTests {
         await engine.start()
         await engine.commands.enqueue(.streamStart(format, codecHeader: nil))
 
-        // Second arrival lands while the deadline task is suspended in the device-live probe;
+        // Second arrival lands while the release timer task is suspended in the device-live probe;
         // without the deferred mailbox the stale snapshot drops or duplicates one timestamp.
         let firstTimestamp: Int64 = 1_000_000
         let secondTimestamp: Int64 = 1_100_000
