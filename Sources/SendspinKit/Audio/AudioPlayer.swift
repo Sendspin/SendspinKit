@@ -29,10 +29,6 @@ public typealias AudioProcessCallback = @Sendable (UnsafeMutableRawBufferPointer
 
 // MARK: - Lock-protected state
 
-/// Maximum frame size in bytes: 8 channels × 4 bytes (Int32) per sample.
-/// Constrains the fixed-size `lastFrameStorage` allocation.
-private let maxFrameBytes = 8 * MemoryLayout<Int32>.size
-
 /// Report starts slower than this as a fault: a healthy start completes in hundreds of
 /// milliseconds, while multi-second starts can leave CoreAudio consuming inaudible audio.
 let audioQueueStartSlowThresholdUs: Int64 = 2_000_000
@@ -59,157 +55,11 @@ func audioQueueBufferSize(for format: AudioFormatSpec) -> (frames: Int, bytes: U
     return (frames, UInt32(frames * bytesPerFrame))
 }
 
-/// Allocated and primed buffer count matches the latency model, because
-/// `graceExpiryRebaselineCursor` permanently absorbs any mismatch at grace expiry.
+/// Allocated and primed buffer count matches the modelled queue depth.
 let audioQueueBufferCount = 3
 
 private let volumeRampStepCount = 5
 private let volumeRampStepDuration: Duration = .milliseconds(10)
-
-/// All mutable state accessed from both the actor and the audio thread.
-///
-/// Wrapped in `OSAllocatedUnfairLock<LockedState>` so access is structurally
-/// enforced: every read/write goes through `withLock`, making it impossible
-/// to accidentally touch this state without holding the lock.
-///
-/// **Must not be copied.** The struct contains `UnsafeMutableRawBufferPointer`
-/// fields that own their allocations. `withLock` provides `inout` access
-/// (no copy), but `@unchecked Sendable` means the compiler won't catch
-/// accidental copies elsewhere. Only one instance should ever exist,
-/// owned by the `OSAllocatedUnfairLock` in `AudioPlayer`.
-private struct LockedState: @unchecked Sendable {
-    // Ring buffer
-    var pcmRingBuffer: PCMRingBuffer
-    var frameSize: Int = 0
-
-    /// Last output frame for insert (sample-hold repeat) — fixed allocation
-    var lastFrameStorage: UnsafeMutableRawBufferPointer =
-        .allocate(byteCount: maxFrameBytes, alignment: 8)
-    var lastFrameValid: Bool = false
-
-    // Sync correction
-    var correctionSchedule = CorrectionSchedule()
-    var dropCounter: UInt32 = 0
-    var insertCounter: UInt32 = 0
-    var syncPlanner = CorrectionPlanner()
-    /// `nil` until first sync snapshot arrives via `updateTimeSnapshot`.
-    /// When nil, the audio callback skips sync correction — audio plays
-    /// unsynchronized until the first clock sync completes.
-    var timeSnapshot: TimeFilterSnapshot?
-
-    /// Latest sync error in µs, written by audio callback, read by telemetry
-    var lastSyncErrorUs: Int64 = 0
-    var pendingReanchorServerTime: Int64 = 0
-    var reanchorRequested: Bool = false
-    /// Grace period: suppress sync correction after AudioQueue rebuild.
-    /// Frames-based countdown (at 48kHz, 48000 frames = 1 second).
-    var correctionGraceFrames: Int64 = 0
-
-    // Playback cursor (server-time position of what's being output)
-    var cursorMicroseconds: Int64 = 0
-    var cursorRemainder: Int64 = 0
-    var sampleRate: Int = 0
-    var framesConsumed: Int64 = 0
-
-    /// Latency beyond our own buffers — HAL, transport and DAC — captured at `prepare()`.
-    /// The audio thread cannot query the HAL, so the value is read once and stored here.
-    var deviceLatencyUs: Int64 = 0
-
-    /// Runtime delay beyond the local output port, in the local clock domain.
-    /// It shifts scheduling earlier; cursor timestamps remain in server time.
-    var outputDelayUs: Int64 = 0
-
-    /// Absolute time `AudioQueueStart` was called, or 0 before it has been.
-    var queueStartAbsoluteUs: Int64 = 0
-
-    /// Frames handed to the AudioQueue since the queue started, silence included. With the
-    /// device's played-frame count this gives the frames still in flight, and so when a frame
-    /// written to the ring now will be audible.
-    var totalFramesEnqueued: Int64 = 0
-    var callbackDepth = CallbackDepthTelemetry()
-    var lastMeasuredDepthFrames: Int64?
-    var startupLateUs: Int64 = 0
-
-    mutating func resetDepthTelemetry() {
-        callbackDepth = CallbackDepthTelemetry()
-        lastMeasuredDepthFrames = nil
-        startupLateUs = 0
-    }
-
-    /// Number of buffers currently owned by AudioQueue. Unlike the cumulative frame count this
-    /// reaches zero when a finite drain stops re-enqueuing buffers.
-    var enqueuedBufferCount: Int64 = 0
-    /// Stops the callback from manufacturing silence after the ring tail is consumed.
-    var draining = false
-    /// True once the last old-format buffer has returned from AudioQueue.
-    var drainComplete = false
-    /// The one buffer containing the final ring tail, when a tail buffer had to be enqueued.
-    var drainTailBuffer: AudioQueueBufferRef?
-
-    /// True from `prepare()` until the first real PCM reaches the ring. The queue is running
-    /// on silence in that window so the device pays its spin-up before audio depends on it,
-    /// and an empty ring there is the intent rather than a dropout.
-    var prewarming: Bool = true
-
-    /// Absolute-time gap between `AudioQueueStart` and the device's first callback,
-    /// or -1 until that callback lands. An idle USB DAC takes far longer to begin
-    /// producing than the primed depth predicts, and the gap varies run to run, so it
-    /// is measured rather than modelled.
-    var spinUpUs: Int64 = -1
-
-    /// Silence frames inserted ahead of the first real frame to land it on its due instant.
-    var startupPadFrames: Int64 = 0
-
-    /// Enqueue calls the queue refused, cumulative. A queue primed with fewer buffers than
-    /// intended starts without error and then produces silence, so a discarded status here is
-    /// indistinguishable from working until someone listens.
-    var enqueueFailures: Int64 = 0
-
-    /// Buffers handed to the device with nothing read from the ring, since the last telemetry
-    /// read. Counted separately from underruns, which are suppressed during pre-warm.
-    var silentBufferCount: Int64 = 0
-
-    /// Largest absolute sample value handed to the device since the last telemetry read,
-    /// as a fraction of full scale. The most basic health question — is anything actually
-    /// coming out — is otherwise unanswerable: every counter reads clean over silence.
-    var peakOutputLevel: Float = 0
-
-    /// Sync error at the instant grace expired, before the rebaseline absorbed it, or
-    /// `nil` until then. This is the offset playback actually starts at; without it the
-    /// post-rebaseline error reads ~0 no matter how far out the start was.
-    var startupOffsetUs: Int64?
-
-    // Diagnostics
-    var underrunCount: Int64 = 0
-    var pcmBytesDropped: Int64 = 0
-
-    /// Effective format for the process callback — set in start(),
-    /// read from the audio thread to pass to the callback.
-    var processCallbackFormat: AudioFormatSpec?
-
-    /// Advance the playback cursor by one frame using integer arithmetic
-    /// to avoid floating-point drift.
-    mutating func advanceCursor() {
-        guard sampleRate > 0 else { return }
-        let usPerFrame = 1_000_000 / Int64(sampleRate)
-        let usRemainder = 1_000_000 % Int64(sampleRate)
-
-        cursorMicroseconds += usPerFrame
-        cursorRemainder += usRemainder
-        if cursorRemainder >= Int64(sampleRate) {
-            cursorRemainder -= Int64(sampleRate)
-            cursorMicroseconds += 1
-        }
-        framesConsumed += 1
-    }
-
-    /// Deallocate owned resources. Must be called exactly once before the
-    /// containing `OSAllocatedUnfairLock` is released.
-    mutating func deallocateResources() {
-        pcmRingBuffer.deallocate()
-        lastFrameStorage.deallocate()
-    }
-}
 
 // MARK: - AudioPlayer
 
@@ -240,14 +90,16 @@ actor AudioPlayer {
     /// All state shared between the actor and the audio thread, protected by
     /// `OSAllocatedUnfairLock` with priority donation. Access is structurally
     /// enforced: every read/write goes through `withLock`.
-    private nonisolated let lockedState: OSAllocatedUnfairLock<LockedState>
+    private nonisolated let lockedState: OSAllocatedUnfairLock<AudioRenderState>
 
     private var currentVolume: Float = 1.0
     private var appliedVolume: Float = 1.0
     private var volumeRampTask: Task<Void, Never>?
     private var volumeRampID = 0
+    private var fadingStopIdentity: UInt64?
     private var isMuted: Bool = false
     private let volumeControl: VolumeControl
+    private let deviceGainSampler = DeviceGainSampler()
     private let volumeRampSleep: @Sendable (Duration) async throws -> Void
 
     /// Process callback for local visualization / audio effects.
@@ -285,7 +137,7 @@ actor AudioPlayer {
         self.processCallback = processCallback
         self.outputTransitionCallback = outputTransitionCallback
         lockedState = OSAllocatedUnfairLock(
-            initialState: LockedState(pcmRingBuffer: PCMRingBuffer(capacity: pcmBufferCapacity))
+            initialState: AudioRenderState(pcmRingBuffer: PCMRingBuffer(capacity: pcmBufferCapacity))
         )
     }
 
@@ -315,6 +167,7 @@ actor AudioPlayer {
     /// - `deinit` disposes the queue directly (can't call actor-isolated `stop()`)
     /// Do not insert throwing calls between `AudioQueueNewOutput` and `audioQueue = queue`.
     func prepare(format: AudioFormatSpec, codecHeader: Data?) throws {
+        lockedState.withLock { $0.flowDiagnostics = PCMFlowDiagnostics() }
         try prepareQueue(format: format, codecHeader: codecHeader, createDecoder: true, preserveDecoder: false)
     }
 
@@ -431,7 +284,7 @@ actor AudioPlayer {
             state.processCallbackFormat = effectiveFormat
             state.lastFrameValid = false
             memset(state.lastFrameStorage.baseAddress!, 0, state.lastFrameStorage.count)
-            state.pcmRingBuffer.reset()
+            state.clearPCM()
             state.sampleRate = format.sampleRate
             state.cursorMicroseconds = 0
             state.cursorRemainder = 0
@@ -538,8 +391,7 @@ actor AudioPlayer {
     func waitUntilOutputDeviceIsLive() async throws {
         // With pre-warm disabled the queue does not exist until the release, so there is no
         // device to wait for and gating on it would deadlock the startup path.
-        guard !audioQueuePrewarmDisabled else { return }
-        guard lockedState.withLock({ $0.spinUpUs < 0 }) else { return }
+        guard !audioQueuePrewarmDisabled, lockedState.withLock({ $0.spinUpUs < 0 }) else { return }
         let waiter = OutputDeviceLiveWaiter()
         outputDeviceLiveWaiter = waiter
         await withTaskCancellationHandler {
@@ -617,12 +469,37 @@ actor AudioPlayer {
         try startPrepared()
     }
 
+    /// Fade queue-local gain without changing the user's software or hardware volume.
+    func stopAfterFade() async {
+        guard let queue = audioQueue, _isPlaying else {
+            stop()
+            return
+        }
+        let identity = queueIdentity
+        fadingStopIdentity = identity
+        cancelVolumeRamp()
+        let status = AudioQueueStopFade.begin {
+            AudioQueueSetParameter(queue, $0, $1)
+        }
+        if status == noErr {
+            let latency = lockedState.withLock { $0.deviceLatencyUs }
+            // Cancellation must not truncate the ramp; lifecycle changes invalidate the captured queue.
+            let settling = AudioQueueStopFade.settlingDuration(deviceLatencyMicroseconds: latency)
+            await Task.detached { try? await Task.sleep(for: settling) }.value
+        } else {
+            Log.audio.error("Stop fade failed (OSStatus \(status)); stopping immediately")
+        }
+        guard queueIdentity == identity else { return }
+        stop()
+    }
+
     /// Stop playback and clean up
     func stop() {
         let currentPlayerID = playerID
         let currentlyPlaying = _isPlaying
         Log.audio.debug("stop player=\(currentPlayerID, privacy: .public) isPlaying=\(currentlyPlaying, privacy: .public)")
         cancelVolumeRamp()
+        fadingStopIdentity = nil
         resumeOutputDeviceLiveWaiter()
         guard let queue = audioQueue else { return }
 
@@ -656,7 +533,7 @@ actor AudioPlayer {
         _isPlaying = false
 
         lockedState.withLock { state in
-            state.pcmRingBuffer.reset()
+            state.clearPCM()
             state.enqueuedBufferCount = 0
             state.draining = false
             state.drainComplete = false
@@ -738,6 +615,13 @@ actor AudioPlayer {
         guard let decoder else {
             throw AudioPlayerError.notStarted
         }
+        let startedAt = MonotonicClock.absoluteMicroseconds()
+        defer {
+            let elapsed = MonotonicClock.absoluteMicroseconds() - startedAt
+            if elapsed > 20_000 {
+                Log.audio.notice("Slow audio decode: \(elapsed)us bytes=\(data.count)")
+            }
+        }
         return try decoder.decode(data)
     }
 
@@ -745,50 +629,34 @@ actor AudioPlayer {
     func playPCM(
         _ pcmData: Data,
         serverTimestamp: Int64,
-        playTimeMicroseconds: Int64? = nil
+        playTimeMicroseconds: Int64? = nil,
+        timelineAdjustmentUs: Int64? = nil
     ) async throws {
-        guard let queue = audioQueue, currentFormat != nil else {
+        guard audioQueue != nil, currentFormat != nil else {
             throw AudioPlayerError.notStarted
         }
 
-        // Only the pad allocation happens outside the lock. The three quantities the placement
-        // divides — frames played, the instant that reading describes, and frames enqueued —
-        // must come from one coherent moment: a callback landing between them advances the
-        // enqueued count against a stale played count, overstating what is in flight by a whole
-        // buffer and collapsing the pad to nothing.
-        let silence = lockedState.withLock { $0.prewarming } ? Data(count: maxStartupPadBytes()) : Data()
-
-        // Unchecked because the queue handle is not `Sendable`; this closure runs synchronously
-        // on the actor and the handle outlives it.
-        lockedState.withLockUnchecked { state in
-            if state.prewarming {
-                Self.placeFirstFrame(
-                    state: &state,
-                    placement: FirstFramePlacement(
-                        serverTimestamp: serverTimestamp,
-                        localPlayTime: playTimeMicroseconds,
-                        framesPlayed: Self.framesPlayed(queue: queue),
-                        nowAbsolute: MonotonicClock.absoluteMicroseconds(),
-                        silence: silence
-                    )
+        lockedState.withLock { state in
+            state.prewarming = false
+            let written = state.enqueuePCM(
+                pcmData, serverTimestamp: serverTimestamp, localPlayTime: playTimeMicroseconds,
+                timelineAdjustmentUs: timelineAdjustmentUs
+            )
+            let nowUs = MonotonicClock.absoluteMicroseconds()
+            state.flowDiagnostics.writtenFrames += Int64(written / max(1, state.frameSize))
+            state.flowDiagnostics.writes += 1
+            if state.flowDiagnostics.lastWriteUs > 0 {
+                state.flowDiagnostics.maximumWriteGapUs = max(
+                    state.flowDiagnostics.maximumWriteGapUs, nowUs - state.flowDiagnostics.lastWriteUs
                 )
             }
-            state.prewarming = false
-            // Frame-aligned: a byte-truncated write would misalign every later frame read.
-            let written = state.pcmRingBuffer.writeFrames(pcmData, frameSize: state.frameSize)
+            state.flowDiagnostics.lastWriteUs = nowUs
+            state.flowDiagnostics.deliveryLeadUs = (playTimeMicroseconds ?? nowUs) - nowUs
             let dropped = pcmData.count - written
             if dropped > 0 {
                 state.pcmBytesDropped += Int64(dropped)
             }
         }
-    }
-
-    /// Ceiling on the startup silence pad, in bytes: one pipeline depth of frames.
-    private func maxStartupPadBytes() -> Int {
-        guard let format = currentFormat else { return 0 }
-        let frameSize = format.channels * (format.effectiveOutputBitDepth / 8)
-        let frames = pipelineLatencyMicroseconds() * Int64(format.sampleRate) / 1_000_000
-        return Int(frames) * frameSize
     }
 
     /// Peak absolute sample magnitude in the filled region, as a fraction of full scale.
@@ -832,73 +700,6 @@ actor AudioPlayer {
         return Int64(timestamp.mSampleTime)
     }
 
-    private struct FirstFramePlacement {
-        let serverTimestamp: Int64
-        let localPlayTime: Int64?
-        let framesPlayed: Int64
-        let nowAbsolute: Int64
-        let silence: Data
-    }
-
-    /// Pad the ring with silence so the first real frame lands on its due instant.
-    ///
-    /// Once the queue is running the device consumes at exactly the sample rate, so a frame's
-    /// audible instant is fixed by its position in the stream, not by when the callback
-    /// happened to pull it. That makes the placement exact rather than quantised to the
-    /// callback cadence: the next frame written becomes audible once the frames still in
-    /// flight have played, plus the device path.
-    ///
-    /// A negative pad clamps to zero; the first frame plays late rather than being dropped.
-    private static func placeFirstFrame(state: inout LockedState, placement: FirstFramePlacement) {
-        let serverTimestamp = placement.serverTimestamp
-        let localPlayTime = placement.localPlayTime
-        let framesPlayed = placement.framesPlayed
-        let nowAbsolute = placement.nowAbsolute
-        let silence = placement.silence
-        let sampleRate = Int64(state.sampleRate)
-        guard sampleRate > 0, state.frameSize > 0 else {
-            state.cursorMicroseconds = serverTimestamp
-            return
-        }
-
-        let framesInFlight = max(0, state.totalFramesEnqueued - framesPlayed)
-        let pipelineDelayUs = framesInFlight * 1_000_000 / sampleRate + state.deviceLatencyUs
-        let padCapacityFrames = Int64(silence.count / state.frameSize)
-        let padFrames: Int64
-        if let localPlayTime {
-            let gapUs = localPlayTime - nowAbsolute - pipelineDelayUs
-            state.startupLateUs = max(0, -gapUs)
-            padFrames = min(
-                max(gapUs * sampleRate / 1_000_000, 0),
-                padCapacityFrames
-            )
-        } else if let snapshot = state.timeSnapshot {
-            let audibleServerTime = snapshot.localTimeToServer(nowAbsolute) + pipelineDelayUs
-            let gapUs = serverTimestamp - audibleServerTime
-            state.startupLateUs = max(0, -gapUs)
-            padFrames = min(
-                max(gapUs * sampleRate / 1_000_000, 0),
-                padCapacityFrames
-            )
-        } else {
-            // Without clock sync there is no server-time due instant to place against.
-            state.cursorMicroseconds = serverTimestamp
-            return
-        }
-        if padFrames > 0 {
-            state.pcmRingBuffer.writeFrames(
-                silence.prefix(Int(padFrames) * state.frameSize),
-                frameSize: state.frameSize
-            )
-        }
-
-        // The pad is indistinguishable from audio once in the ring, so it advances the cursor
-        // too. Seating the cursor this far back leaves it reading exactly `serverTimestamp`
-        // at the moment the first real frame is handed over.
-        state.cursorMicroseconds = serverTimestamp - padFrames * 1_000_000 / sampleRate
-        state.startupPadFrames = padFrames
-    }
-
     // MARK: - Sync correction interface
 
     /// Push a new time filter snapshot for use by the audio callback.
@@ -909,26 +710,14 @@ actor AudioPlayer {
     }
 
     /// Reanchor the playback cursor to a new server time position.
-    func reanchorCursor(to serverTimeMicros: Int64) {
-        lockedState.withLock { state in
-            state.cursorMicroseconds = serverTimeMicros
-            state.cursorRemainder = 0
-            state.pcmRingBuffer.reset()
-            state.correctionSchedule = CorrectionSchedule()
-            state.dropCounter = 0
-            state.insertCounter = 0
-            state.reanchorRequested = false
-        }
+    func reanchorCursor(to _: Int64) {
+        // Compatibility entry point: the next render uses its current clock and depth.
+        lockedState.withLock { $0.reanchorRequested = true }
     }
 
-    /// Check if the audio callback requested a reanchor. Returns the target server time
-    /// if so, and clears the flag. Called from the sync/telemetry loop.
+    /// Reanchors are applied atomically by render; no captured target leaves the callback.
     func pollReanchor() -> Int64? {
-        lockedState.withLock { state -> Int64? in
-            guard state.reanchorRequested else { return nil }
-            state.reanchorRequested = false
-            return state.pendingReanchorServerTime
-        }
+        nil
     }
 
     /// Telemetry snapshot — read by the external telemetry loop for logging.
@@ -939,8 +728,8 @@ actor AudioPlayer {
         let correctionSchedule: CorrectionSchedule
         let underrunCount: Int64
         let pcmBytesDropped: Int64
-        /// Sync error at grace expiry, before the rebaseline absorbs it. `nil` until then.
-        /// The measured device depth makes this placement error rather than model error.
+        /// Measured sync error at grace expiry, or `nil` until then.
+        /// Recording this offset does not change the source PCM timestamp.
         let startupOffsetUs: Int64?
         /// `AudioQueueStart` to first device callback. -1 until that callback lands.
         let spinUpUs: Int64
@@ -972,6 +761,7 @@ actor AudioPlayer {
         let queueTimeline: QueueTimelineTelemetry
         /// Lateness of the first frame when its silence pad clamps to zero.
         let startupLateUs: Int64
+        var flowDiagnostics = PCMFlowDiagnostics()
 
         init(
             cursorMicroseconds: Int64, sampleRate: Int, syncErrorUs: Int64, correctionSchedule: CorrectionSchedule,
@@ -1011,8 +801,19 @@ actor AudioPlayer {
 
     /// Capture telemetry state atomically for the logging loop.
     var telemetrySnapshot: TelemetrySnapshot {
+        let startedAt = MonotonicClock.absoluteMicroseconds()
         let played = audioQueue.map { Self.framesPlayed(queue: $0) } ?? 0
+        let positionReadAt = MonotonicClock.absoluteMicroseconds()
         let timeline = audioQueue.map { QueueTimelineTelemetry.read(queue: $0) } ?? QueueTimelineTelemetry()
+        let timelineReadAt = MonotonicClock.absoluteMicroseconds()
+        defer {
+            let elapsed = MonotonicClock.absoluteMicroseconds() - startedAt
+            if elapsed > 20_000 {
+                let positionUs = positionReadAt - startedAt
+                let timelineUs = timelineReadAt - positionReadAt
+                Log.audio.notice("Slow output telemetry: total=\(elapsed)us position=\(positionUs)us timeline=\(timelineUs)us")
+            }
+        }
         let appliedVolume = appliedVolume
         // Read back rather than trusted. `appliedVolume` is what this process believes it set;
         // these are what the queue and the device report, and the span between them is the only
@@ -1023,7 +824,7 @@ actor AudioPlayer {
             AudioQueueGetParameter(queue, kAudioQueueParam_Volume, &value)
             return value
         }()
-        let deviceGain = OutputDeviceLatency.currentDeviceGain()
+        let deviceGain = deviceGainSampler.sample()
         // Read-and-clear: the peak describes the interval since the last read, so a signal that
         // stops is visible rather than latched forever by one loud buffer.
         let (peak, silentBuffers) = lockedState.withLock { state -> (Float, Int64) in
@@ -1035,7 +836,7 @@ actor AudioPlayer {
         return lockedState.withLock { state in
             let callbackDepth = state.callbackDepth
             state.callbackDepth = CallbackDepthTelemetry()
-            return TelemetrySnapshot(
+            var snapshot = TelemetrySnapshot(
                 cursorMicroseconds: state.cursorMicroseconds,
                 sampleRate: state.sampleRate,
                 syncErrorUs: state.lastSyncErrorUs,
@@ -1058,12 +859,18 @@ actor AudioPlayer {
                 queueTimeline: timeline,
                 startupLateUs: state.startupLateUs
             )
+            snapshot.flowDiagnostics = state.flowDiagnostics
+            snapshot.flowDiagnostics.ringFrames = Int64(state.pcmRingBuffer.availableToRead / max(1, state.frameSize))
+            return snapshot
         }
     }
 
     /// Clear buffered PCM data (for seek/stream clear without stopping playback)
     func clearBuffer() {
-        lockedState.withLock { $0.pcmRingBuffer.reset() }
+        lockedState.withLock { state in
+            state.flowDiagnostics.clearedFrames += Int64(state.pcmRingBuffer.availableToRead / max(1, state.frameSize))
+            state.clearPCM()
+        }
     }
 
     // MARK: - AudioQueue callback (runs on audio thread)
@@ -1093,101 +900,6 @@ actor AudioPlayer {
         return snapshot.localTimeToServer(audibleLocalTime)
     }
 
-    private static func updateCorrectionSchedule(
-        state: inout LockedState,
-        capacity: Int,
-        frameSize: Int,
-        sampleRate: Int,
-        inFlightAtCallback: Int64?
-    ) {
-        guard state.cursorMicroseconds > 0, let snapshot = state.timeSnapshot else { return }
-        let nowAbsolute = MonotonicClock.absoluteMicroseconds()
-
-        let queueDepthUs = Int64(audioQueueBufferCount * capacity) * 1_000_000 / Int64(sampleRate * frameSize)
-        let pipelineLatencyUs = correctionPipelineLatencyUs(
-            inFlightFrames: inFlightAtCallback, sampleRate: sampleRate,
-            modelledQueueDepthUs: queueDepthUs, deviceLatencyUs: state.deviceLatencyUs
-        )
-        let equilibriumServerTime = correctionEquilibriumServerTime(
-            snapshot: snapshot,
-            localNow: nowAbsolute,
-            pipelineLatencyUs: pipelineLatencyUs,
-            outputDelayUs: state.outputDelayUs
-        )
-
-        // A frame pulled here is audible `aqLatencyUs` from now, and must be audible at
-        // `local(cursor)` — so in equilibrium the cursor LEADS the mapped local instant by
-        // that latency. The shared helper maps the complete local target through the same
-        // nonzero-drift snapshot used by scheduling.
-        let syncErrorUs = equilibriumServerTime - state.cursorMicroseconds
-        state.lastSyncErrorUs = syncErrorUs
-
-        let framesInBuffer = capacity / frameSize
-        var graceAbsorbedThisCallback = false
-        if state.correctionGraceFrames > 0 {
-            state.correctionGraceFrames -= Int64(framesInBuffer)
-            if state.correctionGraceFrames <= 0 {
-                // The grace window intentionally plays startup audio without pitch
-                // correction while AudioQueue callback/cursor bookkeeping settles.
-                // Do not feed the accumulated grace-era bias directly into the
-                // corrector on the expiry callback — that creates an audible max-rate
-                // insert/drop ramp at ~1s. Instead, rebaseline the cursor to the same
-                // equilibrium used by the sync-error formula, then let the next
-                // callback correct only real drift.
-                state.startupOffsetUs = syncErrorUs
-                state.cursorMicroseconds = graceExpiryRebaselineCursor(
-                    snapshot: snapshot,
-                    localNow: nowAbsolute,
-                    pipelineLatencyUs: pipelineLatencyUs,
-                    outputDelayUs: state.outputDelayUs
-                )
-                state.cursorRemainder = 0
-                state.correctionSchedule = CorrectionSchedule()
-                state.dropCounter = 0
-                state.insertCounter = 0
-                state.lastSyncErrorUs = 0
-                graceAbsorbedThisCallback = true
-            }
-        }
-
-        let newSchedule: CorrectionSchedule = if state.correctionGraceFrames > 0 || graceAbsorbedThisCallback {
-            CorrectionSchedule() // no correction during grace period or its expiry handoff
-        } else {
-            state.syncPlanner.plan(
-                errorMicroseconds: syncErrorUs,
-                sampleRate: UInt32(sampleRate),
-                currentlyCorrecting: state.correctionSchedule.isCorrecting
-            )
-        }
-
-        if newSchedule.reanchor {
-            // Can't reset the ring buffer and cursor here safely while iterating,
-            // so signal the actor to handle it on the next poll.
-            // The cursor leads by the physical and local delay in equilibrium, so a reanchor
-            // must use the shared mapped target rather than a bare current-time conversion.
-            state.pendingReanchorServerTime = graceExpiryRebaselineCursor(
-                snapshot: snapshot,
-                localNow: nowAbsolute,
-                pipelineLatencyUs: pipelineLatencyUs,
-                outputDelayUs: state.outputDelayUs
-            )
-            state.reanchorRequested = true
-            state.correctionSchedule = CorrectionSchedule()
-            state.dropCounter = 0
-            state.insertCounter = 0
-        } else if newSchedule != state.correctionSchedule {
-            let wasActive = state.correctionSchedule.isCorrecting
-            state.correctionSchedule = newSchedule
-            if newSchedule.isCorrecting, !wasActive {
-                // Initialize counters to the full cadence value — the first correction
-                // fires after one full cycle, giving the schedule time to stabilize
-                // before modifying the output.
-                state.dropCounter = newSchedule.dropEveryNFrames
-                state.insertCounter = newSchedule.insertEveryNFrames
-            }
-        }
-    }
-
     static func correctionPipelineLatencyUs(
         inFlightFrames: Int64?, sampleRate: Int, modelledQueueDepthUs: Int64, deviceLatencyUs: Int64
     ) -> Int64 {
@@ -1197,7 +909,7 @@ actor AudioPlayer {
         return queueDepthUs + deviceLatencyUs
     }
 
-    private static func measureCallbackDepth(state: inout LockedState, queue: AudioQueueRef, bufferFrames: Int64) -> Int64? {
+    private static func measureCallbackDepth(state: inout AudioRenderState, queue: AudioQueueRef, bufferFrames: Int64) -> Int64? {
         let start = MonotonicClock.absoluteMicroseconds()
         let played = framesPlayed(queue: queue)
         let cost = MonotonicClock.absoluteMicroseconds() - start
@@ -1250,54 +962,13 @@ actor AudioPlayer {
                 state.spinUpUs = MonotonicClock.absoluteMicroseconds() - state.queueStartAbsoluteUs
             }
 
-            Self.updateCorrectionSchedule(
-                state: &state, capacity: capacity, frameSize: fs, sampleRate: state.sampleRate, inFlightAtCallback: inFlightAtCallback
-            )
-
-            // --- Fill the buffer with PCM frames, applying drop/insert correction ---
-            var outOffset = 0
-            while outOffset + fs <= capacity {
-                // --- Drop cadence: consume a frame without writing it ---
-                if state.correctionSchedule.dropEveryNFrames > 0 {
-                    state.dropCounter = state.dropCounter > 0 ? state.dropCounter - 1 : 0
-                    if state.dropCounter == 0 {
-                        state.dropCounter = state.correctionSchedule.dropEveryNFrames
-                        if state.pcmRingBuffer.availableToRead >= fs {
-                            state.pcmRingBuffer.skip(fs)
-                            state.advanceCursor()
-                        }
-                    }
-                }
-
-                // --- Insert cadence: repeat last frame without consuming ---
-                if state.correctionSchedule.insertEveryNFrames > 0 {
-                    state.insertCounter = state.insertCounter > 0 ? state.insertCounter - 1 : 0
-                    if state.insertCounter == 0 {
-                        state.insertCounter = state.correctionSchedule.insertEveryNFrames
-                        if state.lastFrameValid {
-                            memcpy(dest + outOffset, state.lastFrameStorage.baseAddress!, fs)
-                        } else {
-                            memset(dest + outOffset, 0, fs)
-                        }
-                        outOffset += fs
-                        continue
-                    }
-                }
-
-                // --- Normal: consume one frame and write it ---
-                if state.pcmRingBuffer.availableToRead >= fs {
-                    state.pcmRingBuffer.read(into: dest + outOffset, count: fs)
-                    memcpy(state.lastFrameStorage.baseAddress!, dest + outOffset, fs)
-                    state.lastFrameValid = true
-                    state.advanceCursor()
-                    outOffset += fs
-                } else {
-                    if !state.prewarming {
-                        state.underrunCount += 1
-                    }
-                    break
-                }
+            if state.cursorMicroseconds > 0, state.timeSnapshot != nil {
+                state.updateCorrectionSchedule(
+                    localNow: MonotonicClock.absoluteMicroseconds(),
+                    capacity: capacity, frameSize: fs, sampleRate: state.sampleRate, inFlightAtCallback: inFlightAtCallback
+                )
             }
+            let outOffset = state.fillFrames(into: dest, capacity: capacity)
 
             if outOffset == 0 {
                 state.silentBufferCount += 1
@@ -1370,7 +1041,7 @@ actor AudioPlayer {
     func setVolume(_ volume: Float) {
         let clampedVolume = max(0.0, min(1.0, volume))
         currentVolume = clampedVolume
-        if !isMuted {
+        if !isMuted, fadingStopIdentity == nil {
             startVolumeRamp(to: clampedVolume)
         }
     }
@@ -1379,6 +1050,7 @@ actor AudioPlayer {
     func setMute(_ muted: Bool) {
         guard muted != isMuted else { return }
         isMuted = muted
+        guard fadingStopIdentity == nil else { return }
         if muted {
             cancelVolumeRamp()
             appliedVolume = 0.0
@@ -1431,20 +1103,8 @@ actor AudioPlayer {
         }
     }
 
-    /// Cursor position that makes the sync-error formula evaluate to equilibrium
-    /// at the startup correction-grace handoff.
-    ///
-    /// Cursor position at which the sync-error formula reads zero: the shared snapshot mapping
-    /// of the local time after physical pipeline and commanded local output delay.
-    ///
-    /// While startup grace is open, correction is intentionally disabled so AudioQueue
-    /// callback/cursor bookkeeping can settle without pitch-shifting output. On the
-    /// expiry callback, the measured error can include that grace-era bookkeeping
-    /// bias; feeding it directly to the corrector creates an audible max-rate ramp.
-    ///
-    /// This *asserts* the equilibrium rather than measuring it, so whatever misalignment
-    /// exists at grace expiry becomes permanent and subsequently reads as perfect sync.
-    /// `TelemetrySnapshot.startupOffsetUs` is the only place that misalignment is visible.
+    /// Reanchor target using the snapshot mapping of the local audible instant.
+    /// Calculating a target does not change the timestamp of buffered source PCM.
     static func graceExpiryRebaselineCursor(
         snapshot: TimeFilterSnapshot,
         localNow: Int64,

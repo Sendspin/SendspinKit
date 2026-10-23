@@ -63,7 +63,8 @@ actor NoOpAudioOutput: AudioOutput {
     func playPCM(
         _: Data,
         serverTimestamp _: Int64,
-        playTimeMicroseconds _: Int64? = nil
+        playTimeMicroseconds _: Int64? = nil,
+        timelineAdjustmentUs _: Int64? = nil
     ) async throws {}
 
     func clearBuffer() {}

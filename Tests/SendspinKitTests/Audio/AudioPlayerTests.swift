@@ -63,6 +63,21 @@ struct AudioPlayerTests {
     }
 
     @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
+    func nativeStopFadePreservesVolumeAndAllowsRestart() async throws {
+        let player = AudioPlayer()
+        let format = try AudioFormatSpec(codec: .pcm, channels: 2, sampleRate: 48_000, bitDepth: 16)
+        try await player.start(format: format, codecHeader: nil)
+        await player.setVolume(0.5)
+        await player.stopAfterFade()
+        #expect(await !player.isPlaying)
+        #expect(await player.volume == 0.5)
+        try await player.start(format: format, codecHeader: nil)
+        #expect(await player.isPlaying)
+        #expect(await player.telemetrySnapshot.queueGain == 1)
+        await player.stop()
+    }
+
+    @Test(.enabled(if: RealAudioTestGate.enabled, RealAudioTestGate.reason))
     func configureAudioFormat() async throws {
         let player = AudioPlayer()
 
@@ -223,7 +238,7 @@ struct AudioPlayerTests {
     // MARK: - Perceptual volume
 
     @Test
-    func graceExpiryRebaselineUsesDriftAwareSharedEquilibrium() {
+    func reanchorTargetUsesDriftAwareSharedEquilibrium() {
         let snapshot = TimeFilterSnapshot(
             offset: 5_000,
             drift: 0.1,
@@ -256,11 +271,6 @@ struct AudioPlayerTests {
         #expect(correctionTarget == independentlyMappedTarget)
         #expect(rebaselinedCursor == independentlyMappedTarget)
         #expect(correctionTarget != snapshot.localTimeToServer(localNow) + pipelineLatencyUs + outputDelayUs)
-        #expect(CorrectionPlanner().plan(
-            errorMicroseconds: independentlyMappedTarget - rebaselinedCursor,
-            sampleRate: 48_000,
-            currentlyCorrecting: false
-        ) == CorrectionSchedule())
     }
 
     @Test

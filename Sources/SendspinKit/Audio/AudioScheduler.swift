@@ -20,6 +20,8 @@ struct ScheduledChunk {
     /// Output delay is already included; `originalTimestamp` remains in server time.
     var playTimeMicroseconds: Int64
     let originalTimestamp: Int64
+    /// Decoded-timeline offset chosen by the engine; ordinary wire timestamps leave this nil.
+    var timelineAdjustmentUs: Int64?
     /// Stream generation — incremented on format changes so the output loop
     /// can distinguish old-format from new-format chunks.
     let generation: UInt64
@@ -76,12 +78,14 @@ actor AudioScheduler {
         pcm: Data,
         serverTimestamp: Int64,
         playTimeMicroseconds: Int64,
+        timelineAdjustmentUs: Int64? = nil,
         generation: UInt64 = 0
     ) {
         let chunk = ScheduledChunk(
             pcmData: pcm,
             playTimeMicroseconds: playTimeMicroseconds,
             originalTimestamp: serverTimestamp,
+            timelineAdjustmentUs: timelineAdjustmentUs,
             generation: generation
         )
 

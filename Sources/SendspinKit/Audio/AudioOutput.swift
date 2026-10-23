@@ -650,6 +650,9 @@ protocol AudioOutput: Actor, Sendable {
     /// Stop playback. Safe to call even if not playing.
     func stop() async
 
+    /// Briefly fade this output before truncating a normally ended stream.
+    func stopAfterFade() async
+
     /// Swap the decoder for seamless format transitions.
     /// Called in wire order before chunks in the new format arrive.
     func swapDecoder(format: AudioFormatSpec, codecHeader: Data?) throws
@@ -664,7 +667,7 @@ protocol AudioOutput: Actor, Sendable {
 
     /// Queue a PCM chunk for playback at the given server timestamp and effective local play time.
     /// Throws if playback cannot continue (e.g., underrun recovery failing).
-    func playPCM(_ pcm: Data, serverTimestamp: Int64, playTimeMicroseconds: Int64?) async throws
+    func playPCM(_ pcm: Data, serverTimestamp: Int64, playTimeMicroseconds: Int64?, timelineAdjustmentUs: Int64?) async throws
 
     /// Clear buffered PCM without stopping playback (for stream clear or seek).
     func clearBuffer()

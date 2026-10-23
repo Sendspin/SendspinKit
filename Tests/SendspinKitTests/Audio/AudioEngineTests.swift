@@ -263,6 +263,11 @@ actor SpyAudioOutput: AudioOutput {
         blockedStop = nil
     }
 
+    func stopAfterFade() async {
+        recordedCalls.append("stopAfterFade()")
+        await stop()
+    }
+
     func stop() async {
         recordedCalls.append("stop()")
         releaseBlockedOutputDeviceProbe()
@@ -319,7 +324,8 @@ actor SpyAudioOutput: AudioOutput {
     func playPCM(
         _ pcm: Data,
         serverTimestamp: Int64,
-        playTimeMicroseconds _: Int64? = nil
+        playTimeMicroseconds _: Int64? = nil,
+        timelineAdjustmentUs _: Int64? = nil
     ) async throws {
         recordedCalls.append("playPCM(\(pcm.count) bytes)")
         playedPCMTimestamps.append(serverTimestamp)
@@ -1513,6 +1519,7 @@ struct AudioEngineTests {
         #expect(kinds.last == .streamEnd)
         let isPlayingAfter = await output.isPlaying
         #expect(!isPlayingAfter)
+        #expect(await output.recordedCalls.contains("stopAfterFade()"))
 
         // Truncation: the queue is cleared and nothing was played to completion.
         let after = await scheduler.stats

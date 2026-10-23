@@ -29,6 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `ConfigurationError.emptyVisualizerTypes` is absent because empty requests are valid.
 
 ### Fixed
+- PCM recovery keeps source timestamps with queued samples, trims stale prefixes without deleting future audio, and waits for future samples at their scheduled output time.
+- Rounded chunk timestamps retain fractional frame timing and correction cadence across continuous PCM boundaries.
+- Output device gain diagnostics use cached background reads so slow HAL queries do not block PCM delivery.
+- Startup correction grace preserves source PCM timestamps instead of masking alignment error by relabeling the playback cursor.
+- Normal player stream end requests a 5 ms queue-local gain fade before disposing output, without changing device volume.
 - Startup reports a start failure and stops prepared output when the device-live wait exceeds 20 seconds; cancellation releases the pending waiter.
 - Player streams emit `streamStarted` once on their first successful engine outcome and `streamFormatChanged` on later outcomes.
 - Server reactivation updates session state without repeating `serverConnected` with an empty name.

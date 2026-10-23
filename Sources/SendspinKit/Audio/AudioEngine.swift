@@ -235,6 +235,7 @@ actor AudioEngine {
     private struct StartupBufferedChunk {
         let pcmData: Data
         var playTimeMicroseconds: Int64
+        var timelineAdjustmentUs: Int64?
         let originalTimestamp: Int64
         let generation: UInt64
     }
@@ -921,11 +922,14 @@ actor AudioEngine {
             } else {
                 playTime = wirePlayTime
             }
+            let timelineAdjustmentUs = playbackTimeline.usesDecodedTimeline
+                ? playTime.saturatingSubtracting(wirePlayTime) : nil
             if startupBuffer != nil || startupReleaseInProgress {
                 if startupReleaseInProgress, startupBuffer == nil {
                     startupReleaseDeferredChunks.append(StartupBufferedChunk(
                         pcmData: pcm,
                         playTimeMicroseconds: playTime,
+                        timelineAdjustmentUs: timelineAdjustmentUs,
                         originalTimestamp: ts,
                         generation: chunkGeneration
                     ))
@@ -941,6 +945,7 @@ actor AudioEngine {
                     startupBuffer?.chunks.append(StartupBufferedChunk(
                         pcmData: pcm,
                         playTimeMicroseconds: playTime,
+                        timelineAdjustmentUs: timelineAdjustmentUs,
                         originalTimestamp: ts,
                         generation: chunkGeneration
                     ))
@@ -952,6 +957,7 @@ actor AudioEngine {
                         pcm: pcm,
                         serverTimestamp: ts,
                         playTimeMicroseconds: playTime,
+                        timelineAdjustmentUs: timelineAdjustmentUs,
                         generation: chunkGeneration
                     )
                 }
@@ -960,6 +966,7 @@ actor AudioEngine {
                     pcm: pcm,
                     serverTimestamp: ts,
                     playTimeMicroseconds: playTime,
+                    timelineAdjustmentUs: timelineAdjustmentUs,
                     generation: chunkGeneration
                 )
             }
@@ -1154,7 +1161,8 @@ actor AudioEngine {
                 try await output.playPCM(
                     chunk.pcmData,
                     serverTimestamp: chunk.originalTimestamp,
-                    playTimeMicroseconds: chunk.playTimeMicroseconds
+                    playTimeMicroseconds: chunk.playTimeMicroseconds,
+                    timelineAdjustmentUs: chunk.timelineAdjustmentUs
                 )
             }
             guard startupReleaseInProgress, startupSequence == sequence, !outputHasStarted else {
@@ -1197,6 +1205,7 @@ actor AudioEngine {
                 pcm: chunk.pcmData,
                 serverTimestamp: chunk.originalTimestamp,
                 playTimeMicroseconds: chunk.playTimeMicroseconds,
+                timelineAdjustmentUs: chunk.timelineAdjustmentUs,
                 generation: chunk.generation
             )
         }
@@ -1205,6 +1214,7 @@ actor AudioEngine {
                 pcm: chunk.pcmData,
                 serverTimestamp: chunk.originalTimestamp,
                 playTimeMicroseconds: chunk.playTimeMicroseconds,
+                timelineAdjustmentUs: chunk.timelineAdjustmentUs,
                 generation: chunk.generation
             )
         }
@@ -1328,7 +1338,7 @@ actor AudioEngine {
             outputHasStarted = false
             await audioScheduler.stop()
             await audioScheduler.clear()
-            await output.stop()
+            await output.stopAfterFade()
         }
     }
 
@@ -1393,12 +1403,35 @@ actor AudioEngine {
             }
 
             guard chunk.generation == currentGeneration else { continue }
+            let requestedAt = MonotonicClock.absoluteMicroseconds()
             try? await output.playPCM(
                 chunk.pcmData,
                 serverTimestamp: chunk.originalTimestamp,
-                playTimeMicroseconds: chunk.playTimeMicroseconds
+                playTimeMicroseconds: chunk.playTimeMicroseconds,
+                timelineAdjustmentUs: chunk.timelineAdjustmentUs
             )
+            let elapsed = MonotonicClock.absoluteMicroseconds() - requestedAt
+            if elapsed > 20_000 {
+                Log.audio.notice("Slow PCM handoff: \(elapsed)us")
+            }
         }
+    }
+
+    private func measuredOutputTelemetry() async -> AudioPlayer.TelemetrySnapshot {
+        let requestedAt = MonotonicClock.absoluteMicroseconds()
+        let snapshot = await output.telemetrySnapshot
+        let elapsed = MonotonicClock.absoluteMicroseconds() - requestedAt
+        if elapsed > 20_000 {
+            Log.audio.notice("Slow telemetry await: \(elapsed)us")
+        }
+        return snapshot
+    }
+
+    private func logPCMFlow(_ snapshot: AudioPlayer.TelemetrySnapshot) {
+        let message = "PCM flow: \(snapshot.flowDiagnostics.summary)"
+            + " consumed=\(snapshot.framesConsumed)f underruns=\(snapshot.underrunCount)"
+            + " sync=\(snapshot.syncErrorUs)us"
+        Log.audio.info("\(message, privacy: .public)")
     }
 
     /// Polls reanchor requests and emits operational-state reports via the UnderrunMonitor.
@@ -1416,7 +1449,10 @@ actor AudioEngine {
                 await output.reanchorCursor(to: reanchorTarget)
             }
 
-            let tSnap = await output.telemetrySnapshot
+            let tSnap = await measuredOutputTelemetry()
+            if outputHasStarted {
+                logPCMFlow(tSnap)
+            }
 
             // Observe underruns and emit state transitions, unless external source is active
             if participatingInPlayback {
